@@ -1,0 +1,293 @@
+<h2 id="c0-what-this-guide-is">What this guide is</h2>
+<p>This guide covers everything in an SDE2 / Senior Software Engineer interview loop <strong>except DSA</strong>. You have a separate resource for DSA.</p>
+<p>It is written for a .NET engineer who is moving to Java. It assumes only general programming experience — nothing more.</p>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>Area</th>
+<th>Where</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Core Java, how collections work inside, Java 8–21</td>
+<td>Part 1: Chapters 1–3</td>
+</tr>
+<tr>
+<td>Concurrency, JVM, GC, troubleshooting</td>
+<td>Part 1: Chapters 4–5</td>
+</tr>
+<tr>
+<td>Spring core, web, data/JPA/transactions, production Spring (security, testing, Kafka, Redis, resilience, observability) + the portfolio project</td>
+<td>Part 2: Chapters 6–8</td>
+</tr>
+<tr>
+<td>Low-level design: OOP, SOLID, 25 patterns, 17 machine-coding problems (all code compiled and run)</td>
+<td>Part 3: Chapters 9–10</td>
+</tr>
+<tr>
+<td>High-level design basics, SQL and how databases work inside, 19 case studies</td>
+<td>Part 4: Chapters 11–13</td>
+</tr>
+<tr>
+<td>Behavioral, resume, interview scripts, rapid revision</td>
+<td>Part 5: Chapters 14–16</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="c0-how-every-topic-is-explained">How every topic is explained</h2>
+<p>Every topic follows the same seven steps. So you always know where you are. You also know what an interviewer can dig into next.</p>
+<ol>
+<li><strong>Why?</strong> — the problem that made this thing exist. If you know the problem, you can rebuild the solution even under pressure.</li>
+<li><strong>What is happening internally?</strong> — what sits underneath: the data structures, how memory is laid out, the threads, or the network hops.</li>
+<li><strong>How does it work?</strong> — the mechanism, step by step.</li>
+<li><strong>Example</strong> — runnable Java (or SQL / config). Type it out yourself and run it.</li>
+<li><strong>When would I use it?</strong> — the rule for deciding, and what you would pick instead.</li>
+<li><strong>What can go wrong?</strong> — the bugs you see in production and the traps interviewers set.</li>
+<li><strong>Interview question</strong> — asked the way interviewers ask it, with a model answer.</li>
+</ol>
+<p>Use the same order when you answer in an interview: problem → internals → mechanism → example → trade-off → what can fail. This structure is what makes an answer sound like SDE2 level. A plain definition does not.</p>
+<h2 id="c0-the-honest-starting-point">The honest starting point</h2>
+<p><strong>Your resume says "Solved 500+ DSA problems".</strong> Remove that line now.</p>
+<p>Here is why. Your LeetCode and GFG links sit right above that line. Interviewers at product companies open those links. If the profile shows far fewer solved problems, they stop trusting you in the first five minutes. After that, they doubt every other line on the resume too.</p>
+<p>Put a true number back once you have one. Also, before you apply, make sure the "Java, Spring Boot" skills line is backed by the project in Chapter 8.11.</p>
+<blockquote class="co rule">
+<p><strong>Rule:</strong> Put nothing on the resume that you cannot defend for 10 minutes of follow-up questions. Interviewers are trained to pick one claim and keep digging until it either holds or breaks.</p>
+</blockquote>
+<h2 id="c0-daily-rhythm">Daily rhythm</h2>
+<p>This plan is built for someone with a full-time Senior role: <strong>~2 hours on weekdays, ~5 hours on weekend days</strong>.</p>
+<p>DSA time is shown only so the week adds up. In that slot, follow your own DSA resource.</p>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>Slot</th>
+<th>Mon–Fri</th>
+<th>Saturday</th>
+<th>Sunday</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>DSA (your own resource)</td>
+<td>1 h</td>
+<td>2 h</td>
+<td>1 h</td>
+</tr>
+<tr>
+<td>Java / Spring / DB section of the week (this guide)</td>
+<td>1 h</td>
+<td>—</td>
+<td>—</td>
+</tr>
+<tr>
+<td>LLD (Chapters 9–10)</td>
+<td>—</td>
+<td>3 h</td>
+<td>—</td>
+</tr>
+<tr>
+<td>HLD (Chapters 11, 13)</td>
+<td>—</td>
+<td>—</td>
+<td>2 h</td>
+</tr>
+<tr>
+<td>Java project (Weeks 8–12), then mocks (Weeks 13–16)</td>
+<td>—</td>
+<td>—</td>
+<td>2 h</td>
+</tr>
+<tr>
+<td>Flashcard review (Anki deck that comes with this guide)</td>
+<td>15 min daily</td>
+<td>15 min</td>
+<td>15 min</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Weekly metric — 1 new + 2 revised.</strong> In each study session, do one new section. Then answer again the interview questions from two sections you studied earlier. Answering an old section aloud, without notes, is worth more than reading a new one.</p>
+<p><strong>Stuck rule:</strong> Sometimes a section won't make sense after one careful read. Then run its code, change one thing, and guess the output before you run it again. If it still doesn't make sense, mark it and move on. Come back to it on Saturday.</p>
+<h2 id="c0-the-16-week-plan">The 16-week plan</h2>
+<p>Week 1 starts on Monday, Oct 5, 2026. You start applying in Week 13. Interviews start from late January 2027.</p>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>Wk</th>
+<th>Dates</th>
+<th>Weekdays: Java / Spring / DB</th>
+<th>Sat: LLD</th>
+<th>Sun: HLD</th>
+<th>End-of-week output</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>Oct 5–11</td>
+<td>1.1–1.8 Java basics, JVM view, String, equals/hashCode</td>
+<td>9.1–9.7 OOP pillars, UML, SOLID</td>
+<td>11.1–11.3 Approach, estimation</td>
+<td>Resume line removed</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Oct 12–18</td>
+<td>1.9–1.19 Generics, exceptions, immutability, I/O</td>
+<td>9.8–9.11 Creational patterns</td>
+<td>11.4–11.6</td>
+<td>Explain equals/hashCode + erasure aloud</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Oct 19–25</td>
+<td>2.1–2.11 Collections internals</td>
+<td>9.12–9.16 Structural patterns</td>
+<td>11.7–11.9</td>
+<td>Explain HashMap aloud in 3 min</td>
+</tr>
+<tr>
+<td>4</td>
+<td>Oct 26–Nov 1</td>
+<td>3.1–3.10 Java 8–21, streams, records, virtual threads</td>
+<td>9.17–9.25 Behavioral patterns, LLD method · 10.1–10.2</td>
+<td>11.10–11.11</td>
+<td><strong>Gate 1</strong></td>
+</tr>
+<tr>
+<td>5</td>
+<td>Nov 2–8</td>
+<td>4.1–4.8 Threads, executors, JMM, locks, AQS</td>
+<td>10.3–10.5</td>
+<td>11.12–11.15</td>
+<td>Thread-pool params from memory</td>
+</tr>
+<tr>
+<td>6</td>
+<td>Nov 9–15</td>
+<td>4.9–4.15 CHM, CompletableFuture, deadlock, producer–consumer, ThreadLocal</td>
+<td>10.6–10.8</td>
+<td>11.16–11.19</td>
+<td>Bounded blocking queue coded alone</td>
+</tr>
+<tr>
+<td>7</td>
+<td>Nov 16–22</td>
+<td>5.1–5.11 JVM, GC, troubleshooting</td>
+<td>10.9–10.11</td>
+<td>11.20–11.22</td>
+<td>Read a GC log + thread dump</td>
+</tr>
+<tr>
+<td>8</td>
+<td>Nov 23–29</td>
+<td>6.1–6.10 Spring core, proxies, AOP, auto-config</td>
+<td>10.12–10.14</td>
+<td>13.1–13.3</td>
+<td><strong>Gate 2</strong>; project repo created (8.11)</td>
+</tr>
+<tr>
+<td>9</td>
+<td>Nov 30–Dec 6</td>
+<td>7.1–7.6 Web, validation, errors · 12.1–12.4 SQL joins, window functions, CTEs</td>
+<td>10.15–10.16</td>
+<td>13.4–13.6</td>
+<td>Project: entities + APIs</td>
+</tr>
+<tr>
+<td>10</td>
+<td>Dec 7–13</td>
+<td>7.7–7.16 JPA, transactions, locking, Flyway · 12.5–12.9 indexes, EXPLAIN, MVCC, DB locks</td>
+<td>10.17–10.18</td>
+<td>13.7–13.9</td>
+<td>Project: transactional ledger</td>
+</tr>
+<tr>
+<td>11</td>
+<td>Dec 14–20</td>
+<td>8.1–8.5 Security, testing, Kafka</td>
+<td>Timed redo: Parking Lot (90 min)</td>
+<td>13.10–13.13</td>
+<td>Project: tests + Kafka</td>
+</tr>
+<tr>
+<td>12</td>
+<td>Dec 21–27</td>
+<td>8.6–8.10 Redis, resilience, scheduling, observability</td>
+<td>Timed redo: BookMyShow</td>
+<td>13.14–13.16</td>
+<td><strong>Gate 3</strong>; project live</td>
+</tr>
+<tr>
+<td>13</td>
+<td>Dec 28–Jan 3</td>
+<td>Ch 16 Java + concurrency bank</td>
+<td>Timed redo: Elevator</td>
+<td>13.17–13.20</td>
+<td>Resume final; 15 applications/referrals out</td>
+</tr>
+<tr>
+<td>14</td>
+<td>Jan 4–10</td>
+<td>Ch 16 Spring + DB bank · Ch 14 story bank written</td>
+<td>Timed redo: Rules engine</td>
+<td>Redo 2 case studies on a blank page</td>
+<td>First mock</td>
+</tr>
+<tr>
+<td>15</td>
+<td>Jan 11–17</td>
+<td>Ch 15 playbook drills</td>
+<td>Timed redo: your weakest problem</td>
+<td>Redo 2 case studies</td>
+<td>2 mocks</td>
+</tr>
+<tr>
+<td>16</td>
+<td>Jan 18–24</td>
+<td>Ch 16 full pass, flashcards</td>
+<td>Redo 2 favourites</td>
+<td>Redo 2 case studies</td>
+<td>2 mocks; interviews begin</td>
+</tr>
+</tbody>
+</table></div>
+<h3>Gates — do not move on until they pass</h3>
+<p>A gate is a self-test at the end of a phase. If you can't pass it, spend more time on that phase before moving ahead.</p>
+<ul>
+<li><strong>Gate 1 (end of Week 4):</strong> Without notes, explain these aloud:</li>
+<li>HashMap internals (hashing, treeify, resize);</li>
+<li>the equals/hashCode contract;</li>
+<li>why String is immutable, and the String pool;</li>
+<li>checked vs unchecked exceptions;</li>
+<li>why generics are erased, and what PECS means;</li>
+<li>how a stream pipeline runs lazily (only when a final operation asks for results).</li>
+<li><strong>Gate 2 (end of Week 8):</strong></li>
+<li>Code a thread-safe bounded blocking queue and a producer–consumer from scratch in 30 minutes.</li>
+<li>Explain how ThreadPoolExecutor behaves with core size, max size, queue and rejection.</li>
+<li>Explain <code>volatile</code> vs <code>synchronized</code>.</li>
+<li>Explain why <code>@Transactional</code> does nothing when a method calls another method in the same class (self-invocation).</li>
+<li>Finish six LLD problems in Java.</li>
+<li><strong>Gate 3 (end of Week 12):</strong></li>
+<li>Java project deployed, with a README, tests and a load-test number.</li>
+<li>From memory, explain the Spring bean lifecycle, <code>@Transactional</code> propagation and the N+1 fix.</li>
+<li>Write a window-function query that returns the top 3 per group.</li>
+<li>Explain why a given index is or isn't used.</li>
+<li>Present one HLD case study end to end in 40 minutes.</li>
+</ul>
+<h2 id="c0-how-to-study-a-section-and-remember-it">How to study a section (and remember it)</h2>
+<ol>
+<li>Read the section once, slowly. Run every code block (IntelliJ Community is free).</li>
+<li>Close the guide. Say the seven steps for the topic aloud, in about two minutes.</li>
+<li>Answer the section's interview question aloud in ~90 seconds. Then compare it with the model answer. Mark the ones where you stumble.</li>
+<li>Review the flashcards for 15 minutes every day. This is spaced repetition — seeing a card again just before you would forget it. It is what prevents the "I knew this yesterday" blank.</li>
+</ol>
+<blockquote class="co remember">
+<p><strong>Remember:</strong> Recognising something is not the same as recalling it. Re-reading feels productive, but it leaves you blank in interviews. Closing the guide and pulling the answer out of your own head is what builds recall.</p>
+</blockquote>
+<h2 id="c0-free-resources">Free resources</h2>
+<ul>
+<li><strong>Official docs</strong> for deep dives: docs.oracle.com (Java), docs.spring.io (Spring Boot), postgresql.org/docs, kafka.apache.org.</li>
+<li><strong>Peers</strong> for mocks — from Week 13, trade a 1-hour mock with a peer every week.</li>
+<li><strong>Anki (free)</strong> — import the flashcard CSV that comes with this guide.</li>
+</ul>
+<p>You don't need any paid course for anything in this plan.</p>

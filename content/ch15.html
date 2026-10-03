@@ -1,0 +1,258 @@
+<p>Going blank in an interview is not a knowledge problem. It happens for two reasons:</p>
+<ul>
+<li>You have only <em>recognised</em> the material — you watched it or read it. You never practised <em>pulling it out of memory</em> under pressure.</li>
+<li>You don't have a ready next step to say out loud.</li>
+</ul>
+<p>This chapter fixes both. It gives you training habits, and a script for every round. So there is always something useful to say.</p>
+<h2 id="s15-1">15.1 Why people blank, and the fixes</h2>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>Cause</th>
+<th>What it feels like</th>
+<th>Fix</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Passive learning (videos, re-reading)</td>
+<td>"I've seen this, but nothing comes"</td>
+<td>Close the source. Solve or explain it again from memory. Use spaced repetition (review at growing gaps: 1 day, 3 days, 1 week)</td>
+</tr>
+<tr>
+<td>Practising in silence</td>
+<td>Your mind goes empty when someone watches</td>
+<td>Say every practice solution out loud. Record yourself once a week</td>
+</tr>
+<tr>
+<td>No fallback move</td>
+<td>You panic, and the panic feeds itself</td>
+<td>Memorise the scripts below. When stuck, just run the next step</td>
+</tr>
+<tr>
+<td>Perfectionism</td>
+<td>You wait for the best idea before you speak</td>
+<td>Always start with brute force. Say it first, then improve it</td>
+</tr>
+<tr>
+<td>Stress reaction in the body</td>
+<td>Racing heart, tunnel vision</td>
+<td>Breathe slowly twice (4 s in, 6 s out). Write the problem down. Say it back in your own words</td>
+</tr>
+<tr>
+<td>Unfamiliar setting</td>
+<td>Shared editor, no IDE autocomplete</td>
+<td>Practise in plain editors (LeetCode, CoderPad-style, Google Docs)</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="s15-2">15.2 Coding round script (45 minutes)</h2>
+<ol>
+<li><strong>Restate</strong> the problem in your own words. Confirm the input types, input sizes and output format (2 min).</li>
+<li><strong>Examples</strong>: write one normal case and one edge case — empty, single item, duplicates, negatives, very large (2 min).</li>
+<li><strong>Brute force</strong>: say the simplest solution out loud with its time and space complexity, even if it is clearly slow (2 min).</li>
+<li><strong>Pattern search</strong>: go through your pattern triggers out loud (15.3). For example: "Sorted? → two pointers or binary search. Subarray? → sliding window or prefix sum…" Pick one, and explain why it fits (3–5 min).</li>
+<li><strong>Agree</strong> on the approach and its complexity with the interviewer before you start coding.</li>
+<li><strong>Code</strong> cleanly in Java. Write the method signature first, then helper methods. Use meaningful names. Explain your decisions as you go (15 min).</li>
+<li><strong>Dry-run</strong> your example line by line. Then dry-run the edge case (5 min).</li>
+<li><strong>Complexity</strong>: state the final time and space complexity, and suggest one possible improvement (2 min).</li>
+</ol>
+<p><strong>When stuck (say these out loud)</strong></p>
+<ul>
+<li>"Let me try a smaller input by hand and look for a pattern."</li>
+<li>"What if the array were sorted? What if I process it from the right?"</li>
+<li>"What would I need to store so I don't recompute this?" (→ hashing or DP)</li>
+<li>"Can I binary-search on the answer? Is feasibility monotonic — once an answer works, do all bigger answers also work?"</li>
+<li>After about 5 minutes of being truly stuck, ask a focused question: "I'm considering X and Y. X fails because… Would it be reasonable to think about Y?" A targeted question like this earns a hint, and you don't look lost.</li>
+</ul>
+<h2 id="s15-3">15.3 Coding round: what this guide adds to your DSA prep</h2>
+<p>Your DSA resource already covers patterns and problems, so this guide does not repeat them.</p>
+<p>What this guide adds for the coding round is Java fluency. The goal is simple: the language should never slow you down.</p>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>Need in a coding round</th>
+<th>Section</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Pick the right collection and know its cost</td>
+<td>2.1 (choosing), 2.4 HashMap, 2.6 TreeMap, 2.8 ArrayDeque, 2.9 PriorityQueue</td>
+</tr>
+<tr>
+<td>Sort objects by several keys without bugs</td>
+<td>1.13 Comparable/Comparator (never <code>a - b</code>)</td>
+</tr>
+<tr>
+<td>Avoid overflow and boxing traps</td>
+<td>1.2 Integer cache, 1.3 overflow</td>
+</tr>
+<tr>
+<td>Build strings efficiently</td>
+<td>1.5 StringBuilder</td>
+</tr>
+<tr>
+<td>Design a data structure where every operation is O(1)</td>
+<td>10.3 LRU cache (HashMap + doubly linked list)</td>
+</tr>
+<tr>
+<td>Coding questions with a concurrency angle</td>
+<td>4.14 bounded blocking queue, producer–consumer, odd–even printing</td>
+</tr>
+</tbody>
+</table></div>
+<p>Keep a short personal list of the pattern triggers from your DSA resource. For example: "sorted → two pointers / binary search; subarray → window / prefix sum…". Say this list out loud in step 4 of the script above.</p>
+<h2 id="s15-4">15.4 LLD round script (60–90 minutes)</h2>
+<ol>
+<li><strong>Clarify.</strong> List 4–6 core use cases and write them down. Confirm what is out of scope. Ask about concurrency and persistence (saving data).</li>
+<li><strong>Entities.</strong> Nouns become classes, enums or records. Verbs become methods.</li>
+<li><strong>Relationships.</strong> Draw a quick class diagram.</li>
+<li><strong>Interfaces first.</strong> Name the design patterns at the places where behaviour can vary.</li>
+<li><strong>Code</strong> in this order: models → repositories (in-memory) → services → strategies → a <code>main</code> demo. Make the happy path work end to end before adding extras.</li>
+<li><strong>Walk through</strong> one scenario using the code.</li>
+<li><strong>Close</strong> with three points:
+   - Thread safety — what is shared, and how it is protected.
+   - Extensibility — where a new feature would plug in.
+   - Testing approach.</li>
+</ol>
+<p><strong>Justify every pattern in one sentence.</strong> That is what interview-level LLD sounds like. For example: <em>"I used Strategy for pricing because pricing varies independently of the Ride entity, and I want to add new pricing schemes without modifying ride logic."</em> Practise saying a line like this for each pattern, in every problem you solve.</p>
+<p><strong>When stuck</strong>, say: "Let me write the main use case as a sequence of calls first." Write <code>main</code> using the API you <em>wish</em> you had. This often unlocks the design.</p>
+<h2 id="s15-5">15.5 HLD round script (45–60 minutes)</h2>
+<ol>
+<li><strong>Functional requirements</strong> — list 3–5. Also say clearly what is out of scope.</li>
+<li><strong>Non-functional requirements</strong> — users/DAU (daily active users), QPS (queries per second), read/write ratio, latency, availability, consistency and data size.</li>
+<li><strong>Estimates</strong> — calculate out loud: QPS, storage per year, cache size.</li>
+<li><strong>API</strong> — 3–6 endpoints.</li>
+<li><strong>Data model and store choice</strong> — give a one-line reason for the choice.</li>
+<li><strong>High-level diagram</strong> — then walk one read request and one write request through it.</li>
+<li><strong>Offer deep dives</strong>: "The interesting parts are A and B — which would you like to explore?"</li>
+<li><strong>Close</strong> with bottlenecks, failure modes, a plan for 10× scale, and monitoring.</li>
+</ol>
+<p><strong>When stuck</strong>, go back to the requirements. Say: "Given we need X at Y QPS, the bottleneck is Z, so…". Naming the bottleneck is always a valid next sentence.</p>
+<h2 id="s15-6">15.6 Java/Spring theory round</h2>
+<p>Answer in three layers:</p>
+<ol>
+<li><strong>Definition</strong> — 1 sentence.</li>
+<li><strong>How it works</strong> — 2–3 sentences.</li>
+<li><strong>When or why it matters in production</strong> — 1 example from your own work.</li>
+</ol>
+<p>Example: "<code>@Transactional</code> is declarative transaction management. Spring wraps the bean in a proxy that begins a transaction before the method and commits or rolls back after — rolling back on unchecked exceptions by default. In practice the classic bug is self-invocation, where an internal call skips the proxy; I'd move the method to another bean."</p>
+<p>If you don't know the answer, say: "I haven't used that directly. My understanding is … and I'd verify by …". Never bluff with a confident wrong answer.</p>
+<h2 id="s15-7">15.7 Mock interviews: how to run them and score them</h2>
+<p>From Week 13, do one mock every Sunday. From Week 15, do two per week.</p>
+<p>Trade mocks with a peer — you interview them too. You learn as much from the interviewer's side.</p>
+<p><strong>Scoring rubric (1–4 each)</strong></p>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>Dimension</th>
+<th>1</th>
+<th>4</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Problem understanding</td>
+<td>Jumped into code; solved the wrong problem</td>
+<td>Clarified, gave examples, confirmed constraints</td>
+</tr>
+<tr>
+<td>Approach</td>
+<td>No brute force, no pattern</td>
+<td>Brute force → optimal, with reasons</td>
+</tr>
+<tr>
+<td>Communication</td>
+<td>Long silences</td>
+<td>Continuous, structured narration</td>
+</tr>
+<tr>
+<td>Code quality</td>
+<td>Buggy, messy</td>
+<td>Clean, modular, correct on the first run</td>
+</tr>
+<tr>
+<td>Testing</td>
+<td>None</td>
+<td>Dry run + edge cases; found own bugs</td>
+</tr>
+<tr>
+<td>Complexity</td>
+<td>Wrong or missing</td>
+<td>Correct for both time and space</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Weekly mock mix from Week 15</strong> (when you can find partners):</p>
+<ul>
+<li>2 DSA</li>
+<li>1 LLD</li>
+<li>1 HLD</li>
+<li>1 Java/backend theory round. A peer asks 15–20 questions from Chapter 16 and asks two follow-ups on each.</li>
+</ul>
+<p>Don't wait until you feel "100% ready". Mocks are how you <em>get</em> ready.</p>
+<p><strong>Timed DSA simulation (45 min, Java only, no autocomplete):</strong></p>
+<ol>
+<li>5 min — understand the problem.</li>
+<li>5 min — brute force.</li>
+<li>10 min — optimise.</li>
+<li>20 min — code.</li>
+<li>5 min — test and state the complexity.</li>
+</ol>
+<p>Practise in a plain editor: LeetCode's editor with autocomplete off, or a blank doc.</p>
+<h3>The failure notebook</h3>
+<p>After every mock <strong>and every real interview</strong>, write one entry for each mistake. Do it within the hour, while it is fresh.</p>
+<div class="hl"><pre><span></span><code>Date / company / round:
+Question:
+Mistake:                     (what went wrong — be specific: "used HashMap, missed that order mattered")
+Why I made it:               (didn't clarify / didn't recognise pattern / panicked / didn't know concept)
+Correct approach:            (the right solution or answer, written fully)
+Pattern or concept missed:   (e.g. "monotonic stack", "@Transactional self-invocation", "fan-out on read")
+What I'll revise:            (chapter/section + a re-solve date 3 days out)
+</code></pre></div>
+
+<p>Review the notebook every Sunday. Look at the "why I made it" column. The causes that keep coming back are your real weak spots. Fix those causes — not just the individual questions.</p>
+<h3>Interview mode (Weeks 13–16): the loop</h3>
+<div class="hl"><pre><span></span><code>DSA / LLD / HLD practice ─► Mock ─► Real interview ─► Failure analysis (notebook)
+          ▲                                                    │
+          └──────────── Targeted revision of what failed ◄─────┘
+</code></pre></div>
+
+<p>Don't follow the path <em>course → course → course → "now I'll start interviewing"</em>. That approach wastes months.</p>
+<p>Instead, start applying from Week 13. Apply to practice companies first. Then your early real interviews feed this loop.</p>
+<p>Re-attempt every failed mock problem 3 days later.</p>
+<h2 id="s15-8">15.8 Online assessments (OA)</h2>
+<p>An OA usually has 2–3 problems in 60–90 minutes. It runs on HackerRank, Codility or HackerEarth, with hidden tests.</p>
+<ul>
+<li>Read all the problems first. Solve the easiest one first.</li>
+<li>When input comes through stdin, use fast I/O: <code>BufferedReader</code> + <code>StringTokenizer</code>, not <code>Scanner</code>.</li>
+<li>Watch for <code>int</code> overflow and edge cases. Hidden tests target exactly these.</li>
+<li>Partial credit counts. Submit a brute force that passes some tests first, then optimise.</li>
+<li>Keep a personal Java template file with imports, a fast reader and common helpers.</li>
+</ul>
+<h2 id="s15-9">15.9 The day before and the day of</h2>
+<p><strong>Day before</strong>:</p>
+<ul>
+<li>No new topics.</li>
+<li>Review your flashcards, your story bank and your pattern triggers.</li>
+<li>Prepare your setup: camera, mic, charged laptop, quiet room, water, paper and pen.</li>
+<li>Sleep 7–8 hours.</li>
+</ul>
+<p><strong>Day of</strong>:</p>
+<ul>
+<li>1 hour before: solve 2 easy problems out loud to warm up.</li>
+<li>10 minutes before: read your "tell me about yourself" answer and your 3 questions to ask.</li>
+<li>During the round: restate the problem, write things down, think out loud.</li>
+<li>Between rounds: don't replay the last round in your head. Reset with a short walk and some water.</li>
+</ul>
+<p><strong>After each round</strong>: within the hour, write down the questions and how you did. Patterns across companies tell you what to fix.</p>
+<h2 id="s15-10">15.10 The weekly review (Sunday, 1 hour)</h2>
+<ol>
+<li>Tick off the week's tasks in the plan (Chapter 0).</li>
+<li>Pick 3 random sections from the week. Re-explain each one without notes — all seven steps, out loud.</li>
+<li>Answer 10 random Q&amp;A cards out loud.</li>
+<li>Update the failure notebook and schedule your re-attempts.</li>
+<li>Check your gates (the pass/fail checkpoints in the plan). If a gate fails, repeat the weak part next week instead of moving on.</li>
+<li>Plan next week's sections from the plan in Chapter 0.</li>
+</ol>

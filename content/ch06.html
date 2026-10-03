@@ -1,0 +1,1047 @@
+<h2 id="s6-1">6.1 What Spring and Spring Boot solve</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> Spring builds all your objects and connects them to each other, so you don't write <code>new</code> everywhere. Spring Boot does the remaining setup for you, so a working web service needs almost no configuration.</p>
+<p>A real backend has hundreds of objects that depend on each other:</p>
+<ul>
+<li>Controllers need services.</li>
+<li>Services need repositories, clients, caches and config.</li>
+<li>Repositories need a <code>DataSource</code> (the object that gives out database connections).</li>
+</ul>
+<p>You could create and connect all of them by hand with <code>new</code>. But that causes three problems:</p>
+<ol>
+<li><strong>The code becomes rigid.</strong> Each class hard-codes which implementation it uses.</li>
+<li><strong>The code is hard to test.</strong> You can't swap in a fake object for a test.</li>
+<li><strong>The same plumbing repeats everywhere.</strong> Transactions, security checks and logging get copy-pasted into many methods.</li>
+</ol>
+<p><strong>Spring</strong> fixes this. It creates these objects and connects them for you. It can also add shared behaviour (like transactions) around them. Behaviour that many classes need is called <em>cross-cutting</em> behaviour.</p>
+<p><strong>Spring Boot</strong> removes the setup that is still left. It gives you:</p>
+<ul>
+<li>sensible defaults,</li>
+<li>infrastructure that configures itself automatically,</li>
+<li>a web server built into your app,</li>
+<li>and a single JAR file that you can run directly.</li>
+</ul>
+<h4>What is happening internally?</h4>
+<ul>
+<li><strong>Spring Framework</strong> = an <strong>IoC container</strong> (<code>ApplicationContext</code>) + modules built on top of it. The container is the object that creates and holds all your objects. The modules include Web MVC, Data/JDBC/ORM integration, transactions, AOP, events, Security (a separate project), and more.</li>
+<li><strong>Spring Boot</strong> adds these things on top:</li>
+<li><strong>Starters</strong>: ready-made bundles of dependencies. For example, <code>spring-boot-starter-web</code> brings Spring MVC, Jackson (for JSON), embedded Tomcat and validation hooks — all in one line.</li>
+<li><strong>Auto-configuration</strong>: configuration classes guarded by <code>@Conditional</code> checks. They create beans (DataSource, ObjectMapper, transaction manager…) only when two things are true: the needed classes and properties are present, and you haven't defined your own bean (6.9). A <em>bean</em> is simply an object that Spring creates and manages.</li>
+<li><strong>Externalised configuration</strong>: settings live outside the code — in <code>application.yml</code>, profiles and environment variables (6.8).</li>
+<li><strong>An embedded server</strong>: Tomcat runs <em>inside</em> your app. So you don't deploy your app onto a separate server; the app carries its own server.</li>
+<li><strong>Executable fat JAR</strong>: one JAR that holds your classes, all dependency JARs nested inside, and a special launcher class loader that can read the nested JARs.</li>
+<li><strong>Actuator</strong>: ready-made endpoints for health, metrics and info (8.9).</li>
+</ul>
+<p>Here is how the ideas map from ASP.NET Core, which you already know:</p>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>ASP.NET Core you know</th>
+<th>Spring Boot</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Program.cs</code>, <code>WebApplication.CreateBuilder</code></td>
+<td><code>@SpringBootApplication</code> + <code>SpringApplication.run</code></td>
+</tr>
+<tr>
+<td><code>builder.Services.AddScoped&lt;IFoo, Foo&gt;()</code></td>
+<td><code>@Service class Foo implements IFoo</code> (found by component scan) or a <code>@Bean</code> method</td>
+</tr>
+<tr>
+<td>Singleton / Scoped / Transient</td>
+<td><code>singleton</code> (default) / <code>request</code> / <code>prototype</code></td>
+</tr>
+<tr>
+<td>Middleware</td>
+<td>Servlet filters, <code>HandlerInterceptor</code>s, AOP</td>
+</tr>
+<tr>
+<td><code>[ApiController]</code></td>
+<td><code>@RestController</code></td>
+</tr>
+<tr>
+<td><code>appsettings.json</code> + <code>IOptions&lt;T&gt;</code></td>
+<td><code>application.yml</code> + <code>@ConfigurationProperties</code></td>
+</tr>
+<tr>
+<td><code>ASPNETCORE_ENVIRONMENT</code></td>
+<td><code>spring.profiles.active</code></td>
+</tr>
+<tr>
+<td>EF Core</td>
+<td>Spring Data JPA + Hibernate</td>
+</tr>
+<tr>
+<td><code>IHostedService</code></td>
+<td><code>@Scheduled</code>, <code>ApplicationRunner</code>, <code>SmartLifecycle</code></td>
+</tr>
+<tr>
+<td>Health checks</td>
+<td>Actuator <code>/actuator/health</code></td>
+</tr>
+</tbody>
+</table></div>
+<h4>How does it work?</h4>
+<p>When you run the JAR, these steps happen in order:</p>
+<div class="hl"><pre><span></span><code>java -jar loyalty.jar
+ → JarLauncher sets up a class loader over BOOT-INF/classes + BOOT-INF/lib/*.jar
+ → your main(): SpringApplication.run(App.class)
+ → creates the ApplicationContext, scans components, applies auto-configuration
+ → instantiates and wires beans, wraps some in proxies
+ → starts embedded Tomcat on port 8080 → ready
+</code></pre></div>
+
+<p>In plain words:</p>
+<ol>
+<li><code>JarLauncher</code> sets up a class loader. It can read your classes and every library JAR nested inside the fat JAR.</li>
+<li>Your <code>main()</code> method calls <code>SpringApplication.run</code>.</li>
+<li>Spring creates the <code>ApplicationContext</code> (the container).</li>
+<li>It scans your packages for components and applies auto-configuration.</li>
+<li>It creates all the beans, connects them, and wraps some of them in proxies (wrapper objects — see 6.7).</li>
+<li>It starts the embedded Tomcat server on port 8080. The app is now ready.</li>
+</ol>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="nd">@SpringBootApplication</span><span class="w">              </span><span class="c1">// = @Configuration + @EnableAutoConfiguration + @ComponentScan</span>
+<span class="kd">public</span><span class="w"> </span><span class="kd">class</span> <span class="nc">LoyaltyApplication</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">public</span><span class="w"> </span><span class="kd">static</span><span class="w"> </span><span class="kt">void</span><span class="w"> </span><span class="nf">main</span><span class="p">(</span><span class="n">String</span><span class="o">[]</span><span class="w"> </span><span class="n">args</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">SpringApplication</span><span class="p">.</span><span class="na">run</span><span class="p">(</span><span class="n">LoyaltyApplication</span><span class="p">.</span><span class="na">class</span><span class="p">,</span><span class="w"> </span><span class="n">args</span><span class="p">);</span><span class="w"> </span><span class="p">}</span>
+<span class="p">}</span>
+
+<span class="nd">@RestController</span>
+<span class="nd">@RequestMapping</span><span class="p">(</span><span class="s">"/api/v1/accounts"</span><span class="p">)</span>
+<span class="kd">class</span> <span class="nc">AccountController</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">private</span><span class="w"> </span><span class="kd">final</span><span class="w"> </span><span class="n">AccountService</span><span class="w"> </span><span class="n">service</span><span class="p">;</span>
+<span class="w">    </span><span class="n">AccountController</span><span class="p">(</span><span class="n">AccountService</span><span class="w"> </span><span class="n">service</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="k">this</span><span class="p">.</span><span class="na">service</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">service</span><span class="p">;</span><span class="w"> </span><span class="p">}</span><span class="w">   </span><span class="c1">// injected by Spring</span>
+
+<span class="w">    </span><span class="nd">@GetMapping</span><span class="p">(</span><span class="s">"/{id}/balance"</span><span class="p">)</span>
+<span class="w">    </span><span class="n">BalanceDto</span><span class="w"> </span><span class="nf">balance</span><span class="p">(</span><span class="nd">@PathVariable</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="n">id</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="k">return</span><span class="w"> </span><span class="n">service</span><span class="p">.</span><span class="na">balance</span><span class="p">(</span><span class="n">id</span><span class="p">);</span><span class="w"> </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<div class="hl"><pre><span></span><code><span class="cm">&lt;!-- pom.xml essentials --&gt;</span>
+<span class="nt">&lt;parent&gt;</span>
+<span class="w">  </span><span class="nt">&lt;groupId&gt;</span>org.springframework.boot<span class="nt">&lt;/groupId&gt;</span>
+<span class="w">  </span><span class="nt">&lt;artifactId&gt;</span>spring-boot-starter-parent<span class="nt">&lt;/artifactId&gt;</span>
+<span class="w">  </span><span class="nt">&lt;version&gt;</span>3.5.6<span class="nt">&lt;/version&gt;</span><span class="w">   </span><span class="cm">&lt;!-- take the current version from start.spring.io; concepts here also apply to 4.x --&gt;</span>
+<span class="nt">&lt;/parent&gt;</span>
+<span class="nt">&lt;dependencies&gt;</span>
+<span class="w">  </span><span class="nt">&lt;dependency&gt;&lt;groupId&gt;</span>org.springframework.boot<span class="nt">&lt;/groupId&gt;&lt;artifactId&gt;</span>spring-boot-starter-web<span class="nt">&lt;/artifactId&gt;&lt;/dependency&gt;</span>
+<span class="w">  </span><span class="nt">&lt;dependency&gt;&lt;groupId&gt;</span>org.springframework.boot<span class="nt">&lt;/groupId&gt;&lt;artifactId&gt;</span>spring-boot-starter-data-jpa<span class="nt">&lt;/artifactId&gt;&lt;/dependency&gt;</span>
+<span class="w">  </span><span class="nt">&lt;dependency&gt;&lt;groupId&gt;</span>org.springframework.boot<span class="nt">&lt;/groupId&gt;&lt;artifactId&gt;</span>spring-boot-starter-validation<span class="nt">&lt;/artifactId&gt;&lt;/dependency&gt;</span>
+<span class="w">  </span><span class="nt">&lt;dependency&gt;&lt;groupId&gt;</span>org.springframework.boot<span class="nt">&lt;/groupId&gt;&lt;artifactId&gt;</span>spring-boot-starter-actuator<span class="nt">&lt;/artifactId&gt;&lt;/dependency&gt;</span>
+<span class="w">  </span><span class="nt">&lt;dependency&gt;&lt;groupId&gt;</span>org.postgresql<span class="nt">&lt;/groupId&gt;&lt;artifactId&gt;</span>postgresql<span class="nt">&lt;/artifactId&gt;&lt;scope&gt;</span>runtime<span class="nt">&lt;/scope&gt;&lt;/dependency&gt;</span>
+<span class="w">  </span><span class="nt">&lt;dependency&gt;&lt;groupId&gt;</span>org.springframework.boot<span class="nt">&lt;/groupId&gt;&lt;artifactId&gt;</span>spring-boot-starter-test<span class="nt">&lt;/artifactId&gt;&lt;scope&gt;</span>test<span class="nt">&lt;/scope&gt;&lt;/dependency&gt;</span>
+<span class="nt">&lt;/dependencies&gt;</span>
+</code></pre></div>
+
+<p>The parent POM imports the Spring Boot <strong>BOM</strong> (Bill of Materials). A BOM is a list that fixes compatible versions of hundreds of libraries. Because of it, your starters need no version numbers — Boot has already chosen versions that work together.</p>
+<h4>When would I use it?</h4>
+<p>For any Java backend service. It is the default stack at most Indian product companies (Flipkart, PhonePe, Swiggy, Walmart Global Tech). It is also widely used at FAANG for internal services.</p>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>"Magic" you don't understand.</strong> A bean you never defined behaves in an unexpected way. Learn to read the auto-configuration report, which tells you what Boot set up and why (6.9).</li>
+<li><strong>Pulling in starters you don't need.</strong> This gives you a larger JAR, slower startup and surprise auto-configuration. For example, adding <code>spring-boot-starter-data-jpa</code> makes the app fail to start if there is no DataSource configured.</li>
+<li><strong>Overriding managed dependency versions by hand.</strong> If you change versions that the BOM picked, you can break compatibility between libraries.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. Spring vs Spring Boot?</strong> Spring is the IoC container plus its family of modules. Boot is an opinionated layer on top of it — it makes default choices for you. It adds starters, auto-configuration, externalised config, an embedded server, executable JARs and Actuator, so an app needs almost no setup.</p>
+<p><strong>Q2. What does <code>@SpringBootApplication</code> do?</strong> It combines three annotations: <code>@Configuration</code>, <code>@EnableAutoConfiguration</code> and <code>@ComponentScan</code>. The component scan starts from the annotated class's package and goes downward into its sub-packages.</p>
+<p><strong>Q3. What is a starter?</strong> It is a dependency bundle that brings everything needed for one capability (web, JPA, security), with versions that work together. Having it on the classpath also triggers the matching auto-configuration.</p>
+<h2 id="s6-2">6.2 Inversion of Control and Dependency Injection</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> A class should not build the things it needs. It should just ask for them, and someone else (the Spring container) hands them over. This makes the class easy to test and easy to change.</p>
+<p>Suppose <code>RedemptionService</code> creates its own dependencies:</p>
+<ul>
+<li><code>new PostgresLedgerRepository()</code></li>
+<li><code>new TwilioSmsClient()</code></li>
+</ul>
+<p>Now it is welded to those exact implementations. Two problems follow:</p>
+<ol>
+<li>You can't unit test it without a real database and a real SMS account.</li>
+<li>Switching to another SMS vendor means editing your business code.</li>
+</ol>
+<p><strong>Inversion of Control</strong> (IoC) flips this. The class only declares what it needs. An outside <strong>container</strong> creates those dependencies and hands them in. This handing-in is called <strong>Dependency Injection</strong> (DI).</p>
+<p>Think of a restaurant kitchen. The chef does not go to the market for vegetables. He writes what he needs on a list, and the supplier delivers it. If the supplier changes, the chef's recipes don't change.</p>
+<h4>What is happening internally?</h4>
+<p>The <code>ApplicationContext</code> works in two phases.</p>
+<ol>
+<li><strong>Phase 1 — Bean definitions (the recipes).</strong>
+   - Spring collects a <em>recipe</em> for each bean. A recipe says: which class, which scope, which constructor arguments, which dependencies, and which init/destroy methods.
+   - Recipes come from component scanning, <code>@Bean</code> methods and auto-configuration.
+   - Each recipe is stored as a <code>BeanDefinition</code> object in a registry.
+   - No real objects exist yet.</li>
+<li><strong>Phase 2 — Instantiation (cooking the recipes).</strong> For each singleton that is not marked lazy, Spring:</li>
+<li>works out the dependency graph (who needs whom),</li>
+<li>creates the dependencies first,</li>
+<li>calls the constructor with them,</li>
+<li>injects fields and setters,</li>
+<li>runs lifecycle callbacks,</li>
+<li>applies post-processors (these may wrap the bean in a proxy),</li>
+<li>stores the result in the <strong>singleton cache</strong> (a <code>ConcurrentHashMap&lt;String, Object&gt;</code>).</li>
+</ol>
+<p>Spring finds a dependency <strong>by type</strong> first. If several beans match that type, it narrows the choice by qualifier or by name (6.4).</p>
+<div class="hl"><pre><span></span><code>Bean definitions:  accountController → needs AccountService
+                   accountService    → needs AccountRepository, Clock
+                   accountRepository (Spring Data proxy) → needs EntityManager
+Creation order:    EntityManager → AccountRepository → Clock → AccountService → AccountController
+</code></pre></div>
+
+<p>In the diagram, nothing can be created before the things it needs. So the <code>EntityManager</code> comes first and the controller comes last.</p>
+<h4>How does it work?</h4>
+<p>There are three ways to inject a dependency:</p>
+<div class="hl"><pre><span></span><code><span class="nd">@Service</span>
+<span class="kd">public</span><span class="w"> </span><span class="kd">class</span> <span class="nc">RedemptionService</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">private</span><span class="w"> </span><span class="kd">final</span><span class="w"> </span><span class="n">LedgerRepository</span><span class="w"> </span><span class="n">ledger</span><span class="p">;</span><span class="w">           </span><span class="c1">// 1. Constructor injection — use this</span>
+<span class="w">    </span><span class="kd">private</span><span class="w"> </span><span class="kd">final</span><span class="w"> </span><span class="n">NotificationSender</span><span class="w"> </span><span class="n">notifier</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kd">public</span><span class="w"> </span><span class="nf">RedemptionService</span><span class="p">(</span><span class="n">LedgerRepository</span><span class="w"> </span><span class="n">ledger</span><span class="p">,</span><span class="w"> </span><span class="n">NotificationSender</span><span class="w"> </span><span class="n">notifier</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w">   </span><span class="c1">// single constructor: @Autowired optional</span>
+<span class="w">        </span><span class="k">this</span><span class="p">.</span><span class="na">ledger</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ledger</span><span class="p">;</span>
+<span class="w">        </span><span class="k">this</span><span class="p">.</span><span class="na">notifier</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">notifier</span><span class="p">;</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+
+<span class="nd">@Service</span>
+<span class="kd">class</span> <span class="nc">LegacyService</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nd">@Autowired</span><span class="w"> </span><span class="kd">private</span><span class="w"> </span><span class="n">AuditClient</span><span class="w"> </span><span class="n">audit</span><span class="p">;</span><span class="w">            </span><span class="c1">// 2. Field injection — avoid (hidden deps, no final, needs reflection in tests)</span>
+<span class="w">    </span><span class="kd">private</span><span class="w"> </span><span class="n">Notifier</span><span class="w"> </span><span class="n">notifier</span><span class="p">;</span>
+<span class="w">    </span><span class="nd">@Autowired</span><span class="w"> </span><span class="kt">void</span><span class="w"> </span><span class="nf">setNotifier</span><span class="p">(</span><span class="n">Notifier</span><span class="w"> </span><span class="n">n</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="k">this</span><span class="p">.</span><span class="na">notifier</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">n</span><span class="p">;</span><span class="w"> </span><span class="p">}</span><span class="w">   </span><span class="c1">// 3. Setter — only for optional deps</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<ol>
+<li><strong>Constructor injection</strong> — use this by default.</li>
+<li><strong>Field injection</strong> — avoid it. The dependencies are hidden, the field can't be <code>final</code>, and tests need reflection to set it.</li>
+<li><strong>Setter injection</strong> — use it only for optional dependencies.</li>
+</ol>
+<p>Why constructor injection wins:</p>
+<ul>
+<li><strong>Dependencies are explicit.</strong> You can see them all in the constructor signature.</li>
+<li><strong>Fields are <code>final</code>.</strong> So they are immutable (can't change), and other threads always see them correctly set. This is called <em>safe publication</em>.</li>
+<li><strong>The object is never half-built.</strong> It can't exist without its dependencies.</li>
+<li><strong>Unit tests are simple.</strong> You just call <code>new RedemptionService(fakeLedger, fakeNotifier)</code>.</li>
+<li><strong>It warns you about bad design.</strong> If the constructor has too many parameters, the class is clearly doing too much.</li>
+</ul>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="c1">// Unit test with no Spring at all — the payoff of DI</span>
+<span class="kd">class</span> <span class="nc">RedemptionServiceTest</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nd">@Test</span><span class="w"> </span><span class="kt">void</span><span class="w"> </span><span class="nf">notifiesAfterRedemption</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="kd">var</span><span class="w"> </span><span class="n">ledger</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">InMemoryLedgerRepository</span><span class="p">();</span>
+<span class="w">        </span><span class="kd">var</span><span class="w"> </span><span class="n">notifier</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">RecordingNotifier</span><span class="p">();</span>
+<span class="w">        </span><span class="kd">var</span><span class="w"> </span><span class="n">service</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">RedemptionService</span><span class="p">(</span><span class="n">ledger</span><span class="p">,</span><span class="w"> </span><span class="n">notifier</span><span class="p">);</span>
+<span class="w">        </span><span class="n">service</span><span class="p">.</span><span class="na">redeem</span><span class="p">(</span><span class="s">"acc1"</span><span class="p">,</span><span class="w"> </span><span class="mi">100</span><span class="p">);</span>
+<span class="w">        </span><span class="n">assertThat</span><span class="p">(</span><span class="n">notifier</span><span class="p">.</span><span class="na">sent</span><span class="p">()).</span><span class="na">hasSize</span><span class="p">(</span><span class="mi">1</span><span class="p">);</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p>This test needs no Spring at all. You pass in fake objects by hand. This is the real payoff of DI.</p>
+<h4>When would I use it?</h4>
+<p>For every service, repository, client and component.</p>
+<p>Program to interfaces (also called <em>ports</em>) for anything you might swap or fake in tests:</p>
+<ul>
+<li>external clients,</li>
+<li>notification channels,</li>
+<li>clocks,</li>
+<li>ID generators.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Circular dependencies.</strong> A needs B, and B needs A.</li>
+<li>With constructor injection, Spring can't create either one first. So startup fails with <code>BeanCurrentlyInCreationException</code>.</li>
+<li>Since Boot 2.6, circular references are blocked by default, even with field injection.</li>
+<li>The fix is to change the design. Extract the shared logic into a third bean, or use events.</li>
+<li>Putting <code>@Lazy</code> on one parameter is a last resort. It injects a proxy (a stand-in object) instead of the real bean.</li>
+<li><strong>Calling <code>new</code> yourself on a Spring-managed class.</strong> The object you get has no injection, no proxies and no <code>@Transactional</code>. Spring never touched it.</li>
+<li><strong>Static access to beans.</strong> For example, a static holder that keeps the ApplicationContext. This hides the dependencies again, which is exactly what DI was meant to fix.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. What are IoC and DI?</strong> IoC means the container, not your code, controls creating objects and connecting them. DI means dependencies are given to the object through the constructor, a setter or a field, instead of the object creating them itself. This gives loose coupling, easy testing and one central place for configuration.</p>
+<p><strong>Q2. Why prefer constructor injection?</strong> Dependencies are explicit and immutable, objects are never partly initialised, unit tests are easy without Spring, and circular dependencies fail early at startup.</p>
+<p><strong>Q3. How does Spring resolve which bean to inject?</strong> First by type. If several beans match, it uses <code>@Primary</code>, then <code>@Qualifier</code>, then the parameter name matching a bean name. If none of these decides it, startup fails with <code>NoUniqueBeanDefinitionException</code>.</p>
+<p><strong>Q4. How do you fix a circular dependency?</strong> Refactor the design: move the shared responsibility into a new bean, or reverse one dependency using an interface or events. Only as a last resort, use <code>@Lazy</code> injection.</p>
+<h2 id="s6-3">6.3 Defining beans: stereotypes, <code>@Bean</code> and <code>@Configuration</code></h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> You must tell Spring which objects to create. For your own classes, put an annotation on the class. For classes you can't edit, write a small method that builds the object and mark it <code>@Bean</code>.</p>
+<p>The container needs to know two things: which classes to manage, and how to build them.</p>
+<ul>
+<li><strong>Your own classes:</strong> an annotation on the class is enough.</li>
+<li><strong>Third-party classes you can't annotate</strong> (an <code>ObjectMapper</code>, an <code>ExecutorService</code>, an SDK client), or objects that need some building logic: you write a <em>factory method</em> — a method whose job is to create and return the object.</li>
+</ul>
+<h4>What is happening internally?</h4>
+<ul>
+<li><strong>Component scanning</strong> walks through the packages under your <code>@SpringBootApplication</code> class.</li>
+<li>It reads the class files with a library called ASM. So it does not need to load every class into memory.</li>
+<li>For each class marked with <code>@Component</code>, or with an annotation built on <code>@Component</code> (a <em>stereotype</em>), it registers a bean definition.</li>
+</ul>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>Annotation</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>@Component</code></td>
+<td>A general managed component</td>
+</tr>
+<tr>
+<td><code>@Service</code></td>
+<td>Business logic (just a label; no extra behaviour)</td>
+</tr>
+<tr>
+<td><code>@Repository</code></td>
+<td>Data access; Spring also converts database exceptions into its own <code>DataAccessException</code> family</td>
+</tr>
+<tr>
+<td><code>@Controller</code> / <code>@RestController</code></td>
+<td>Web handler; <code>@RestController</code> = <code>@Controller</code> + <code>@ResponseBody</code></td>
+</tr>
+<tr>
+<td><code>@Configuration</code></td>
+<td>A class that holds <code>@Bean</code> factory methods</td>
+</tr>
+</tbody>
+</table></div>
+<ul>
+<li><strong><code>@Configuration</code> classes are wrapped in a CGLIB proxy.</strong> CGLIB is a library that creates a subclass of your class at runtime.</li>
+<li>Because of this proxy, when one <code>@Bean</code> method calls another <code>@Bean</code> method in the same class, the call goes through the proxy.</li>
+<li>The proxy returns the <strong>existing singleton</strong> instead of creating a new object.</li>
+<li><strong>"Lite mode": <code>@Configuration(proxyBeanMethods = false)</code>.</strong> There is no proxy, so startup is a bit faster.</li>
+<li>But now the methods are plain Java calls. Calling one <code>@Bean</code> method from another creates a <strong>new</strong> instance each time.</li>
+<li>So in lite mode, take other beans as method parameters instead of calling their methods.</li>
+</ul>
+<h4>How does it work?</h4>
+<div class="hl"><pre><span></span><code><span class="nd">@Configuration</span>
+<span class="kd">class</span> <span class="nc">InfraConfig</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nd">@Bean</span>
+<span class="w">    </span><span class="n">Clock</span><span class="w"> </span><span class="nf">clock</span><span class="p">()</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="k">return</span><span class="w"> </span><span class="n">Clock</span><span class="p">.</span><span class="na">systemUTC</span><span class="p">();</span><span class="w"> </span><span class="p">}</span><span class="w">                       </span><span class="c1">// third-party type → @Bean</span>
+
+<span class="w">    </span><span class="nd">@Bean</span><span class="p">(</span><span class="n">destroyMethod</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"shutdown"</span><span class="p">)</span>
+<span class="w">    </span><span class="n">ExecutorService</span><span class="w"> </span><span class="nf">rewardExecutor</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">ThreadPoolExecutor</span><span class="p">(</span><span class="mi">4</span><span class="p">,</span><span class="w"> </span><span class="mi">16</span><span class="p">,</span><span class="w"> </span><span class="mi">60</span><span class="p">,</span><span class="w"> </span><span class="n">TimeUnit</span><span class="p">.</span><span class="na">SECONDS</span><span class="p">,</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">ArrayBlockingQueue</span><span class="o">&lt;&gt;</span><span class="p">(</span><span class="mi">500</span><span class="p">),</span>
+<span class="w">                </span><span class="n">Thread</span><span class="p">.</span><span class="na">ofPlatform</span><span class="p">().</span><span class="na">name</span><span class="p">(</span><span class="s">"reward-"</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="p">).</span><span class="na">factory</span><span class="p">(),</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">ThreadPoolExecutor</span><span class="p">.</span><span class="na">CallerRunsPolicy</span><span class="p">());</span>
+<span class="w">    </span><span class="p">}</span>
+
+<span class="w">    </span><span class="nd">@Bean</span>
+<span class="w">    </span><span class="n">PartnerClient</span><span class="w"> </span><span class="nf">partnerClient</span><span class="p">(</span><span class="n">RestClient</span><span class="p">.</span><span class="na">Builder</span><span class="w"> </span><span class="n">builder</span><span class="p">,</span><span class="w"> </span><span class="n">PartnerProps</span><span class="w"> </span><span class="n">props</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w">   </span><span class="c1">// dependencies as parameters</span>
+<span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">PartnerClient</span><span class="p">(</span><span class="n">builder</span><span class="p">.</span><span class="na">baseUrl</span><span class="p">(</span><span class="n">props</span><span class="p">.</span><span class="na">baseUrl</span><span class="p">()).</span><span class="na">build</span><span class="p">());</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p>Three patterns are shown here:</p>
+<ol>
+<li><code>Clock</code> is a third-party type, so you create it with a <code>@Bean</code> method.</li>
+<li>The thread pool uses <code>destroyMethod = "shutdown"</code>. So Spring calls <code>shutdown()</code> on it when the app stops.</li>
+<li><code>PartnerClient</code> needs other beans. It receives them as method parameters, and Spring fills them in.</li>
+</ol>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="nd">@Configuration</span>
+<span class="kd">class</span> <span class="nc">Demo</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nd">@Bean</span><span class="w"> </span><span class="n">A</span><span class="w"> </span><span class="nf">a</span><span class="p">()</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="k">return</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">A</span><span class="p">(</span><span class="n">b</span><span class="p">());</span><span class="w"> </span><span class="p">}</span>
+<span class="w">    </span><span class="nd">@Bean</span><span class="w"> </span><span class="n">B</span><span class="w"> </span><span class="nf">b</span><span class="p">()</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="k">return</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">B</span><span class="p">();</span><span class="w"> </span><span class="p">}</span>
+<span class="p">}</span>
+<span class="c1">// With full @Configuration (default): b() inside a() returns the SAME singleton B as the "b" bean.</span>
+<span class="c1">// With proxyBeanMethods = false: b() creates a SECOND B — two instances, subtle bugs (two caches, two pools).</span>
+</code></pre></div>
+
+<p>With the default full <code>@Configuration</code>, both places get the same <code>B</code>. In lite mode you silently get two <code>B</code> objects. That can mean two caches or two connection pools — bugs that are hard to spot.</p>
+<h4>When would I use it?</h4>
+<ul>
+<li><strong>Stereotype annotations</strong> for your own classes.</li>
+<li><strong><code>@Bean</code></strong> for third-party objects, clients that need configuration, thread pools, and variants that depend on a condition or a profile.</li>
+<li>Group your infrastructure beans into a few <code>@Configuration</code> classes, one per concern. For example: <code>PersistenceConfig</code>, <code>KafkaConfig</code>, <code>SecurityConfig</code>.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>A class outside the scanned packages is silently ignored.</strong> If it sits above the main class's package, scanning never sees it. You get <code>NoSuchBeanDefinitionException</code>.</li>
+<li><strong><code>final</code> <code>@Configuration</code> classes or <code>final</code> <code>@Bean</code> methods can't be proxied by CGLIB.</strong> CGLIB works by subclassing and overriding, and <code>final</code> blocks both.</li>
+<li><strong>Two beans of the same type defined in different places</strong> (yours plus an auto-configured one).</li>
+<li>Usually yours wins, because the auto-configured one has <code>@ConditionalOnMissingBean</code> and steps back.</li>
+<li>But if the two beans have the same name, it is a clash. Bean overriding is disabled by default, so startup fails.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. <code>@Component</code> vs <code>@Bean</code>?</strong> <code>@Component</code> marks your own class so component scanning picks it up. <code>@Bean</code> is a factory method inside a <code>@Configuration</code> class; you use it for third-party types or when building the object needs custom logic.</p>
+<p><strong>Q2. <code>@Component</code> vs <code>@Service</code> vs <code>@Repository</code>?</strong> All three register beans. <code>@Service</code> is only a label that shows meaning. <code>@Repository</code> also adds persistence exception translation — it converts database exceptions into Spring's <code>DataAccessException</code> types.</p>
+<p><strong>Q3. Why are <code>@Configuration</code> classes proxied?</strong> So that when one <code>@Bean</code> method calls another, it gets back the container's singleton instead of creating a new instance.</p>
+<h2 id="s6-4">6.4 Multiple implementations: <code>@Primary</code>, <code>@Qualifier</code>, and injecting collections</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> When one interface has several implementations, you must tell Spring which one to use. You can mark a default, ask for a specific one by name, or take all of them and choose at runtime.</p>
+<p>Real systems often have several implementations of one interface. For example:</p>
+<ul>
+<li>payment gateways: Razorpay, UPI, card,</li>
+<li>notification channels: SMS, WhatsApp, email,</li>
+<li>reward rules.</li>
+</ul>
+<p>You need one of three things:</p>
+<ol>
+<li>a <strong>default</strong> one,</li>
+<li>a <strong>specific</strong> one,</li>
+<li><strong>all</strong> of them, so you can pick one at runtime. This is the Strategy pattern — choose the algorithm while the program runs.</li>
+</ol>
+<h4>What is happening internally?</h4>
+<p>Say a constructor parameter has type <code>T</code>. The container collects every bean that can be assigned to <code>T</code>. Then:</p>
+<ol>
+<li>If there is exactly one, it injects that one.</li>
+<li>If there are several, a bean marked <code>@Primary</code> wins.</li>
+<li>If there is no <code>@Primary</code>, a <code>@Qualifier</code> on the parameter filters the candidates.</li>
+<li>If there is no qualifier, Spring matches the parameter name to a bean name.</li>
+<li>If nothing decides it, startup fails with <code>NoUniqueBeanDefinitionException</code>.</li>
+</ol>
+<p>Collections work differently:</p>
+<ul>
+<li>For <code>List&lt;T&gt;</code>, Spring injects <strong>all</strong> candidates. They are ordered by <code>@Order</code> or the <code>Ordered</code> interface.</li>
+<li>For <code>Map&lt;String, T&gt;</code>, Spring injects a map of bean name → bean.</li>
+</ul>
+<p>Think of an ATM that accepts several bank cards. It has a default network, but it can also route to a specific bank when the card says so.</p>
+<h4>How does it work?</h4>
+<div class="hl"><pre><span></span><code><span class="kd">public</span><span class="w"> </span><span class="kd">interface</span> <span class="nc">PaymentGateway</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">Receipt</span><span class="w"> </span><span class="nf">pay</span><span class="p">(</span><span class="n">Money</span><span class="w"> </span><span class="n">amount</span><span class="p">,</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="n">ref</span><span class="p">);</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="nf">code</span><span class="p">();</span><span class="w"> </span><span class="p">}</span>
+
+<span class="nd">@Component</span><span class="p">(</span><span class="s">"razorpay"</span><span class="p">)</span><span class="w"> </span><span class="nd">@Primary</span><span class="w"> </span><span class="kd">class</span> <span class="nc">RazorpayGateway</span><span class="w"> </span><span class="kd">implements</span><span class="w"> </span><span class="n">PaymentGateway</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="cm">/* ... */</span><span class="w"> </span><span class="p">}</span>
+<span class="nd">@Component</span><span class="p">(</span><span class="s">"upi"</span><span class="p">)</span><span class="w">                 </span><span class="kd">class</span> <span class="nc">UpiGateway</span><span class="w"> </span><span class="kd">implements</span><span class="w"> </span><span class="n">PaymentGateway</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="cm">/* ... */</span><span class="w"> </span><span class="p">}</span>
+<span class="nd">@Component</span><span class="p">(</span><span class="s">"card"</span><span class="p">)</span><span class="w">                </span><span class="kd">class</span> <span class="nc">CardGateway</span><span class="w"> </span><span class="kd">implements</span><span class="w"> </span><span class="n">PaymentGateway</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="cm">/* ... */</span><span class="w"> </span><span class="p">}</span>
+</code></pre></div>
+
+<p>Each gateway is a bean with its own name. <code>RazorpayGateway</code> is marked <code>@Primary</code>, so it is the default.</p>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="nd">@Service</span>
+<span class="kd">class</span> <span class="nc">CheckoutService</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">private</span><span class="w"> </span><span class="kd">final</span><span class="w"> </span><span class="n">PaymentGateway</span><span class="w"> </span><span class="n">defaultGateway</span><span class="p">;</span><span class="w">                    </span><span class="c1">// the @Primary one</span>
+<span class="w">    </span><span class="kd">private</span><span class="w"> </span><span class="kd">final</span><span class="w"> </span><span class="n">Map</span><span class="o">&lt;</span><span class="n">String</span><span class="p">,</span><span class="w"> </span><span class="n">PaymentGateway</span><span class="o">&gt;</span><span class="w"> </span><span class="n">gateways</span><span class="p">;</span><span class="w">              </span><span class="c1">// "razorpay" -&gt; ..., "upi" -&gt; ..., "card" -&gt; ...</span>
+
+<span class="w">    </span><span class="n">CheckoutService</span><span class="p">(</span><span class="n">PaymentGateway</span><span class="w"> </span><span class="n">defaultGateway</span><span class="p">,</span><span class="w"> </span><span class="n">Map</span><span class="o">&lt;</span><span class="n">String</span><span class="p">,</span><span class="w"> </span><span class="n">PaymentGateway</span><span class="o">&gt;</span><span class="w"> </span><span class="n">gateways</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="k">this</span><span class="p">.</span><span class="na">defaultGateway</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">defaultGateway</span><span class="p">;</span>
+<span class="w">        </span><span class="k">this</span><span class="p">.</span><span class="na">gateways</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">gateways</span><span class="p">;</span>
+<span class="w">    </span><span class="p">}</span>
+
+<span class="w">    </span><span class="n">Receipt</span><span class="w"> </span><span class="nf">pay</span><span class="p">(</span><span class="n">String</span><span class="w"> </span><span class="n">method</span><span class="p">,</span><span class="w"> </span><span class="n">Money</span><span class="w"> </span><span class="n">amount</span><span class="p">,</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="n">ref</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="n">PaymentGateway</span><span class="w"> </span><span class="n">gw</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Optional</span><span class="p">.</span><span class="na">ofNullable</span><span class="p">(</span><span class="n">gateways</span><span class="p">.</span><span class="na">get</span><span class="p">(</span><span class="n">method</span><span class="p">))</span>
+<span class="w">                </span><span class="p">.</span><span class="na">orElseThrow</span><span class="p">(()</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">IllegalArgumentException</span><span class="p">(</span><span class="s">"unsupported method "</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">method</span><span class="p">));</span>
+<span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="n">gw</span><span class="p">.</span><span class="na">pay</span><span class="p">(</span><span class="n">amount</span><span class="p">,</span><span class="w"> </span><span class="n">ref</span><span class="p">);</span><span class="w">                                   </span><span class="c1">// Strategy chosen at runtime</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+
+<span class="nd">@Service</span>
+<span class="kd">class</span> <span class="nc">Refunds</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">Refunds</span><span class="p">(</span><span class="nd">@Qualifier</span><span class="p">(</span><span class="s">"upi"</span><span class="p">)</span><span class="w"> </span><span class="n">PaymentGateway</span><span class="w"> </span><span class="n">upi</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="cm">/* explicitly the UPI one */</span><span class="w"> </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<ul>
+<li><code>CheckoutService</code> gets the <code>@Primary</code> gateway as its default.</li>
+<li>It also gets a map of all gateways, keyed by bean name. It picks one at runtime from the <code>method</code> the user chose.</li>
+<li><code>Refunds</code> asks for the UPI gateway by name with <code>@Qualifier("upi")</code>.</li>
+</ul>
+<p>Now, adding a new gateway is just one new <code>@Component</code> class. You don't edit any existing code. This is the open/closed principle (9.4) for free — open for extension, closed for modification.</p>
+<h4>When would I use it?</h4>
+<ul>
+<li><strong>Strategy registries:</strong> payment methods, notification channels, incentive rule evaluators keyed by rule type.</li>
+<li><strong>Plugin-style extension points:</strong> new behaviour is added by dropping in a new bean.</li>
+<li><strong>Environment-specific defaults:</strong> <code>@Primary</code> on the real client, and a stub (fake) under a test profile.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Two <code>@Primary</code> beans of the same type.</strong> Spring can't choose, so you get an ambiguity error.</li>
+<li><strong>Qualifier strings scattered across the code.</strong> If someone renames a bean, these strings break silently. Prefer a custom qualifier annotation, or a map keyed by a method on the interface (like <code>code()</code>).</li>
+<li><strong>Relying on parameter-name matching.</strong> It breaks easily when someone renames a parameter during refactoring.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. Two beans implement the same interface. How does Spring choose?</strong> First <code>@Primary</code>, then <code>@Qualifier</code>, then the parameter name. If none of these decides it, Spring throws NoUniqueBeanDefinitionException. If you want all of them, inject <code>List&lt;T&gt;</code> or <code>Map&lt;String, T&gt;</code>.</p>
+<p><strong>Q2. How do you implement the Strategy pattern with Spring?</strong> Make each strategy a bean that implements a common interface. Then inject <code>Map&lt;String, Strategy&gt;</code> or a <code>List</code>, and build a registry keyed by type to pick the right strategy at runtime.</p>
+<h2 id="s6-5">6.5 Bean scopes</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> Scope decides how many copies of a bean exist and how long each one lives. Most beans are one shared copy for the whole app; a few need a new copy per request or per use.</p>
+<ul>
+<li>Most beans are stateless services — they hold no per-user data. So everyone can share one instance.</li>
+<li>Some objects must exist once per request (for example, a request context).</li>
+<li>Some must be brand new each time (stateful helpers that collect data).</li>
+</ul>
+<p>Scope controls <strong>how many instances exist and how long they live</strong>.</p>
+<h4>What is happening internally?</h4>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>Scope</th>
+<th>Instances</th>
+<th>Lifecycle managed by container</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>singleton</code> (default)</td>
+<td>One per ApplicationContext, cached</td>
+<td>Full (created at startup, destroyed at shutdown)</td>
+</tr>
+<tr>
+<td><code>prototype</code></td>
+<td>A new instance on <strong>every lookup or injection</strong></td>
+<td>Creation only — no destroy callbacks</td>
+</tr>
+<tr>
+<td><code>request</code></td>
+<td>One per HTTP request (stored in request attributes)</td>
+<td>Web only</td>
+</tr>
+<tr>
+<td><code>session</code></td>
+<td>One per HTTP session</td>
+<td>Web only</td>
+</tr>
+<tr>
+<td><code>application</code></td>
+<td>One per ServletContext</td>
+<td>Web only</td>
+</tr>
+</tbody>
+</table></div>
+<p>A Spring singleton is <strong>one per container, not one per JVM</strong>. This is different from the classic GoF Singleton pattern (from the "Gang of Four" design patterns book).</p>
+<p>A singleton is shared by <strong>every request thread</strong> at the same time. So it must be <strong>stateless or thread-safe</strong>.</p>
+<p>Think of a railway enquiry counter with one clerk. Everyone talks to the same clerk. If he writes your coach number on a single shared slate, the next person can overwrite it before you read it back.</p>
+<h4>How does it work?</h4>
+<p>Suppose you inject a <strong>shorter-lived</strong> bean (request or prototype) into a singleton. The injection happens only <strong>once</strong> — when the singleton is created. After that, the singleton keeps the same object forever.</p>
+<p>To get a fresh instance each time, you need a middle step:</p>
+<ul>
+<li><strong><code>ObjectProvider&lt;T&gt;</code></strong>: call <code>getObject()</code> whenever you need a new one.</li>
+<li><strong><code>@Lookup</code> method injection</strong>: Spring overrides the method so that it fetches a fresh bean from the container.</li>
+<li><strong>A scoped proxy</strong> (<code>@Scope(value = "request", proxyMode = ScopedProxyMode.TARGET_CLASS)</code>): the singleton holds a proxy. On every call, the proxy finds the instance for the current request.</li>
+</ul>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="nd">@Component</span><span class="w"> </span><span class="nd">@Scope</span><span class="p">(</span><span class="s">"prototype"</span><span class="p">)</span>
+<span class="kd">class</span> <span class="nc">ReportBuilder</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="kd">private</span><span class="w"> </span><span class="kd">final</span><span class="w"> </span><span class="n">List</span><span class="o">&lt;</span><span class="n">String</span><span class="o">&gt;</span><span class="w"> </span><span class="n">rows</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">ArrayList</span><span class="o">&lt;&gt;</span><span class="p">();</span><span class="w"> </span><span class="kt">void</span><span class="w"> </span><span class="nf">add</span><span class="p">(</span><span class="n">String</span><span class="w"> </span><span class="n">r</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">rows</span><span class="p">.</span><span class="na">add</span><span class="p">(</span><span class="n">r</span><span class="p">);</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="p">}</span>
+
+<span class="nd">@Service</span>
+<span class="kd">class</span> <span class="nc">ReportService</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">private</span><span class="w"> </span><span class="kd">final</span><span class="w"> </span><span class="n">ObjectProvider</span><span class="o">&lt;</span><span class="n">ReportBuilder</span><span class="o">&gt;</span><span class="w"> </span><span class="n">builders</span><span class="p">;</span>
+<span class="w">    </span><span class="n">ReportService</span><span class="p">(</span><span class="n">ObjectProvider</span><span class="o">&lt;</span><span class="n">ReportBuilder</span><span class="o">&gt;</span><span class="w"> </span><span class="n">builders</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="k">this</span><span class="p">.</span><span class="na">builders</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">builders</span><span class="p">;</span><span class="w"> </span><span class="p">}</span>
+<span class="w">    </span><span class="n">String</span><span class="w"> </span><span class="nf">build</span><span class="p">(</span><span class="n">List</span><span class="o">&lt;</span><span class="n">Order</span><span class="o">&gt;</span><span class="w"> </span><span class="n">orders</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="n">ReportBuilder</span><span class="w"> </span><span class="n">b</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">builders</span><span class="p">.</span><span class="na">getObject</span><span class="p">();</span><span class="w">            </span><span class="c1">// fresh, unshared instance per call</span>
+<span class="w">        </span><span class="n">orders</span><span class="p">.</span><span class="na">forEach</span><span class="p">(</span><span class="n">o</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">b</span><span class="p">.</span><span class="na">add</span><span class="p">(</span><span class="n">o</span><span class="p">.</span><span class="na">toString</span><span class="p">()));</span>
+<span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="n">String</span><span class="p">.</span><span class="na">join</span><span class="p">(</span><span class="s">"\n"</span><span class="p">,</span><span class="w"> </span><span class="n">b</span><span class="p">.</span><span class="na">rows</span><span class="p">);</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+
+<span class="c1">// The bug: request state in a singleton</span>
+<span class="nd">@Service</span>
+<span class="kd">class</span> <span class="nc">BadPricingService</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">private</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="n">currentTenant</span><span class="p">;</span><span class="w">                           </span><span class="c1">// shared by ALL threads!</span>
+<span class="w">    </span><span class="n">Price</span><span class="w"> </span><span class="nf">price</span><span class="p">(</span><span class="n">String</span><span class="w"> </span><span class="n">tenant</span><span class="p">,</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="n">sku</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="n">currentTenant</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">tenant</span><span class="p">;</span><span class="w">                             </span><span class="c1">// thread A sets "t1", thread B sets "t2"…</span>
+<span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="n">lookup</span><span class="p">(</span><span class="n">currentTenant</span><span class="p">,</span><span class="w"> </span><span class="n">sku</span><span class="p">);</span><span class="w">                  </span><span class="c1">// …thread A may now read "t2" → wrong tenant's price</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<ul>
+<li><code>ReportService</code> gets a new <code>ReportBuilder</code> on each call through <code>ObjectProvider</code>. So two requests never share the same rows.</li>
+<li><code>BadPricingService</code> stores request data in a field of a singleton. Thread A sets the tenant to "t1". Then thread B sets it to "t2". Thread A now reads "t2" and returns the wrong tenant's price.</li>
+</ul>
+<h4>When would I use it?</h4>
+<ul>
+<li><strong>Singleton</strong> for almost all services, repositories, clients and controllers.</li>
+<li><strong>Request scope</strong> for request context objects. (Or use a ThreadLocal holder — a per-thread variable — that a filter sets.)</li>
+<li><strong>Prototype</strong> for stateful, short-lived helpers built by a factory.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Mutable fields in singletons.</strong> They cause race conditions (threads overwriting each other) and <strong>cross-tenant data leaks</strong>, as shown above.</li>
+<li><strong>Prototype beans holding resources.</strong> The container never destroys them, so you must clean them up yourself.</li>
+<li><strong>Request-scoped beans used outside a request.</strong> In async threads or scheduled jobs there is no request. So they fail with "No thread-bound request found".</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. What bean scopes exist?</strong> singleton (the default), prototype, request, session and application — plus websocket.</p>
+<p><strong>Q2. Are singleton beans thread-safe?</strong> Only if you make them so. Spring does not synchronise them. Keep them stateless, or use thread-safe fields.</p>
+<p><strong>Q3. What happens when a prototype is injected into a singleton?</strong> It is injected only once, so the singleton always uses the same instance. To get a fresh one, use ObjectProvider, @Lookup, or a scoped proxy.</p>
+<p><strong>Q4. Spring singleton vs GoF Singleton?</strong> Spring's singleton is one instance per container, so several contexts mean several instances. The GoF Singleton is one per class loader, and the class itself enforces it.</p>
+<h2 id="s6-6">6.6 Bean lifecycle and post-processors</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> Every bean goes through fixed stages: it is created, filled with its dependencies, set up, used, and finally cleaned up. Knowing these stages tells you where to put your setup and cleanup code — and when Spring adds its proxies.</p>
+<p>Beans often need two kinds of extra work:</p>
+<ul>
+<li><strong>Setup after dependencies are injected:</strong> load a rule cache, check the config, open a connection.</li>
+<li><strong>Cleanup at shutdown:</strong> flush buffers, close pools.</li>
+</ul>
+<p>Spring itself also needs hooks to add behaviour to beans. For example, it adds proxies for transactions, security and async.</p>
+<p>The lifecycle defines exactly when each of these happens.</p>
+<h4>What is happening internally?</h4>
+<div class="hl"><pre><span></span><code>1. Instantiate              constructor (constructor injection happens here)
+2. Populate properties      field / setter injection
+3. Aware callbacks          BeanNameAware, BeanFactoryAware, ApplicationContextAware
+4. BeanPostProcessor.postProcessBeforeInitialization   (all BPPs, in order)
+5. Initialisation           @PostConstruct → InitializingBean.afterPropertiesSet() → custom init-method
+6. BeanPostProcessor.postProcessAfterInitialization    ← AOP auto-proxy creator WRAPS the bean in a proxy here
+7. Ready — the PROXY (if any) is what gets stored and injected everywhere
+   ...
+8. Shutdown (singletons)    @PreDestroy → DisposableBean.destroy() → custom destroy-method
+</code></pre></div>
+
+<p>Step by step:</p>
+<ol>
+<li><strong>Instantiate.</strong> Spring calls the constructor. Constructor injection happens here.</li>
+<li><strong>Populate properties.</strong> Field and setter injection happen.</li>
+<li><strong>Aware callbacks.</strong> If the bean asks for it, Spring gives it its own name, the BeanFactory, or the ApplicationContext.</li>
+<li><strong>Before-init post-processing.</strong> Every <code>BeanPostProcessor</code> runs <code>postProcessBeforeInitialization</code>, in order.</li>
+<li><strong>Initialisation.</strong> First <code>@PostConstruct</code>, then <code>InitializingBean.afterPropertiesSet()</code>, then any custom init-method.</li>
+<li><strong>After-init post-processing.</strong> Every <code>BeanPostProcessor</code> runs <code>postProcessAfterInitialization</code>. <strong>Here the AOP auto-proxy creator wraps the bean in a proxy.</strong></li>
+<li><strong>Ready.</strong> If a proxy was made, the <strong>proxy</strong> is stored and injected everywhere — not the raw object.</li>
+<li><strong>Shutdown (singletons only).</strong> First <code>@PreDestroy</code>, then <code>DisposableBean.destroy()</code>, then any custom destroy-method.</li>
+</ol>
+<p>There are two extension points. Their names are similar, so keep them apart:</p>
+<ul>
+<li><strong>BeanFactoryPostProcessor</strong> works on the <strong>recipes</strong>.</li>
+<li>It runs <strong>before any bean is created</strong>, and it changes <strong>bean definitions</strong>.</li>
+<li>Examples: <code>PropertySourcesPlaceholderConfigurer</code> fills in <code>${...}</code> placeholders. Configuration-class processing registers more bean definitions.</li>
+<li><strong>BeanPostProcessor</strong> works on the <strong>finished objects</strong>.</li>
+<li>It runs <strong>for each bean instance</strong>, and it can change the bean or <strong>replace</strong> it completely.</li>
+<li>Examples: <code>AutowiredAnnotationBeanPostProcessor</code> does the <code>@Autowired</code> injection. <code>AnnotationAwareAspectJAutoProxyCreator</code> creates AOP proxies for <code>@Transactional</code>, <code>@Async</code>, <code>@Cacheable</code> and aspects.</li>
+</ul>
+<p>Think of a tiffin service. The BeanFactoryPostProcessor edits the menu card before anything is cooked. The BeanPostProcessor works on each packed tiffin — it can add a label, or put the box inside a bigger insulated bag (the proxy).</p>
+<h4>How does it work?</h4>
+<p>Order matters here.</p>
+<ul>
+<li>Inside a constructor or <code>@PostConstruct</code>, <code>this</code> is the raw object. It is <strong>not the proxy</strong>, because the proxy is created later, in step 6.</li>
+<li>So if you call your own <code>@Transactional</code> method from <code>@PostConstruct</code>, it runs <strong>without</strong> a transaction.</li>
+<li>Work that needs the full context and the proxies should run after startup. Use <code>ApplicationRunner</code> or <code>@EventListener(ApplicationReadyEvent.class)</code>.</li>
+</ul>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="nd">@Component</span>
+<span class="kd">class</span> <span class="nc">RuleCache</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">private</span><span class="w"> </span><span class="kd">final</span><span class="w"> </span><span class="n">RuleRepository</span><span class="w"> </span><span class="n">repo</span><span class="p">;</span>
+<span class="w">    </span><span class="kd">private</span><span class="w"> </span><span class="kd">volatile</span><span class="w"> </span><span class="n">Map</span><span class="o">&lt;</span><span class="n">String</span><span class="p">,</span><span class="w"> </span><span class="n">Rule</span><span class="o">&gt;</span><span class="w"> </span><span class="n">rules</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Map</span><span class="p">.</span><span class="na">of</span><span class="p">();</span>
+<span class="w">    </span><span class="n">RuleCache</span><span class="p">(</span><span class="n">RuleRepository</span><span class="w"> </span><span class="n">repo</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="k">this</span><span class="p">.</span><span class="na">repo</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">repo</span><span class="p">;</span><span class="w"> </span><span class="p">}</span><span class="w">        </span><span class="c1">// 1: dependencies available</span>
+
+<span class="w">    </span><span class="nd">@PostConstruct</span>
+<span class="w">    </span><span class="kt">void</span><span class="w"> </span><span class="nf">load</span><span class="p">()</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">rules</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">repo</span><span class="p">.</span><span class="na">findAllActive</span><span class="p">();</span><span class="w"> </span><span class="p">}</span><span class="w">               </span><span class="c1">// 5: safe to use injected deps</span>
+
+<span class="w">    </span><span class="nd">@PreDestroy</span>
+<span class="w">    </span><span class="kt">void</span><span class="w"> </span><span class="nf">close</span><span class="p">()</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">rules</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Map</span><span class="p">.</span><span class="na">of</span><span class="p">();</span><span class="w"> </span><span class="p">}</span><span class="w">                          </span><span class="c1">// 8: on graceful shutdown</span>
+<span class="p">}</span>
+
+<span class="nd">@Component</span>
+<span class="kd">class</span> <span class="nc">WarmUp</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">private</span><span class="w"> </span><span class="kd">final</span><span class="w"> </span><span class="n">RecommendationService</span><span class="w"> </span><span class="n">recs</span><span class="p">;</span>
+<span class="w">    </span><span class="n">WarmUp</span><span class="p">(</span><span class="n">RecommendationService</span><span class="w"> </span><span class="n">recs</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="k">this</span><span class="p">.</span><span class="na">recs</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">recs</span><span class="p">;</span><span class="w"> </span><span class="p">}</span>
+<span class="w">    </span><span class="nd">@EventListener</span><span class="p">(</span><span class="n">ApplicationReadyEvent</span><span class="p">.</span><span class="na">class</span><span class="p">)</span><span class="w">                 </span><span class="c1">// after everything (proxies, server) is ready</span>
+<span class="w">    </span><span class="kt">void</span><span class="w"> </span><span class="nf">warm</span><span class="p">()</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">recs</span><span class="p">.</span><span class="na">preloadPopularSkus</span><span class="p">();</span><span class="w"> </span><span class="p">}</span>
+<span class="p">}</span>
+
+<span class="c1">// A custom BeanPostProcessor (how frameworks add behaviour)</span>
+<span class="nd">@Component</span>
+<span class="kd">class</span> <span class="nc">TimingPostProcessor</span><span class="w"> </span><span class="kd">implements</span><span class="w"> </span><span class="n">BeanPostProcessor</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nd">@Override</span><span class="w"> </span><span class="kd">public</span><span class="w"> </span><span class="n">Object</span><span class="w"> </span><span class="nf">postProcessAfterInitialization</span><span class="p">(</span><span class="n">Object</span><span class="w"> </span><span class="n">bean</span><span class="p">,</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="n">name</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="c1">// could return a proxy wrapping 'bean' — exactly how AOP works</span>
+<span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="n">bean</span><span class="p">;</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<ul>
+<li><code>RuleCache</code> loads its rules in <code>@PostConstruct</code> (step 5), when the repository is already injected. It clears them in <code>@PreDestroy</code> (step 8).</li>
+<li><code>WarmUp</code> waits for <code>ApplicationReadyEvent</code>. At that point all proxies exist and the server is running.</li>
+<li><code>TimingPostProcessor</code> shows the hook frameworks use. It could return a proxy around <code>bean</code> instead of <code>bean</code> itself — that is exactly how AOP works.</li>
+</ul>
+<h4>When would I use it?</h4>
+<ul>
+<li><strong><code>@PostConstruct</code></strong>: cache warm-up and validation that use injected dependencies.</li>
+<li><strong><code>@PreDestroy</code></strong>: flushing and closing things.</li>
+<li><strong><code>ApplicationRunner</code></strong>: jobs that should run once at startup.</li>
+<li><strong>BeanPostProcessors</strong>: only when you write infrastructure or library code.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Heavy or slow work in constructors or <code>@PostConstruct</code>.</strong> It delays startup and readiness. And if it fails, the whole startup is aborted.</li>
+<li><strong>Expecting <code>@Transactional</code> or <code>@Async</code> to work inside <code>@PostConstruct</code>.</strong> There is no proxy yet, so they do nothing.</li>
+<li><strong><code>@PreDestroy</code> not being called.</strong> It is never called for prototype beans, or when the process is killed with <code>kill -9</code>. Enable graceful shutdown (<code>server.shutdown=graceful</code>) and handle SIGTERM (the polite stop signal) in Kubernetes.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. Describe the Spring bean lifecycle.</strong> Instantiate → inject dependencies → Aware callbacks → BPP before-init → @PostConstruct / afterPropertiesSet / init-method → BPP after-init (this is where proxies are created) → in use → @PreDestroy / destroy on shutdown.</p>
+<p><strong>Q2. BeanFactoryPostProcessor vs BeanPostProcessor?</strong> A BFPP changes bean definitions (the recipes) before any bean is created. A BPP changes or wraps each bean instance, around the time it is initialised.</p>
+<p><strong>Q3. When are AOP proxies created?</strong> In <code>postProcessAfterInitialization</code>, by the auto-proxy creator BeanPostProcessor. The proxy then replaces the raw bean in the container.</p>
+<h2 id="s6-7">6.7 Proxies and AOP: how <code>@Transactional</code>, <code>@Async</code> and <code>@Cacheable</code> really work</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> Spring puts a wrapper object (a proxy) in front of your bean. Every outside call passes through the wrapper, which adds extra work like starting a transaction. But a call from inside the bean to itself skips the wrapper — and that is the source of many Spring bugs.</p>
+<p>Some concerns cut across hundreds of methods: transactions, security checks, caching, retries, metrics and logging.</p>
+<p>If you copy-paste <code>begin/commit/rollback</code> or timing code into each method, you will make mistakes. <strong>Aspect-Oriented Programming</strong> (AOP) solves this. You write the behaviour once, and it is applied around every matching method.</p>
+<p>Spring builds AOP using <strong>proxies</strong>. Once you understand proxies, you can explain the most common Spring bugs.</p>
+<p>Think of a bank branch. You don't walk straight to the cashier. The security guard at the door checks you first, and logs you on the way out. The cashier (your real method) only does the money work.</p>
+<h4>What is happening internally?</h4>
+<p>A <strong>proxy</strong> is an object that:</p>
+<ol>
+<li>has the same type as your bean,</li>
+<li>catches each call made to it,</li>
+<li>runs <strong>advice</strong> — extra logic before, after or around the call,</li>
+<li>and passes the call on to the real object.</li>
+</ol>
+<p>There are two kinds of proxy:</p>
+<ul>
+<li><strong>JDK dynamic proxy</strong>: it implements the bean's interfaces (using <code>java.lang.reflect.Proxy</code>). Because it only implements interfaces, you can't cast it to the concrete class.</li>
+<li><strong>CGLIB proxy</strong>: it creates a <strong>subclass</strong> of your class at runtime and overrides its methods. Spring Boot uses CGLIB by default.</li>
+<li>Result: <code>final</code> classes, and <code>final</code> or <code>private</code> methods, can't be intercepted. A subclass can't override them.</li>
+</ul>
+<div class="hl"><pre><span></span><code>caller ──► [CGLIB proxy of RedemptionService]
+              TransactionInterceptor: begin tx
+              ──► real RedemptionService.redeem()
+                     └── this.audit()   ← internal call on 'this' — NOT through the proxy
+              TransactionInterceptor: commit (or rollback on RuntimeException)
+</code></pre></div>
+
+<p>In the diagram, the outside call goes through the proxy, so the transaction starts. But <code>this.audit()</code> is called on the real object directly. It never passes through the proxy.</p>
+<p>Key words you should know:</p>
+<ul>
+<li><strong>Aspect</strong>: the module that holds the cross-cutting logic.</li>
+<li><strong>Advice</strong>: the logic itself, and when it runs — <code>@Before</code>, <code>@After</code>, <code>@AfterReturning</code>, <code>@AfterThrowing</code>, <code>@Around</code>.</li>
+<li><strong>Pointcut</strong>: an expression that selects which methods get the advice.</li>
+<li><strong>Join point</strong>: one single method execution.</li>
+<li><strong>Weaving</strong>: applying aspects to code. Spring does it at runtime with proxies. AspectJ can also weave at compile time or when classes are loaded.</li>
+</ul>
+<h4>How does it work?</h4>
+<p>Only calls that <strong>come in through the proxy</strong> are intercepted.</p>
+<p>A call from inside the object (<code>this.method()</code>) goes straight to the real object and bypasses the proxy. This is the <strong>self-invocation problem</strong>.</p>
+<p>Because of it, these annotations silently stop working on the called method: <code>@Transactional</code>, <code>@Async</code>, <code>@Cacheable</code>, <code>@Retryable</code>, <code>@PreAuthorize</code>. There is no error — they just do nothing.</p>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="nd">@Service</span>
+<span class="kd">public</span><span class="w"> </span><span class="kd">class</span> <span class="nc">LedgerService</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">public</span><span class="w"> </span><span class="kt">void</span><span class="w"> </span><span class="nf">processBatch</span><span class="p">(</span><span class="n">List</span><span class="o">&lt;</span><span class="n">Txn</span><span class="o">&gt;</span><span class="w"> </span><span class="n">txns</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="k">for</span><span class="w"> </span><span class="p">(</span><span class="n">Txn</span><span class="w"> </span><span class="n">t</span><span class="w"> </span><span class="p">:</span><span class="w"> </span><span class="n">txns</span><span class="p">)</span><span class="w"> </span><span class="n">post</span><span class="p">(</span><span class="n">t</span><span class="p">);</span><span class="w">           </span><span class="c1">// this.post(t): bypasses proxy → NO new transaction per txn</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">    </span><span class="nd">@Transactional</span><span class="p">(</span><span class="n">propagation</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Propagation</span><span class="p">.</span><span class="na">REQUIRES_NEW</span><span class="p">)</span>
+<span class="w">    </span><span class="kd">public</span><span class="w"> </span><span class="kt">void</span><span class="w"> </span><span class="nf">post</span><span class="p">(</span><span class="n">Txn</span><span class="w"> </span><span class="n">t</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="cm">/* ... */</span><span class="w"> </span><span class="p">}</span>
+<span class="p">}</span>
+
+<span class="c1">// Fix 1 (cleanest): move the transactional method to another bean</span>
+<span class="nd">@Service</span><span class="w"> </span><span class="kd">class</span> <span class="nc">LedgerPoster</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nd">@Transactional</span><span class="p">(</span><span class="n">propagation</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Propagation</span><span class="p">.</span><span class="na">REQUIRES_NEW</span><span class="p">)</span><span class="w"> </span><span class="kd">public</span><span class="w"> </span><span class="kt">void</span><span class="w"> </span><span class="nf">post</span><span class="p">(</span><span class="n">Txn</span><span class="w"> </span><span class="n">t</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="p">}</span>
+<span class="nd">@Service</span><span class="w"> </span><span class="kd">class</span> <span class="nc">LedgerBatch</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">private</span><span class="w"> </span><span class="kd">final</span><span class="w"> </span><span class="n">LedgerPoster</span><span class="w"> </span><span class="n">poster</span><span class="p">;</span>
+<span class="w">    </span><span class="n">LedgerBatch</span><span class="p">(</span><span class="n">LedgerPoster</span><span class="w"> </span><span class="n">poster</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="k">this</span><span class="p">.</span><span class="na">poster</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">poster</span><span class="p">;</span><span class="w"> </span><span class="p">}</span>
+<span class="w">    </span><span class="kd">public</span><span class="w"> </span><span class="kt">void</span><span class="w"> </span><span class="nf">processBatch</span><span class="p">(</span><span class="n">List</span><span class="o">&lt;</span><span class="n">Txn</span><span class="o">&gt;</span><span class="w"> </span><span class="n">txns</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">txns</span><span class="p">.</span><span class="na">forEach</span><span class="p">(</span><span class="n">poster</span><span class="p">::</span><span class="n">post</span><span class="p">);</span><span class="w"> </span><span class="p">}</span><span class="w">   </span><span class="c1">// through the proxy</span>
+<span class="p">}</span>
+
+<span class="c1">// Fix 2: programmatic transactions</span>
+<span class="nd">@Service</span><span class="w"> </span><span class="kd">class</span> <span class="nc">LedgerBatch2</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">private</span><span class="w"> </span><span class="kd">final</span><span class="w"> </span><span class="n">TransactionTemplate</span><span class="w"> </span><span class="n">tx</span><span class="p">;</span>
+<span class="w">    </span><span class="n">LedgerBatch2</span><span class="p">(</span><span class="n">PlatformTransactionManager</span><span class="w"> </span><span class="n">tm</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="k">this</span><span class="p">.</span><span class="na">tx</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">TransactionTemplate</span><span class="p">(</span><span class="n">tm</span><span class="p">);</span><span class="w"> </span><span class="p">}</span>
+<span class="w">    </span><span class="kd">public</span><span class="w"> </span><span class="kt">void</span><span class="w"> </span><span class="nf">processBatch</span><span class="p">(</span><span class="n">List</span><span class="o">&lt;</span><span class="n">Txn</span><span class="o">&gt;</span><span class="w"> </span><span class="n">txns</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="k">for</span><span class="w"> </span><span class="p">(</span><span class="n">Txn</span><span class="w"> </span><span class="n">t</span><span class="w"> </span><span class="p">:</span><span class="w"> </span><span class="n">txns</span><span class="p">)</span><span class="w"> </span><span class="n">tx</span><span class="p">.</span><span class="na">executeWithoutResult</span><span class="p">(</span><span class="n">s</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">post</span><span class="p">(</span><span class="n">t</span><span class="p">));</span><span class="w"> </span><span class="p">}</span>
+<span class="w">    </span><span class="kd">private</span><span class="w"> </span><span class="kt">void</span><span class="w"> </span><span class="nf">post</span><span class="p">(</span><span class="n">Txn</span><span class="w"> </span><span class="n">t</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="cm">/* ... */</span><span class="w"> </span><span class="p">}</span>
+<span class="p">}</span>
+
+<span class="c1">// Writing your own aspect: time any method annotated @Timed</span>
+<span class="nd">@Retention</span><span class="p">(</span><span class="n">RetentionPolicy</span><span class="p">.</span><span class="na">RUNTIME</span><span class="p">)</span><span class="w"> </span><span class="nd">@Target</span><span class="p">(</span><span class="n">ElementType</span><span class="p">.</span><span class="na">METHOD</span><span class="p">)</span><span class="w"> </span><span class="nd">@interface</span><span class="w"> </span><span class="n">Timed</span><span class="w"> </span><span class="p">{}</span>
+
+<span class="nd">@Aspect</span><span class="w"> </span><span class="nd">@Component</span>
+<span class="kd">class</span> <span class="nc">TimingAspect</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">private</span><span class="w"> </span><span class="kd">static</span><span class="w"> </span><span class="kd">final</span><span class="w"> </span><span class="n">Logger</span><span class="w"> </span><span class="n">log</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">LoggerFactory</span><span class="p">.</span><span class="na">getLogger</span><span class="p">(</span><span class="n">TimingAspect</span><span class="p">.</span><span class="na">class</span><span class="p">);</span>
+<span class="w">    </span><span class="nd">@Around</span><span class="p">(</span><span class="s">"@annotation(com.fa.loyalty.Timed)"</span><span class="p">)</span>
+<span class="w">    </span><span class="kd">public</span><span class="w"> </span><span class="n">Object</span><span class="w"> </span><span class="nf">time</span><span class="p">(</span><span class="n">ProceedingJoinPoint</span><span class="w"> </span><span class="n">pjp</span><span class="p">)</span><span class="w"> </span><span class="kd">throws</span><span class="w"> </span><span class="n">Throwable</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="kt">long</span><span class="w"> </span><span class="n">start</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">System</span><span class="p">.</span><span class="na">nanoTime</span><span class="p">();</span>
+<span class="w">        </span><span class="k">try</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="k">return</span><span class="w"> </span><span class="n">pjp</span><span class="p">.</span><span class="na">proceed</span><span class="p">();</span><span class="w"> </span><span class="p">}</span>
+<span class="w">        </span><span class="k">finally</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">log</span><span class="p">.</span><span class="na">info</span><span class="p">(</span><span class="s">"{} took {} ms"</span><span class="p">,</span><span class="w"> </span><span class="n">pjp</span><span class="p">.</span><span class="na">getSignature</span><span class="p">().</span><span class="na">toShortString</span><span class="p">(),</span><span class="w"> </span><span class="p">(</span><span class="n">System</span><span class="p">.</span><span class="na">nanoTime</span><span class="p">()</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">start</span><span class="p">)</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="mi">1_000_000</span><span class="p">);</span><span class="w"> </span><span class="p">}</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p>What the code shows:</p>
+<ul>
+<li><strong>The bug.</strong> <code>processBatch</code> calls <code>post(t)</code> on <code>this</code>. The proxy is skipped, so there is <strong>no</strong> new transaction per transaction record.</li>
+<li><strong>Fix 1 (cleanest).</strong> Move the transactional method into another bean (<code>LedgerPoster</code>). Now the call goes through that bean's proxy.</li>
+<li><strong>Fix 2.</strong> Use programmatic transactions with <code>TransactionTemplate</code>. You start each transaction in code, so no proxy is needed.</li>
+<li><strong>Your own aspect.</strong> <code>TimingAspect</code> times any method marked <code>@Timed</code>. <code>@Around</code> wraps the call, and <code>pjp.proceed()</code> runs the real method.</li>
+</ul>
+<h4>When would I use it?</h4>
+<ul>
+<li>Use the built-in proxied annotations every day: <code>@Transactional</code>, <code>@Async</code>, <code>@Cacheable</code>, <code>@PreAuthorize</code>, <code>@Retryable</code>.</li>
+<li>Write custom aspects only for truly cross-cutting concerns: timing and metrics, audit logging, tenant checks, and idempotency guards (checks that make a repeated request safe — doing it twice has the same effect as doing it once).</li>
+<li>Keep business logic out of aspects.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Self-invocation</strong> (explained above). This is the #1 Spring interview trap.</li>
+<li><strong>Annotations on <code>private</code> or <code>final</code> methods.</strong> They are ignored, with no error at all.</li>
+<li><strong>Calling the bean before it is proxied.</strong> For example, in the constructor or in <code>@PostConstruct</code>.</li>
+<li><strong>Objects created with <code>new</code>.</strong> Spring never sees them, so they are not proxied.</li>
+<li><strong>Aspect ordering surprises.</strong> For example, is the retry inside the transaction or outside it? Set the order explicitly with <code>@Order</code>.</li>
+<li><strong>Over-broad pointcuts</strong> like <code>execution(* com..*(..))</code>. They slow everything down and make the code hard to reason about.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. How does Spring AOP work?</strong> Spring creates proxies — CGLIB subclasses or JDK interface proxies — inside a BeanPostProcessor. The proxy runs the advice around each call and then passes the call to the target bean.</p>
+<p><strong>Q2. Why doesn't <code>@Transactional</code> work when I call the method from the same class?</strong> The internal call goes through <code>this</code>, not through the proxy, so the transaction interceptor never runs. Move the method to another bean, or use TransactionTemplate.</p>
+<p><strong>Q3. JDK proxy vs CGLIB?</strong> A JDK proxy can only implement interfaces. CGLIB creates a subclass of the class, and it is Boot's default. Because it subclasses, final classes and final methods can't be advised.</p>
+<p><strong>Q4. Name the advice types.</strong> @Before, @AfterReturning, @AfterThrowing, @After (runs always, like <code>finally</code>), and @Around (wraps the call and decides whether and when to proceed).</p>
+<h2 id="s6-8">6.8 Configuration, <code>@ConfigurationProperties</code> and profiles</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> Build the app once, and change its settings from outside — through files, environment variables and secrets. The same JAR then runs on your laptop, in QA and in production.</p>
+<p>The same JAR must run in different places: on a laptop, in QA and in production. Each place has different databases, URLs, credentials and feature settings.</p>
+<p>If you hard-code these values, you must rebuild the app for every environment.</p>
+<p>Externalised configuration fixes this. You keep one artefact (one built JAR). Only the files, environment variables and secrets change.</p>
+<h4>What is happening internally?</h4>
+<p>Spring builds an <code>Environment</code> object from an ordered list of <strong>property sources</strong> (places where settings come from). If two sources set the same key, the higher one wins.</p>
+<p>Simplified order, highest first:</p>
+<ol>
+<li>Command-line arguments (<code>--server.port=9090</code>)</li>
+<li><code>SPRING_APPLICATION_JSON</code></li>
+<li>OS environment variables (<code>SPRING_DATASOURCE_URL</code>, <code>LOYALTY_REDEMPTION_MAXPOINTSPERDAY</code>). <strong>Relaxed binding</strong> maps these to normal keys — so <code>SPRING_DATASOURCE_URL</code> becomes <code>spring.datasource.url</code>.</li>
+<li>Profile-specific files: <code>application-prod.yml</code></li>
+<li><code>application.yml</code> / <code>application.properties</code></li>
+<li><code>@PropertySource</code>, then defaults</li>
+</ol>
+<p><code>@ConfigurationProperties</code> takes all properties under one prefix and loads them into a <strong>typed object</strong> at startup. A record works well for this. It also:</p>
+<ul>
+<li><strong>converts values</strong> — durations like <code>10s</code>, data sizes like <code>10MB</code>,</li>
+<li><strong>validates values</strong> — with <code>@Validated</code>.</li>
+</ul>
+<p>So bad config fails at startup, not at 2 a.m. in production.</p>
+<p><strong>Profiles</strong> (<code>spring.profiles.active=prod</code>) switch on profile-specific files, and beans marked <code>@Profile("prod")</code>.</p>
+<p>Think of a mobile phone. The phone is the same everywhere. When you change the SIM card, it picks up a different network and number. The JAR is the phone; the config is the SIM.</p>
+<h4>How does it work?</h4>
+<div class="hl"><pre><span></span><code><span class="c1"># application.yml</span>
+<span class="nt">spring</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">application.name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">loyalty-service</span>
+<span class="w">  </span><span class="nt">datasource</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">url</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">jdbc:postgresql://localhost:5432/loyalty</span>
+<span class="w">    </span><span class="nt">username</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">${DB_USER:loyalty}</span><span class="w">            </span><span class="c1"># env var with a default</span>
+<span class="w">    </span><span class="nt">password</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">${DB_PASSWORD}</span><span class="w">                </span><span class="c1"># must come from the environment/secret store</span>
+<span class="w">  </span><span class="nt">jpa.open-in-view</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span>
+<span class="nt">loyalty</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">redemption</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">max-points-per-day</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">50000</span>
+<span class="w">    </span><span class="nt">hold-timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">10m</span>
+<span class="nn">---</span>
+<span class="nt">spring.config.activate.on-profile</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">prod</span>
+<span class="nt">logging.level.root</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">WARN</span>
+</code></pre></div>
+
+<p>Key points in this file:</p>
+<ul>
+<li><code>${DB_USER:loyalty}</code> reads an environment variable, and uses <code>loyalty</code> if it is not set.</li>
+<li><code>${DB_PASSWORD}</code> has no default. It must come from the environment or a secret store.</li>
+<li>The part after <code>---</code> applies only when the <code>prod</code> profile is active.</li>
+</ul>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="nd">@ConfigurationProperties</span><span class="p">(</span><span class="n">prefix</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"loyalty.redemption"</span><span class="p">)</span>
+<span class="nd">@Validated</span>
+<span class="kd">public</span><span class="w"> </span><span class="kd">record</span> <span class="nc">RedemptionProps</span><span class="p">(</span><span class="nd">@Positive</span><span class="w"> </span><span class="kt">long</span><span class="w"> </span><span class="n">maxPointsPerDay</span><span class="p">,</span><span class="w"> </span><span class="nd">@NotNull</span><span class="w"> </span><span class="n">Duration</span><span class="w"> </span><span class="n">holdTimeout</span><span class="p">)</span><span class="w"> </span><span class="p">{}</span>
+
+<span class="nd">@SpringBootApplication</span>
+<span class="nd">@ConfigurationPropertiesScan</span>
+<span class="kd">public</span><span class="w"> </span><span class="kd">class</span> <span class="nc">LoyaltyApplication</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="p">}</span>
+
+<span class="nd">@Service</span>
+<span class="kd">class</span> <span class="nc">RedemptionLimits</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">private</span><span class="w"> </span><span class="kd">final</span><span class="w"> </span><span class="n">RedemptionProps</span><span class="w"> </span><span class="n">props</span><span class="p">;</span>
+<span class="w">    </span><span class="n">RedemptionLimits</span><span class="p">(</span><span class="n">RedemptionProps</span><span class="w"> </span><span class="n">props</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="k">this</span><span class="p">.</span><span class="na">props</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">props</span><span class="p">;</span><span class="w"> </span><span class="p">}</span>
+<span class="w">    </span><span class="kt">boolean</span><span class="w"> </span><span class="nf">allowed</span><span class="p">(</span><span class="kt">long</span><span class="w"> </span><span class="n">todaysTotal</span><span class="p">,</span><span class="w"> </span><span class="kt">long</span><span class="w"> </span><span class="n">requested</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="k">return</span><span class="w"> </span><span class="n">todaysTotal</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">requested</span><span class="w"> </span><span class="o">&lt;=</span><span class="w"> </span><span class="n">props</span><span class="p">.</span><span class="na">maxPointsPerDay</span><span class="p">();</span><span class="w"> </span><span class="p">}</span>
+<span class="p">}</span>
+
+<span class="nd">@Configuration</span>
+<span class="kd">class</span> <span class="nc">SmsConfig</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nd">@Bean</span><span class="w"> </span><span class="nd">@Profile</span><span class="p">(</span><span class="s">"!prod"</span><span class="p">)</span><span class="w"> </span><span class="n">SmsSender</span><span class="w"> </span><span class="nf">fakeSms</span><span class="p">()</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="k">return</span><span class="w"> </span><span class="p">(</span><span class="kd">to</span><span class="p">,</span><span class="w"> </span><span class="n">msg</span><span class="p">)</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">System</span><span class="p">.</span><span class="na">out</span><span class="p">.</span><span class="na">println</span><span class="p">(</span><span class="s">"SMS to "</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="kd">to</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="s">": "</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">msg</span><span class="p">);</span><span class="w"> </span><span class="p">}</span>
+<span class="w">    </span><span class="nd">@Bean</span><span class="w"> </span><span class="nd">@Profile</span><span class="p">(</span><span class="s">"prod"</span><span class="p">)</span><span class="w">  </span><span class="n">SmsSender</span><span class="w"> </span><span class="nf">realSms</span><span class="p">(</span><span class="n">GupshupProps</span><span class="w"> </span><span class="n">p</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="k">return</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">GupshupSmsSender</span><span class="p">(</span><span class="n">p</span><span class="p">);</span><span class="w"> </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<ul>
+<li><code>RedemptionProps</code> is a typed, validated record for everything under <code>loyalty.redemption</code>. A negative limit or a missing timeout stops startup.</li>
+<li><code>@ConfigurationPropertiesScan</code> tells Spring to find such records.</li>
+<li><code>SmsConfig</code> gives a fake SMS sender in every profile except <code>prod</code>, and the real Gupshup sender in <code>prod</code>.</li>
+</ul>
+<p>In Kubernetes:</p>
+<ul>
+<li><strong>Non-secret config</strong> comes through ConfigMaps — as mounted files or environment variables.</li>
+<li><strong>Secrets</strong> come through Kubernetes Secrets or Azure Key Vault. Spring Cloud Azure can load Key Vault secrets as a property source.</li>
+</ul>
+<h4>When would I use it?</h4>
+<p>For every value that changes per environment: URLs, timeouts, limits, feature flags, pool sizes and credentials.</p>
+<p>Prefer typed <code>@ConfigurationProperties</code> over many scattered <code>@Value("${...}")</code> strings.</p>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Secrets committed</strong> to <code>application.yml</code> in Git. Use environment variables or a vault instead.</li>
+<li><strong>A typo in a property name is silently ignored.</strong> This happens with <code>@Value</code> plus a default, or with properties that nothing binds to. Validated properties records catch type errors. Add the configuration processor to get IDE hints for property names.</li>
+<li><strong>Too many profiles that combine in surprising ways</strong> (<code>dev,local,kafka-off</code>). Keep only a few profiles, one per environment.</li>
+<li><strong>Different values in different pods</strong> because of a stale ConfigMap. A config change needs a rollout or a refresh mechanism to reach every pod.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. How does Spring Boot resolve a property that's defined in several places?</strong> By property-source precedence. Command-line arguments beat environment variables. Environment variables beat profile-specific files. Profile-specific files beat application.yml.</p>
+<p><strong>Q2. <code>@Value</code> vs <code>@ConfigurationProperties</code>?</strong> <code>@Value</code> injects one value at a time by its string key. <code>@ConfigurationProperties</code> loads a whole prefix into a typed object that can be validated. It is better for groups of related settings.</p>
+<p><strong>Q3. How do you manage secrets?</strong> Never in source control. Inject them through environment variables from Kubernetes Secrets, or from a vault (Azure Key Vault, HashiCorp Vault), and rotate them regularly.</p>
+<h2 id="s6-9">6.9 Auto-configuration and starters</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> Boot looks at which libraries you added and sets up the matching objects for you. If you define your own version of an object, Boot sees it and steps back.</p>
+<p>Without Boot, every app wrote the same 200 lines of setup:</p>
+<ul>
+<li>a DataSource and a connection pool,</li>
+<li>an EntityManagerFactory,</li>
+<li>a transaction manager,</li>
+<li>Jackson's ObjectMapper,</li>
+<li>the DispatcherServlet,</li>
+<li>Tomcat…</li>
+</ul>
+<p>Auto-configuration does this for you when it sees that you need it. And it <strong>steps aside</strong> the moment you define your own.</p>
+<p>Think of a hotel room. The basic things — bed, towel, kettle — are already set up when you arrive. If you bring your own kettle, housekeeping doesn't add a second one.</p>
+<h4>What is happening internally?</h4>
+<ol>
+<li><code>@EnableAutoConfiguration</code> reads a file inside each JAR on the classpath: <code>META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports</code>. It lists the candidate configuration classes. The spring-boot-autoconfigure JAR alone lists about 150.</li>
+<li>Each candidate is an <code>@AutoConfiguration</code> class. It is guarded by <strong>conditions</strong> that are checked at startup:</li>
+</ol>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>Condition</th>
+<th>The config applies when…</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>@ConditionalOnClass(DataSource.class)</code></td>
+<td>that class is on the classpath (a driver or library is present)</td>
+</tr>
+<tr>
+<td><code>@ConditionalOnMissingBean(DataSource.class)</code></td>
+<td>you haven't defined your own bean of that type</td>
+</tr>
+<tr>
+<td><code>@ConditionalOnProperty("spring.kafka.bootstrap-servers")</code></td>
+<td>a property is set (or has a given value)</td>
+</tr>
+<tr>
+<td><code>@ConditionalOnBean</code></td>
+<td>some other bean exists</td>
+</tr>
+<tr>
+<td><code>@ConditionalOnWebApplication</code></td>
+<td>it's a web app</td>
+</tr>
+</tbody>
+</table></div>
+<ol start="3">
+<li>Auto-configurations are processed <strong>after</strong> your own configuration. So <code>@ConditionalOnMissingBean</code> can already see your beans, and it backs off.</li>
+<li>Properties classes feed values into the auto-configured beans. For example, <code>DataSourceProperties</code> is bound to <code>spring.datasource.*</code>.</li>
+</ol>
+<h4>How does it work?</h4>
+<p>Here is a real chain. You add <code>spring-boot-starter-data-jpa</code> and the Postgres driver. Then:</p>
+<ol>
+<li><code>DataSourceAutoConfiguration</code> creates a HikariCP connection pool from <code>spring.datasource.*</code>.</li>
+<li><code>HibernateJpaAutoConfiguration</code> creates the EntityManagerFactory and a <code>JpaTransactionManager</code>.</li>
+<li><code>JpaRepositoriesAutoConfiguration</code> scans for repository interfaces and creates proxies for them.</li>
+</ol>
+<p>If you define your own <code>DataSource</code> bean, step 1 backs off.</p>
+<p>To debug what was configured:</p>
+<ul>
+<li>Run with <code>--debug</code>. This prints the <strong>condition evaluation report</strong>. It lists positive matches (applied) and negative matches (skipped), each with a reason.</li>
+<li>Or call the Actuator endpoint <code>/actuator/conditions</code>.</li>
+</ul>
+<p>To switch something off explicitly: <code>@SpringBootApplication(exclude = DataSourceAutoConfiguration.class)</code>.</p>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="c1">// Your own starter: shared multi-tenancy support for all services in the platform</span>
+<span class="nd">@AutoConfiguration</span>
+<span class="nd">@ConditionalOnClass</span><span class="p">(</span><span class="n">TenantResolver</span><span class="p">.</span><span class="na">class</span><span class="p">)</span>
+<span class="nd">@EnableConfigurationProperties</span><span class="p">(</span><span class="n">TenantProps</span><span class="p">.</span><span class="na">class</span><span class="p">)</span>
+<span class="kd">public</span><span class="w"> </span><span class="kd">class</span> <span class="nc">TenantAutoConfiguration</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nd">@Bean</span><span class="w"> </span><span class="nd">@ConditionalOnMissingBean</span>
+<span class="w">    </span><span class="n">TenantResolver</span><span class="w"> </span><span class="nf">tenantResolver</span><span class="p">(</span><span class="n">TenantProps</span><span class="w"> </span><span class="n">props</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="k">return</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">HeaderTenantResolver</span><span class="p">(</span><span class="n">props</span><span class="p">.</span><span class="na">header</span><span class="p">());</span><span class="w"> </span><span class="p">}</span>
+
+<span class="w">    </span><span class="nd">@Bean</span><span class="w"> </span><span class="nd">@ConditionalOnMissingBean</span>
+<span class="w">    </span><span class="n">FilterRegistrationBean</span><span class="o">&lt;</span><span class="n">TenantFilter</span><span class="o">&gt;</span><span class="w"> </span><span class="nf">tenantFilter</span><span class="p">(</span><span class="n">TenantResolver</span><span class="w"> </span><span class="n">resolver</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="kd">var</span><span class="w"> </span><span class="n">reg</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">FilterRegistrationBean</span><span class="o">&lt;&gt;</span><span class="p">(</span><span class="k">new</span><span class="w"> </span><span class="n">TenantFilter</span><span class="p">(</span><span class="n">resolver</span><span class="p">));</span>
+<span class="w">        </span><span class="n">reg</span><span class="p">.</span><span class="na">setOrder</span><span class="p">(</span><span class="n">Ordered</span><span class="p">.</span><span class="na">HIGHEST_PRECEDENCE</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="mi">10</span><span class="p">);</span>
+<span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="n">reg</span><span class="p">;</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+<span class="c1">// + one line in META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports:</span>
+<span class="c1">//   com.fa.platform.tenant.TenantAutoConfiguration</span>
+</code></pre></div>
+
+<p>This is your own starter. It gives every service on the platform the same multi-tenancy support:</p>
+<ul>
+<li>It only applies when <code>TenantResolver</code> is on the classpath.</li>
+<li>Each bean has <code>@ConditionalOnMissingBean</code>, so a service can still replace it.</li>
+<li>You register it with one line in the <code>AutoConfiguration.imports</code> file.</li>
+</ul>
+<p>A platform team publishing a "tenant starter" is a great senior-level example to mention in interviews. Every service then gets the same tenant header handling, MDC tagging (adding the tenant to every log line) and Hibernate filter.</p>
+<h4>When would I use it?</h4>
+<ul>
+<li><strong>Every day, as a user.</strong> Read the condition report when something is configured (or not configured) unexpectedly.</li>
+<li><strong>Write your own starter</strong> for conventions shared across services: tenancy, auth, log format, standard error responses.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Surprise auto-config from a transitive dependency</strong> (a library pulled in by another library). For example, Spring Security on the classpath suddenly protects every endpoint with a generated password. Or a Kafka client starts trying to connect.</li>
+<li><strong>Defining a bean with the "wrong" type or name.</strong> The auto-config doesn't recognise it, so it doesn't back off. You end up with two beans.</li>
+<li><strong>Startup failure "Failed to configure a DataSource".</strong> JPA is on the classpath, but no database URL is set.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. How does Spring Boot auto-configuration work?</strong> Starters put auto-configuration classes on the classpath, listed in <code>AutoConfiguration.imports</code>. Each class applies only if its @Conditional checks pass. It backs off if you have already defined that bean yourself.</p>
+<p><strong>Q2. How do you see why something was or wasn't auto-configured?</strong> Run with <code>--debug</code> to get the condition evaluation report, or use Actuator's <code>/conditions</code> endpoint.</p>
+<p><strong>Q3. How do you disable a specific auto-configuration?</strong> Use <code>@SpringBootApplication(exclude = …)</code> or <code>spring.autoconfigure.exclude</code> in properties. Or simply define your own bean of that type.</p>
+<h2 id="s6-10">6.10 Startup sequence and application events</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> Know what Spring does, step by step, from <code>java -jar</code> until the app is ready. And learn Spring events: one part of your app announces "this happened", and other parts react, without the two knowing about each other.</p>
+<p>Knowing what happens between <code>java -jar</code> and "Started in 4.2 seconds" helps you:</p>
+<ul>
+<li>debug startup failures,</li>
+<li>put initialisation code in the right place,</li>
+<li>make startup faster,</li>
+<li>and decouple parts of your app with events (inside one process).</li>
+</ul>
+<h4>What is happening internally?</h4>
+<ol>
+<li><code>SpringApplication.run</code> decides the app type (servlet, reactive, or none). It loads initializers and listeners.</li>
+<li>It prepares the <code>Environment</code> (property sources and profiles) and prints the banner.</li>
+<li>It creates the <code>ApplicationContext</code>.</li>
+<li><strong>Bean definition loading.</strong> Component scan, <code>@Configuration</code> processing and auto-configuration all run. These are done by BeanFactoryPostProcessors.</li>
+<li><strong>Singleton instantiation.</strong> Spring resolves the dependency graph. Beans are created, injected, initialised and proxied (by BeanPostProcessors).</li>
+<li>The embedded web server starts. The port opens.</li>
+<li><code>ApplicationStartedEvent</code> fires. Then the <code>ApplicationRunner</code> / <code>CommandLineRunner</code> beans run. Then <code>ApplicationReadyEvent</code> fires, and readiness becomes UP.</li>
+<li>On shutdown: stop accepting new traffic (graceful), destroy beans, close pools.</li>
+</ol>
+<p><strong>Application events</strong> are a publish–subscribe system inside one process.</p>
+<ul>
+<li>You call <code>ApplicationEventPublisher.publishEvent(obj)</code>.</li>
+<li>Spring calls every matching <code>@EventListener</code> method.</li>
+<li>By default this is <strong>synchronous, on the same thread</strong>. If a transaction is open, the listener runs inside that same transaction.</li>
+</ul>
+<p>Think of the announcement system at a railway station. The station master announces once, and every passenger waiting for that train reacts. He doesn't need to know who they are.</p>
+<h4>How does it work?</h4>
+<p><code>@TransactionalEventListener(phase = AFTER_COMMIT)</code> waits until the surrounding transaction commits. If the transaction rolls back, the listener is skipped.</p>
+<p>That makes it the correct place to send notifications about database changes.</p>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="kd">public</span><span class="w"> </span><span class="kd">record</span> <span class="nc">PointsRedeemed</span><span class="p">(</span><span class="n">String</span><span class="w"> </span><span class="n">accountId</span><span class="p">,</span><span class="w"> </span><span class="kt">long</span><span class="w"> </span><span class="n">points</span><span class="p">,</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="n">redemptionId</span><span class="p">)</span><span class="w"> </span><span class="p">{}</span>
+
+<span class="nd">@Service</span>
+<span class="kd">class</span> <span class="nc">RedemptionService</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">private</span><span class="w"> </span><span class="kd">final</span><span class="w"> </span><span class="n">ApplicationEventPublisher</span><span class="w"> </span><span class="n">events</span><span class="p">;</span>
+<span class="w">    </span><span class="n">RedemptionService</span><span class="p">(</span><span class="n">ApplicationEventPublisher</span><span class="w"> </span><span class="n">events</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="k">this</span><span class="p">.</span><span class="na">events</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">events</span><span class="p">;</span><span class="w"> </span><span class="p">}</span>
+<span class="w">    </span><span class="nd">@Transactional</span>
+<span class="w">    </span><span class="kd">public</span><span class="w"> </span><span class="kt">void</span><span class="w"> </span><span class="nf">redeem</span><span class="p">(</span><span class="n">String</span><span class="w"> </span><span class="n">acc</span><span class="p">,</span><span class="w"> </span><span class="kt">long</span><span class="w"> </span><span class="n">pts</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="c1">// ... debit ledger, save redemption ...</span>
+<span class="w">        </span><span class="n">events</span><span class="p">.</span><span class="na">publishEvent</span><span class="p">(</span><span class="k">new</span><span class="w"> </span><span class="n">PointsRedeemed</span><span class="p">(</span><span class="n">acc</span><span class="p">,</span><span class="w"> </span><span class="n">pts</span><span class="p">,</span><span class="w"> </span><span class="s">"R-123"</span><span class="p">));</span><span class="w">   </span><span class="c1">// listener runs only if we commit</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+
+<span class="nd">@Component</span>
+<span class="kd">class</span> <span class="nc">RedemptionNotifier</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nd">@TransactionalEventListener</span><span class="p">(</span><span class="n">phase</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">TransactionPhase</span><span class="p">.</span><span class="na">AFTER_COMMIT</span><span class="p">)</span>
+<span class="w">    </span><span class="nd">@Async</span><span class="p">(</span><span class="s">"notificationExecutor"</span><span class="p">)</span><span class="w">                                     </span><span class="c1">// don't block the request thread</span>
+<span class="w">    </span><span class="kt">void</span><span class="w"> </span><span class="nf">on</span><span class="p">(</span><span class="n">PointsRedeemed</span><span class="w"> </span><span class="n">e</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">smsSender</span><span class="p">.</span><span class="na">send</span><span class="p">(</span><span class="n">e</span><span class="p">.</span><span class="na">accountId</span><span class="p">(),</span><span class="w"> </span><span class="s">"Redeemed "</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">e</span><span class="p">.</span><span class="na">points</span><span class="p">()</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="s">" points"</span><span class="p">);</span><span class="w"> </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p>What happens here:</p>
+<ol>
+<li><code>redeem</code> runs inside a transaction and publishes <code>PointsRedeemed</code>.</li>
+<li>The listener does not run yet. It waits for the commit.</li>
+<li>If the transaction commits, the listener runs. If it rolls back, the listener never runs.</li>
+<li><code>@Async("notificationExecutor")</code> runs the SMS on another thread pool, so the request thread is not blocked.</li>
+</ol>
+<h4>When would I use it?</h4>
+<p>To separate side effects from core logic inside one service: notifications, audit, cache eviction (removing stale cache entries) and metrics.</p>
+<p>For <strong>cross-service</strong> reliability, in-process events are not enough. If the process crashes right after the commit, the in-process event is lost. When the event must reach Kafka no matter what, use the transactional <strong>outbox</strong> pattern (11.15).</p>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Synchronous listeners hurting the publisher.</strong> A slow listener slows the publisher's request. An exception in a plain <code>@EventListener</code> goes back up to the publisher and can roll back its transaction.</li>
+<li><strong><code>@TransactionalEventListener</code> with no active transaction.</strong> By default the event is silently dropped. Set <code>fallbackExecution = true</code> if you need it to run anyway.</li>
+<li><strong>Slow startup from eagerly creating heavy beans.</strong> Measure it with the <code>/actuator/startup</code> endpoint (with <code>BufferingApplicationStartup</code>). Consider lazy init for beans that aren't critical, and keep <code>@PostConstruct</code> light.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. What happens when a Spring Boot application starts?</strong> Spring prepares the environment, creates the context, and loads bean definitions (scan, config, auto-config). Then it creates the singletons, running post-processors and creating proxies. It starts the embedded server, runs the runners, and finally fires ApplicationReadyEvent.</p>
+<p><strong>Q2. Are Spring events synchronous?</strong> Yes, by default — they run on the publisher's thread. Add <code>@Async</code> to handle them asynchronously. <code>@TransactionalEventListener</code> ties delivery to a transaction phase, such as after commit.</p>
+<p><strong>Q3. Why use <code>@TransactionalEventListener(AFTER_COMMIT)</code> for notifications?</strong> So users are never told about changes that later roll back. For guaranteed delivery across services, use an outbox instead.</p>

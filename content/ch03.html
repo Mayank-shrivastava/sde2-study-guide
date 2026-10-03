@@ -1,0 +1,862 @@
+<p>Interviewers assume you know Java 17 or 21. So you must be able to:</p>
+<ul>
+<li>write streams without thinking,</li>
+<li>explain what a lambda turns into after compiling,</li>
+<li>explain records, sealed types and pattern matching.</li>
+</ul>
+<p>Virtual threads are covered in depth in 4.12.</p>
+<h2 id="s3-1">3.1 Lambdas and functional interfaces</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> A lambda is a small piece of code that you pass around like a value. You hand it to a method, and the method runs it when it needs to.</p>
+<p>Sometimes you need to pass <em>behaviour</em> to a method. For example: a comparator for sorting, a callback, or a filter rule.</p>
+<p>Before Java 8, the only way was an <em>anonymous inner class</em> — a class with no name, written inline. That meant five lines of boilerplate for one line of real logic. Each one also created an extra <code>.class</code> file.</p>
+<p>Lambdas fix this. You can pass behaviour as a short value, like <code>o -&gt; o.amount() &gt; 100</code>. This is what made streams, <code>CompletableFuture</code> and Spring's functional configuration practical to use.</p>
+<p>If you know C#, a Java lambda is like a C# lambda assigned to a <code>Func</code> or <code>Action</code> delegate.</p>
+<h4>What is happening internally?</h4>
+<p><strong>Functional interface.</strong> This is an interface with exactly one abstract method. Default methods and static methods don't count.</p>
+<ul>
+<li>A lambda is an implementation of that one method.</li>
+<li>The <em>target type</em> — the variable or parameter type the lambda is assigned to — decides which interface it becomes.</li>
+</ul>
+<p><strong>Lambdas are not anonymous inner classes.</strong> The compiler does something smarter:</p>
+<ol>
+<li>It moves the lambda body into a private hidden method. The compiler creates this method itself, so it is called a <em>synthetic</em> method (for example <code>lambda$main$0</code>).</li>
+<li>At the place where the lambda is created, it writes an <strong><code>invokedynamic</code></strong> instruction. This instruction means "work out what to do the first time this line runs".</li>
+<li>The first time the line runs, the JVM calls a helper called the <code>LambdaMetafactory</code> <em>bootstrap method</em>.</li>
+<li>The <code>LambdaMetafactory</code> generates a tiny class at runtime. This class implements the interface and simply calls the synthetic method.</li>
+<li>The JVM then links that call site permanently. Later runs skip the setup.</li>
+</ol>
+<p><strong>Capturing vs non-capturing.</strong></p>
+<ul>
+<li>A <strong>non-capturing</strong> lambda uses no outside variables. It is created once and reused as a singleton (one shared object).</li>
+<li>A <strong>capturing</strong> lambda uses outside variables. Each time, it creates a small object that holds the captured values. The JVM's <em>escape analysis</em> (a check that sees the object never leaves the method) can often remove even this allocation.</li>
+</ul>
+<p><strong>Effectively final.</strong> A local variable used inside a lambda must be <em>effectively final</em>. This means you never change it after you assign it. The reason: the lambda gets a <em>copy</em> of the value, not the variable itself.</p>
+<div class="hl"><pre><span></span><code>source:    list.forEach(x -&gt; System.out.println(x));
+bytecode:  invokedynamic accept() → LambdaMetafactory → generated Consumer class → calls lambda$0(x)
+</code></pre></div>
+
+<h4>How does it work?</h4>
+<p>Java gives you ready-made functional interfaces in <code>java.util.function</code>. Learn the shape of each one — what goes in and what comes out.</p>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>Interface</th>
+<th>Method</th>
+<th>Shape</th>
+<th>C# equivalent</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Function&lt;T,R&gt;</code></td>
+<td><code>apply</code></td>
+<td>T → R</td>
+<td><code>Func&lt;T,R&gt;</code></td>
+</tr>
+<tr>
+<td><code>BiFunction&lt;T,U,R&gt;</code></td>
+<td><code>apply</code></td>
+<td>(T,U) → R</td>
+<td><code>Func&lt;T,U,R&gt;</code></td>
+</tr>
+<tr>
+<td><code>Supplier&lt;T&gt;</code></td>
+<td><code>get</code></td>
+<td>() → T</td>
+<td><code>Func&lt;T&gt;</code></td>
+</tr>
+<tr>
+<td><code>Consumer&lt;T&gt;</code></td>
+<td><code>accept</code></td>
+<td>T → void</td>
+<td><code>Action&lt;T&gt;</code></td>
+</tr>
+<tr>
+<td><code>Predicate&lt;T&gt;</code></td>
+<td><code>test</code></td>
+<td>T → boolean</td>
+<td><code>Predicate&lt;T&gt;</code></td>
+</tr>
+<tr>
+<td><code>UnaryOperator&lt;T&gt;</code> / <code>BinaryOperator&lt;T&gt;</code></td>
+<td><code>apply</code></td>
+<td>T → T / (T,T) → T</td>
+<td></td>
+</tr>
+<tr>
+<td><code>Runnable</code> / <code>Callable&lt;V&gt;</code></td>
+<td><code>run</code> / <code>call</code></td>
+<td>() → void / () → V (may throw)</td>
+<td><code>Action</code> / <code>Func&lt;V&gt;</code></td>
+</tr>
+</tbody>
+</table></div>
+<p>There are also primitive versions, like <code>IntPredicate</code>, <code>IntFunction</code>, <code>ToLongFunction</code> and <code>IntBinaryOperator</code>. They work on <code>int</code> or <code>long</code> directly. So Java does not need to <em>box</em> each number (wrap it in an <code>Integer</code> or <code>Long</code> object). This matters in hot paths — code that runs millions of times.</p>
+<p><strong>Method references.</strong> When a lambda only calls one existing method, you can write a shorter form called a <em>method reference</em>:</p>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>Kind</th>
+<th>Reference</th>
+<th>Equivalent lambda</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Static</td>
+<td><code>Integer::parseInt</code></td>
+<td><code>s -&gt; Integer.parseInt(s)</code></td>
+</tr>
+<tr>
+<td>Bound instance</td>
+<td><code>System.out::println</code></td>
+<td><code>x -&gt; System.out.println(x)</code></td>
+</tr>
+<tr>
+<td>Unbound instance</td>
+<td><code>String::toUpperCase</code></td>
+<td><code>s -&gt; s.toUpperCase()</code></td>
+</tr>
+<tr>
+<td>Constructor</td>
+<td><code>ArrayList::new</code></td>
+<td><code>() -&gt; new ArrayList&lt;&gt;()</code></td>
+</tr>
+</tbody>
+</table></div>
+<p>"Bound" means the object is already fixed (<code>System.out</code>). "Unbound" means the object comes in as the lambda's argument.</p>
+<h4>Example</h4>
+<p>The example below shows three things:</p>
+<ul>
+<li><strong>Composition:</strong> joining small predicates and functions with <code>and</code>, <code>negate</code>, <code>compose</code> and <code>andThen</code>.</li>
+<li><strong>Your own functional interface:</strong> marked with <code>@FunctionalInterface</code>.</li>
+<li><strong>Effectively final:</strong> what happens if you change a captured variable.</li>
+</ul>
+<div class="hl"><pre><span></span><code><span class="n">Predicate</span><span class="o">&lt;</span><span class="n">Order</span><span class="o">&gt;</span><span class="w"> </span><span class="n">highValue</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">o</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">o</span><span class="p">.</span><span class="na">amount</span><span class="p">()</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="mi">10_000</span><span class="p">;</span>
+<span class="n">Predicate</span><span class="o">&lt;</span><span class="n">Order</span><span class="o">&gt;</span><span class="w"> </span><span class="n">delivered</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">o</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">o</span><span class="p">.</span><span class="na">status</span><span class="p">()</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="n">Status</span><span class="p">.</span><span class="na">DELIVERED</span><span class="p">;</span>
+<span class="n">Predicate</span><span class="o">&lt;</span><span class="n">Order</span><span class="o">&gt;</span><span class="w"> </span><span class="n">rule</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">highValue</span><span class="p">.</span><span class="na">and</span><span class="p">(</span><span class="n">delivered</span><span class="p">).</span><span class="na">negate</span><span class="p">();</span><span class="w">          </span><span class="c1">// composition</span>
+
+<span class="n">Function</span><span class="o">&lt;</span><span class="n">Long</span><span class="p">,</span><span class="w"> </span><span class="n">Long</span><span class="o">&gt;</span><span class="w"> </span><span class="n">gst</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">p</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">p</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="mi">118</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="mi">100</span><span class="p">;</span>
+<span class="n">Function</span><span class="o">&lt;</span><span class="n">Long</span><span class="p">,</span><span class="w"> </span><span class="n">Long</span><span class="o">&gt;</span><span class="w"> </span><span class="n">discount</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">p</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">p</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="mi">90</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="mi">100</span><span class="p">;</span>
+<span class="n">gst</span><span class="p">.</span><span class="na">compose</span><span class="p">(</span><span class="n">discount</span><span class="p">).</span><span class="na">apply</span><span class="p">(</span><span class="mi">1000L</span><span class="p">);</span><span class="w">     </span><span class="c1">// discount first, then gst -&gt; 1062</span>
+<span class="n">gst</span><span class="p">.</span><span class="na">andThen</span><span class="p">(</span><span class="n">discount</span><span class="p">).</span><span class="na">apply</span><span class="p">(</span><span class="mi">1000L</span><span class="p">);</span><span class="w">     </span><span class="c1">// gst first, then discount -&gt; 1062 (same here, order matters generally)</span>
+
+<span class="nd">@FunctionalInterface</span>
+<span class="kd">interface</span> <span class="nc">PointsCalculator</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="kt">long</span><span class="w"> </span><span class="nf">points</span><span class="p">(</span><span class="n">Order</span><span class="w"> </span><span class="n">o</span><span class="p">);</span><span class="w"> </span><span class="p">}</span><span class="w">                 </span><span class="c1">// your own functional interface</span>
+<span class="n">PointsCalculator</span><span class="w"> </span><span class="n">flat</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">o</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="mi">100</span><span class="p">;</span>
+
+<span class="kt">int</span><span class="w"> </span><span class="n">threshold</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">500</span><span class="p">;</span><span class="w">                     </span><span class="c1">// effectively final: captured by copy</span>
+<span class="n">Predicate</span><span class="o">&lt;</span><span class="n">Order</span><span class="o">&gt;</span><span class="w"> </span><span class="n">big</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">o</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">o</span><span class="p">.</span><span class="na">amount</span><span class="p">()</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="n">threshold</span><span class="p">;</span>
+<span class="c1">// threshold = 600;                      // compile error if uncommented: no longer effectively final</span>
+</code></pre></div>
+
+<p>Remember the order: <code>f.compose(g)</code> runs <code>g</code> first, then <code>f</code>. <code>f.andThen(g)</code> runs <code>f</code> first, then <code>g</code>.</p>
+<h4>When would I use it?</h4>
+<ul>
+<li>Comparators for sorting.</li>
+<li>Stream operations.</li>
+<li>Callbacks, such as <code>CompletableFuture.thenApply</code>.</li>
+<li>Strategy objects that are really just one function — pricing rules, validators.</li>
+<li>Spring beans of type <code>Function</code> or <code>Supplier</code>.</li>
+<li>Event handlers.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Changing a local counter inside a lambda.</strong> It won't compile. People then hack around it with <code>int[] count = {0}</code> or an <code>AtomicInteger</code>. This is usually a sign you should use a stream reduction instead, like <code>count()</code> or <code>sum()</code>.</li>
+<li><strong>Checked exceptions.</strong> <code>Function</code> cannot throw checked exceptions. So a lambda that does I/O must wrap the exception (for example in <code>UncheckedIOException</code>). Or you write your own functional interface that declares <code>throws</code>.</li>
+<li><strong>Long multi-line lambdas.</strong> They are hard to read. Stack traces also show ugly names like <code>lambda$process$7</code>. Move the logic into a named method and use a method reference.</li>
+<li><strong><code>this</code> means something different.</strong> Inside a lambda, <code>this</code> is the enclosing object (the class the lambda is written in). Inside an anonymous class, <code>this</code> is the anonymous object itself.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. What is a functional interface?</strong> It is an interface with exactly one abstract method. You can use it as the target of a lambda or a method reference. The <code>@FunctionalInterface</code> annotation makes the compiler check this rule.</p>
+<p><strong>Q2. How are lambdas implemented — are they anonymous classes?</strong> No. The compiler moves the body into a private synthetic method. The lambda object is created through <code>invokedynamic</code> and <code>LambdaMetafactory</code> the first time that line runs. Non-capturing lambdas are cached and reused as singletons.</p>
+<p><strong>Q3. Why must captured variables be effectively final?</strong> The lambda captures a copy of the value, not the variable. If you could change the variable later, the copy would be out of date. It would also invite data races when the lambda runs on another thread.</p>
+<p><strong>Q4. Function vs Supplier vs Consumer vs Predicate?</strong> <code>Function</code> takes T and returns R (T→R). <code>Supplier</code> takes nothing and returns T (()→T). <code>Consumer</code> takes T and returns nothing (T→void). <code>Predicate</code> takes T and returns a boolean (T→boolean).</p>
+<h2 id="s3-2">3.2 Streams: the pipeline model</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> A stream is a factory conveyor belt for your data. You describe the stations — filter, transform, collect — and each item travels down the belt one at a time.</p>
+<p>A normal loop mixes two things:</p>
+<ul>
+<li><em>What</em> you want — filter, transform, add up.</li>
+<li><em>How</em> to loop — indexes, temporary lists, running totals.</li>
+</ul>
+<p>Streams let you write only the <em>what</em>. You describe the data transformation as a pipeline. This gives you code that:</p>
+<ul>
+<li>is easier to read,</li>
+<li>joins together cleanly,</li>
+<li>can stop early (<em>short-circuit</em>) when it has enough,</li>
+<li>can run in parallel if needed.</li>
+</ul>
+<p>C# developers: streams are Java's version of LINQ.</p>
+<h4>What is happening internally?</h4>
+<p>A stream pipeline always has this shape: <strong>source → zero or more intermediate operations → one terminal operation</strong>.</p>
+<p><strong>Laziness.</strong> An intermediate operation (<code>filter</code>, <code>map</code>, …) <strong>does not run anything</strong>. It only returns a new pipeline stage, linked to the previous one. Nothing happens until you call the terminal operation. This is called <em>lazy evaluation</em>.</p>
+<p><strong>One element at a time.</strong> When the terminal operation runs:</p>
+<ol>
+<li>Java joins all the stages into one chain of small objects called <strong>Sinks</strong>.</li>
+<li>The source's <strong>Spliterator</strong> (the object that walks over the source data) pushes elements into this chain <strong>one at a time</strong>.</li>
+<li>Element 1 goes through filter → map → collect. Then element 2 does the same. And so on.</li>
+<li>So no temporary collection is created between stages.</li>
+</ol>
+<p><strong>Stateless vs stateful operations.</strong></p>
+<ul>
+<li><strong>Stateless</strong> operations (<code>filter</code>, <code>map</code>, <code>flatMap</code>, <code>peek</code>) look at each element on its own.</li>
+<li><strong>Stateful</strong> operations (<code>sorted</code>, <code>distinct</code>, and <code>limit</code> in parallel) must remember or hold back elements.</li>
+<li><code>sorted</code> is a <em>barrier</em>. It must collect every element before it can pass even one forward.</li>
+</ul>
+<p><strong>Short-circuiting.</strong> Some operations (<code>limit</code>, <code>findFirst</code>, <code>anyMatch</code>, <code>takeWhile</code>) stop pulling from the source as soon as they have their answer. This is why a stream can even work on an infinite source like <code>Stream.iterate</code>.</p>
+<p><strong>One use only.</strong> You can consume a stream only <strong>once</strong>. Using it again throws <code>IllegalStateException</code>.</p>
+<p>The diagram shows each element flowing down the whole pipe before the next one starts:</p>
+<div class="hl"><pre><span></span><code>orders.stream().filter(paid).map(Order::amount).limit(3).toList()
+
+element 1 ─► filter ✓ ─► map ─► limit(1/3) ─► list
+element 2 ─► filter ✗ (stops here)
+element 3 ─► filter ✓ ─► map ─► limit(2/3) ─► list
+element 4 ─► filter ✓ ─► map ─► limit(3/3) ─► list  → limit signals "done": source stops, element 5 is never read
+</code></pre></div>
+
+<h4>How does it work?</h4>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>Intermediate (lazy)</th>
+<th>Terminal (triggers execution)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>filter</code>, <code>map</code>, <code>mapToInt/Long/Obj</code>, <code>flatMap</code>, <code>distinct</code>, <code>sorted</code>, <code>peek</code>, <code>limit</code>, <code>skip</code>, <code>takeWhile</code>, <code>dropWhile</code>, <code>boxed</code></td>
+<td><code>forEach</code>, <code>collect</code>, <code>toList</code>, <code>reduce</code>, <code>count</code>, <code>min</code>, <code>max</code>, <code>sum</code>, <code>average</code>, <code>anyMatch/allMatch/noneMatch</code>, <code>findFirst/findAny</code>, <code>toArray</code></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong><code>map</code> vs <code>flatMap</code>:</strong></p>
+<ul>
+<li><code>map</code> turns each element into exactly one element. If your function returns a list, you get a <code>Stream&lt;List&lt;X&gt;&gt;</code> — a stream of lists.</li>
+<li><code>flatMap</code> turns each element into a <em>stream</em>. Then it flattens all those streams into one <code>Stream&lt;X&gt;</code>.</li>
+<li>Think of tiffin boxes. <code>map</code> gives you a row of tiffin boxes. <code>flatMap</code> opens every box and puts all the food on one plate.</li>
+</ul>
+<p><strong><code>reduce</code>:</strong> It combines all elements into one value. You give it a starting value (the <em>identity</em>) and a combining function. The function must be <em>associative</em> — grouping must not change the answer, like <code>(a+b)+c == a+(b+c)</code>. Example: <code>reduce(0, Integer::sum)</code>.</p>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="kd">record</span> <span class="nc">Txn</span><span class="p">(</span><span class="n">String</span><span class="w"> </span><span class="n">outletId</span><span class="p">,</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="n">type</span><span class="p">,</span><span class="w"> </span><span class="kt">long</span><span class="w"> </span><span class="n">points</span><span class="p">,</span><span class="w"> </span><span class="n">LocalDate</span><span class="w"> </span><span class="n">date</span><span class="p">)</span><span class="w"> </span><span class="p">{}</span>
+
+<span class="c1">// Top 5 outlets by points accrued this month</span>
+<span class="n">List</span><span class="o">&lt;</span><span class="n">Map</span><span class="p">.</span><span class="na">Entry</span><span class="o">&lt;</span><span class="n">String</span><span class="p">,</span><span class="w"> </span><span class="n">Long</span><span class="o">&gt;&gt;</span><span class="w"> </span><span class="n">top5</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">txns</span><span class="p">.</span><span class="na">stream</span><span class="p">()</span>
+<span class="w">        </span><span class="p">.</span><span class="na">filter</span><span class="p">(</span><span class="n">t</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">t</span><span class="p">.</span><span class="na">type</span><span class="p">().</span><span class="na">equals</span><span class="p">(</span><span class="s">"ACCRUAL"</span><span class="p">))</span>
+<span class="w">        </span><span class="p">.</span><span class="na">filter</span><span class="p">(</span><span class="n">t</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="o">!</span><span class="n">t</span><span class="p">.</span><span class="na">date</span><span class="p">().</span><span class="na">isBefore</span><span class="p">(</span><span class="n">LocalDate</span><span class="p">.</span><span class="na">now</span><span class="p">().</span><span class="na">withDayOfMonth</span><span class="p">(</span><span class="mi">1</span><span class="p">)))</span>
+<span class="w">        </span><span class="p">.</span><span class="na">collect</span><span class="p">(</span><span class="n">Collectors</span><span class="p">.</span><span class="na">groupingBy</span><span class="p">(</span><span class="n">Txn</span><span class="p">::</span><span class="n">outletId</span><span class="p">,</span><span class="w"> </span><span class="n">Collectors</span><span class="p">.</span><span class="na">summingLong</span><span class="p">(</span><span class="n">Txn</span><span class="p">::</span><span class="n">points</span><span class="p">)))</span>
+<span class="w">        </span><span class="p">.</span><span class="na">entrySet</span><span class="p">().</span><span class="na">stream</span><span class="p">()</span>
+<span class="w">        </span><span class="p">.</span><span class="na">sorted</span><span class="p">(</span><span class="n">Map</span><span class="p">.</span><span class="na">Entry</span><span class="p">.</span><span class="o">&lt;</span><span class="n">String</span><span class="p">,</span><span class="w"> </span><span class="n">Long</span><span class="o">&gt;</span><span class="n">comparingByValue</span><span class="p">().</span><span class="na">reversed</span><span class="p">())</span>
+<span class="w">        </span><span class="p">.</span><span class="na">limit</span><span class="p">(</span><span class="mi">5</span><span class="p">)</span>
+<span class="w">        </span><span class="p">.</span><span class="na">toList</span><span class="p">();</span>
+
+<span class="c1">// flatMap: all distinct SKUs across orders</span>
+<span class="n">Set</span><span class="o">&lt;</span><span class="n">String</span><span class="o">&gt;</span><span class="w"> </span><span class="n">skus</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">orders</span><span class="p">.</span><span class="na">stream</span><span class="p">().</span><span class="na">flatMap</span><span class="p">(</span><span class="n">o</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">o</span><span class="p">.</span><span class="na">lines</span><span class="p">().</span><span class="na">stream</span><span class="p">()).</span><span class="na">map</span><span class="p">(</span><span class="n">Line</span><span class="p">::</span><span class="n">sku</span><span class="p">).</span><span class="na">collect</span><span class="p">(</span><span class="n">Collectors</span><span class="p">.</span><span class="na">toSet</span><span class="p">());</span>
+
+<span class="c1">// Laziness proof: peek prints only for elements actually pulled</span>
+<span class="n">Stream</span><span class="p">.</span><span class="na">of</span><span class="p">(</span><span class="s">"a"</span><span class="p">,</span><span class="w"> </span><span class="s">"bb"</span><span class="p">,</span><span class="w"> </span><span class="s">"ccc"</span><span class="p">,</span><span class="w"> </span><span class="s">"dddd"</span><span class="p">)</span>
+<span class="w">      </span><span class="p">.</span><span class="na">peek</span><span class="p">(</span><span class="n">s</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">System</span><span class="p">.</span><span class="na">out</span><span class="p">.</span><span class="na">println</span><span class="p">(</span><span class="s">"saw "</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">s</span><span class="p">))</span>
+<span class="w">      </span><span class="p">.</span><span class="na">filter</span><span class="p">(</span><span class="n">s</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">s</span><span class="p">.</span><span class="na">length</span><span class="p">()</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="mi">1</span><span class="p">)</span>
+<span class="w">      </span><span class="p">.</span><span class="na">findFirst</span><span class="p">();</span><span class="w">                       </span><span class="c1">// prints "saw a", "saw bb" — then stops</span>
+
+<span class="c1">// Primitive streams avoid boxing</span>
+<span class="kt">long</span><span class="w"> </span><span class="n">total</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">txns</span><span class="p">.</span><span class="na">stream</span><span class="p">().</span><span class="na">mapToLong</span><span class="p">(</span><span class="n">Txn</span><span class="p">::</span><span class="n">points</span><span class="p">).</span><span class="na">sum</span><span class="p">();</span>
+<span class="n">IntSummaryStatistics</span><span class="w"> </span><span class="n">stats</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">IntStream</span><span class="p">.</span><span class="na">rangeClosed</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="mi">100</span><span class="p">).</span><span class="na">summaryStatistics</span><span class="p">();</span>
+</code></pre></div>
+
+<p>Look at the "laziness proof". <code>findFirst</code> gets its answer at <code>"bb"</code>. So <code>"ccc"</code> and <code>"dddd"</code> are never even read.</p>
+<h4>When would I use it?</h4>
+<p>Use streams for business data transformation:</p>
+<ul>
+<li>filtering,</li>
+<li>mapping entities to DTOs,</li>
+<li>grouping and adding up results,</li>
+<li>building lookup maps from lists,</li>
+<li>generating reports,</li>
+<li>validating collections.</li>
+</ul>
+<p>In DSA problems, a simple <code>for</code> loop is usually clearer and faster.</p>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Side effects in lambdas.</strong> For example <code>forEach(x -&gt; externalList.add(x))</code>, or changing shared state inside <code>map</code>. These break in parallel and hide what you mean. Use collectors instead.</li>
+<li><strong>Using <code>peek</code> for real logic.</strong> <code>peek</code> is meant for debugging. It may not run at all if the terminal operation can skip elements.</li>
+<li><strong>Reusing a stream</strong>, or storing a <code>Stream</code> in a field.</li>
+<li><strong>Performance.</strong> For small collections inside hot loops, streams add extra object creation and extra method calls. Measure with a profiler before you "optimise" in either direction.</li>
+<li><strong>Debugging.</strong> Stack traces through stream internals are long. Keep pipelines short and move logic into named methods.</li>
+<li><strong>Checked exceptions</strong> inside lambdas must be wrapped.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. What is lazy evaluation in streams?</strong> Intermediate operations only build the pipeline; nothing runs until a terminal operation is called. Then each element flows through all the stages, one element at a time. This allows short-circuiting and avoids temporary collections between stages.</p>
+<p><strong>Q2. Intermediate vs terminal operations?</strong> Intermediate operations return a stream and are lazy. Terminal operations produce a result or a side effect, and they start the execution.</p>
+<p><strong>Q3. map vs flatMap?</strong> <code>map</code> is one-to-one: one element in, one element out. <code>flatMap</code> maps each element to a stream and then flattens all those streams into one stream.</p>
+<p><strong>Q4. Can you reuse a stream?</strong> No. After a terminal operation the stream is consumed, and using it again throws <code>IllegalStateException</code>. Create a new stream from the source instead.</p>
+<h2 id="s3-3">3.3 Collectors and groupingBy</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> A collector is the last station on the stream's belt. It decides what box the items land in — a list, a set, a map, a count or a joined string.</p>
+<p>Most real stream code ends with collecting the results. For example:</p>
+<ul>
+<li>a list,</li>
+<li>a map by ID,</li>
+<li>a count per status,</li>
+<li>a total per outlet,</li>
+<li>a comma-separated string.</li>
+</ul>
+<p><code>Collectors</code> gives you these patterns ready-made. The official name is <em>mutable reduction</em>: you build up a result by adding into a changeable container. Because <code>Collectors</code> does this for you, you don't hand-write accumulation loops.</p>
+<h4>What is happening internally?</h4>
+<p>A <code>Collector&lt;T, A, R&gt;</code> is just four functions working together:</p>
+<ol>
+<li><strong>supplier</strong> — creates an empty mutable container of type <code>A</code> (for example a new <code>ArrayList</code>).</li>
+<li><strong>accumulator</strong> — adds one element into that container.</li>
+<li><strong>combiner</strong> — merges two containers into one. This is used in parallel streams, where each thread fills its own container.</li>
+<li><strong>finisher</strong> — converts the container <code>A</code> into the final result <code>R</code>.</li>
+</ol>
+<p><strong>How <code>groupingBy(classifier, downstream)</code> works:</strong></p>
+<ol>
+<li>It keeps a <code>Map&lt;K, A&gt;</code> — one container per key.</li>
+<li>For each element, it calculates the key using the classifier.</li>
+<li>It gets that key's container, or creates it if it is new.</li>
+<li>It adds the element into that container using the <em>downstream</em> collector.</li>
+</ol>
+<p>The downstream collector can itself be another <code>groupingBy</code>. You can nest them as deep as you like.</p>
+<p>Think of a school teacher sorting answer sheets into piles by section. The classifier is "which section?". The downstream collector is what she does with each pile — count it, total the marks, or just keep the sheets.</p>
+<h4>How does it work?</h4>
+<div class="hl"><pre><span></span><code><span class="c1">// Collectors you'll use weekly</span>
+<span class="p">.</span><span class="na">toList</span><span class="p">()</span><span class="w">                                                    </span><span class="c1">// Java 16, unmodifiable</span>
+<span class="p">.</span><span class="na">collect</span><span class="p">(</span><span class="n">Collectors</span><span class="p">.</span><span class="na">toSet</span><span class="p">())</span>
+<span class="p">.</span><span class="na">collect</span><span class="p">(</span><span class="n">Collectors</span><span class="p">.</span><span class="na">toMap</span><span class="p">(</span><span class="n">User</span><span class="p">::</span><span class="n">id</span><span class="p">,</span><span class="w"> </span><span class="n">Function</span><span class="p">.</span><span class="na">identity</span><span class="p">()))</span><span class="w">   </span><span class="c1">// throws IllegalStateException on duplicate keys!</span>
+<span class="p">.</span><span class="na">collect</span><span class="p">(</span><span class="n">Collectors</span><span class="p">.</span><span class="na">toMap</span><span class="p">(</span><span class="n">User</span><span class="p">::</span><span class="n">city</span><span class="p">,</span><span class="w"> </span><span class="n">u</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="n">Integer</span><span class="p">::</span><span class="n">sum</span><span class="p">))</span><span class="w"> </span><span class="c1">// merge function handles duplicates</span>
+<span class="p">.</span><span class="na">collect</span><span class="p">(</span><span class="n">Collectors</span><span class="p">.</span><span class="na">toMap</span><span class="p">(</span><span class="n">k</span><span class="p">,</span><span class="w"> </span><span class="n">v</span><span class="p">,</span><span class="w"> </span><span class="n">merge</span><span class="p">,</span><span class="w"> </span><span class="n">LinkedHashMap</span><span class="p">::</span><span class="k">new</span><span class="p">))</span><span class="w">  </span><span class="c1">// choose the map type</span>
+<span class="p">.</span><span class="na">collect</span><span class="p">(</span><span class="n">Collectors</span><span class="p">.</span><span class="na">groupingBy</span><span class="p">(</span><span class="n">Emp</span><span class="p">::</span><span class="n">dept</span><span class="p">))</span><span class="w">                                         </span><span class="c1">// Map&lt;Dept, List&lt;Emp&gt;&gt;</span>
+<span class="p">.</span><span class="na">collect</span><span class="p">(</span><span class="n">Collectors</span><span class="p">.</span><span class="na">groupingBy</span><span class="p">(</span><span class="n">Emp</span><span class="p">::</span><span class="n">dept</span><span class="p">,</span><span class="w"> </span><span class="n">Collectors</span><span class="p">.</span><span class="na">counting</span><span class="p">()))</span><span class="w">                  </span><span class="c1">// Map&lt;Dept, Long&gt;</span>
+<span class="p">.</span><span class="na">collect</span><span class="p">(</span><span class="n">Collectors</span><span class="p">.</span><span class="na">groupingBy</span><span class="p">(</span><span class="n">Emp</span><span class="p">::</span><span class="n">dept</span><span class="p">,</span><span class="w"> </span><span class="n">Collectors</span><span class="p">.</span><span class="na">summingDouble</span><span class="p">(</span><span class="n">Emp</span><span class="p">::</span><span class="n">salary</span><span class="p">)))</span>
+<span class="p">.</span><span class="na">collect</span><span class="p">(</span><span class="n">Collectors</span><span class="p">.</span><span class="na">groupingBy</span><span class="p">(</span><span class="n">Emp</span><span class="p">::</span><span class="n">dept</span><span class="p">,</span><span class="w"> </span><span class="n">Collectors</span><span class="p">.</span><span class="na">mapping</span><span class="p">(</span><span class="n">Emp</span><span class="p">::</span><span class="n">name</span><span class="p">,</span><span class="w"> </span><span class="n">Collectors</span><span class="p">.</span><span class="na">toList</span><span class="p">())))</span>
+<span class="p">.</span><span class="na">collect</span><span class="p">(</span><span class="n">Collectors</span><span class="p">.</span><span class="na">groupingBy</span><span class="p">(</span><span class="n">Emp</span><span class="p">::</span><span class="n">dept</span><span class="p">,</span><span class="w"> </span><span class="n">TreeMap</span><span class="p">::</span><span class="k">new</span><span class="p">,</span><span class="w"> </span><span class="n">Collectors</span><span class="p">.</span><span class="na">toList</span><span class="p">()))</span><span class="w">      </span><span class="c1">// sorted keys</span>
+<span class="p">.</span><span class="na">collect</span><span class="p">(</span><span class="n">Collectors</span><span class="p">.</span><span class="na">partitioningBy</span><span class="p">(</span><span class="n">e</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">e</span><span class="p">.</span><span class="na">salary</span><span class="p">()</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="mi">100_000</span><span class="p">))</span><span class="w">                     </span><span class="c1">// Map&lt;Boolean, List&lt;Emp&gt;&gt;</span>
+<span class="p">.</span><span class="na">collect</span><span class="p">(</span><span class="n">Collectors</span><span class="p">.</span><span class="na">joining</span><span class="p">(</span><span class="s">", "</span><span class="p">,</span><span class="w"> </span><span class="s">"["</span><span class="p">,</span><span class="w"> </span><span class="s">"]"</span><span class="p">))</span>
+<span class="p">.</span><span class="na">collect</span><span class="p">(</span><span class="n">Collectors</span><span class="p">.</span><span class="na">collectingAndThen</span><span class="p">(</span><span class="n">Collectors</span><span class="p">.</span><span class="na">toList</span><span class="p">(),</span><span class="w"> </span><span class="n">Collections</span><span class="p">::</span><span class="n">unmodifiableList</span><span class="p">))</span>
+<span class="p">.</span><span class="na">collect</span><span class="p">(</span><span class="n">Collectors</span><span class="p">.</span><span class="na">teeing</span><span class="p">(</span><span class="n">Collectors</span><span class="p">.</span><span class="na">counting</span><span class="p">(),</span><span class="w"> </span><span class="n">Collectors</span><span class="p">.</span><span class="na">summingLong</span><span class="p">(</span><span class="n">Emp</span><span class="p">::</span><span class="n">age</span><span class="p">),</span><span class="w"> </span><span class="p">(</span><span class="n">c</span><span class="p">,</span><span class="w"> </span><span class="n">s</span><span class="p">)</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">s</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">c</span><span class="p">))</span><span class="w">  </span><span class="c1">// Java 12</span>
+</code></pre></div>
+
+<p>A few notes on the list above:</p>
+<ul>
+<li><code>toMap</code> with a <em>merge function</em> (the third argument) tells Java what to do when two elements have the same key.</li>
+<li><code>teeing</code> (Java 12) sends every element to two collectors at once, then combines their two results.</li>
+</ul>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="c1">// Second-highest distinct salary</span>
+<span class="n">Optional</span><span class="o">&lt;</span><span class="n">Double</span><span class="o">&gt;</span><span class="w"> </span><span class="n">second</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">emps</span><span class="p">.</span><span class="na">stream</span><span class="p">().</span><span class="na">map</span><span class="p">(</span><span class="n">Employee</span><span class="p">::</span><span class="n">salary</span><span class="p">).</span><span class="na">distinct</span><span class="p">()</span>
+<span class="w">        </span><span class="p">.</span><span class="na">sorted</span><span class="p">(</span><span class="n">Comparator</span><span class="p">.</span><span class="na">reverseOrder</span><span class="p">()).</span><span class="na">skip</span><span class="p">(</span><span class="mi">1</span><span class="p">).</span><span class="na">findFirst</span><span class="p">();</span>
+
+<span class="c1">// Highest-paid employee per department</span>
+<span class="n">Map</span><span class="o">&lt;</span><span class="n">String</span><span class="p">,</span><span class="w"> </span><span class="n">Optional</span><span class="o">&lt;</span><span class="n">Employee</span><span class="o">&gt;&gt;</span><span class="w"> </span><span class="n">top</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">emps</span><span class="p">.</span><span class="na">stream</span><span class="p">().</span><span class="na">collect</span><span class="p">(</span><span class="n">Collectors</span><span class="p">.</span><span class="na">groupingBy</span><span class="p">(</span><span class="n">Employee</span><span class="p">::</span><span class="n">dept</span><span class="p">,</span>
+<span class="w">        </span><span class="n">Collectors</span><span class="p">.</span><span class="na">maxBy</span><span class="p">(</span><span class="n">Comparator</span><span class="p">.</span><span class="na">comparingDouble</span><span class="p">(</span><span class="n">Employee</span><span class="p">::</span><span class="n">salary</span><span class="p">))));</span>
+
+<span class="c1">// First non-repeating character (LinkedHashMap keeps first-seen order)</span>
+<span class="n">Optional</span><span class="o">&lt;</span><span class="n">Character</span><span class="o">&gt;</span><span class="w"> </span><span class="n">firstUnique</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"swiss"</span><span class="p">.</span><span class="na">chars</span><span class="p">().</span><span class="na">mapToObj</span><span class="p">(</span><span class="n">c</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="p">(</span><span class="kt">char</span><span class="p">)</span><span class="w"> </span><span class="n">c</span><span class="p">)</span>
+<span class="w">        </span><span class="p">.</span><span class="na">collect</span><span class="p">(</span><span class="n">Collectors</span><span class="p">.</span><span class="na">groupingBy</span><span class="p">(</span><span class="n">Function</span><span class="p">.</span><span class="na">identity</span><span class="p">(),</span><span class="w"> </span><span class="n">LinkedHashMap</span><span class="p">::</span><span class="k">new</span><span class="p">,</span><span class="w"> </span><span class="n">Collectors</span><span class="p">.</span><span class="na">counting</span><span class="p">()))</span>
+<span class="w">        </span><span class="p">.</span><span class="na">entrySet</span><span class="p">().</span><span class="na">stream</span><span class="p">().</span><span class="na">filter</span><span class="p">(</span><span class="n">e</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">e</span><span class="p">.</span><span class="na">getValue</span><span class="p">()</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="mi">1</span><span class="p">).</span><span class="na">map</span><span class="p">(</span><span class="n">Map</span><span class="p">.</span><span class="na">Entry</span><span class="p">::</span><span class="n">getKey</span><span class="p">).</span><span class="na">findFirst</span><span class="p">();</span><span class="w">   </span><span class="c1">// 'w'</span>
+
+<span class="c1">// Duplicates in a list</span>
+<span class="n">Set</span><span class="o">&lt;</span><span class="n">Integer</span><span class="o">&gt;</span><span class="w"> </span><span class="n">seen</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">HashSet</span><span class="o">&lt;&gt;</span><span class="p">();</span>
+<span class="n">Set</span><span class="o">&lt;</span><span class="n">Integer</span><span class="o">&gt;</span><span class="w"> </span><span class="n">dups</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">nums</span><span class="p">.</span><span class="na">stream</span><span class="p">().</span><span class="na">filter</span><span class="p">(</span><span class="n">n</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="o">!</span><span class="n">seen</span><span class="p">.</span><span class="na">add</span><span class="p">(</span><span class="n">n</span><span class="p">)).</span><span class="na">collect</span><span class="p">(</span><span class="n">Collectors</span><span class="p">.</span><span class="na">toSet</span><span class="p">());</span><span class="w">   </span><span class="c1">// sequential streams only!</span>
+
+<span class="c1">// Orders -&gt; Map&lt;customerId, totalAmount&gt;</span>
+<span class="n">Map</span><span class="o">&lt;</span><span class="n">String</span><span class="p">,</span><span class="w"> </span><span class="n">Long</span><span class="o">&gt;</span><span class="w"> </span><span class="n">totals</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">orders</span><span class="p">.</span><span class="na">stream</span><span class="p">().</span><span class="na">collect</span><span class="p">(</span><span class="n">Collectors</span><span class="p">.</span><span class="na">groupingBy</span><span class="p">(</span><span class="n">Order</span><span class="p">::</span><span class="n">customerId</span><span class="p">,</span><span class="w"> </span><span class="n">Collectors</span><span class="p">.</span><span class="na">summingLong</span><span class="p">(</span><span class="n">Order</span><span class="p">::</span><span class="n">amount</span><span class="p">)));</span>
+</code></pre></div>
+
+<p><strong>Ten exercises to do in Week 3.</strong> Four of them are answered above. Do all ten by hand:</p>
+<ol>
+<li>Words longer than 3 letters, uppercased, distinct, sorted.</li>
+<li>Second-highest salary.</li>
+<li>Highest-paid employee per department.</li>
+<li>Character frequencies.</li>
+<li>First non-repeating character.</li>
+<li>Partition numbers into even and odd.</li>
+<li>Flatten a <code>List&lt;List&lt;Integer&gt;&gt;</code> and sum it.</li>
+<li>Orders → total per customer.</li>
+<li>Duplicates in a list.</li>
+<li>Names per department, joined with commas, sorted.</li>
+</ol>
+<h4>When would I use it?</h4>
+<ul>
+<li>Building lookup maps from database results: <code>toMap(Entity::getId, identity())</code>.</li>
+<li>Dashboard numbers: counts and sums per status, per tenant.</li>
+<li>CSV export: <code>joining</code>.</li>
+<li>Splitting records into valid and invalid: <code>partitioningBy</code>.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong><code>toMap</code> throws on bad input.</strong> Duplicate keys throw <code>IllegalStateException</code>. Null values throw <code>NullPointerException</code> (NPE). So give a merge function and avoid nulls.</li>
+<li><strong><code>groupingBy</code> order is random.</strong> It returns a <code>HashMap</code>, so key order is not fixed. Pass <code>TreeMap::new</code> (sorted keys) or <code>LinkedHashMap::new</code> (insertion order) when order matters.</li>
+<li><strong>The <code>seen.add</code> trick is wrong in parallel streams.</strong> It is a <em>stateful lambda</em> — it changes shared state, and a plain <code>HashSet</code> is not thread-safe.</li>
+<li><strong>Grouping huge datasets in memory.</strong> When the data is large, do the aggregation in the database with <code>GROUP BY</code> instead.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. Why does <code>Collectors.toMap</code> throw?</strong> There are two cases. Duplicate keys without a merge function throw <code>IllegalStateException</code>. Null values throw an NPE.</p>
+<p><strong>Q2. How do you count elements per category?</strong> Use <code>groupingBy(classifier, counting())</code>.</p>
+<p><strong>Q3. groupingBy vs partitioningBy?</strong> <code>partitioningBy</code> always splits into exactly two groups, <code>true</code> and <code>false</code>, using a predicate. <code>groupingBy</code> creates as many groups as there are distinct keys.</p>
+<h2 id="s3-4">3.4 Parallel streams</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> A parallel stream splits your data into pieces and gives each piece to a different CPU core. It is like opening more billing counters when the queue is long.</p>
+<p>On a machine with many cores, a big CPU-heavy job can be split across those cores. <code>parallelStream()</code> does this for you. You don't write any thread code yourself.</p>
+<h4>What is happening internally?</h4>
+<ol>
+<li><strong>Splitting.</strong> The source's <strong>Spliterator</strong> keeps cutting the data into smaller chunks. This works well for arrays and <code>ArrayList</code>. It works badly for <code>LinkedList</code> and I/O sources, because they can't be cut in the middle cheaply.</li>
+<li><strong>Running.</strong> Each chunk becomes a task on the <strong>common ForkJoinPool</strong>. This is one thread pool shared by the whole JVM. It has (cores − 1) worker threads, plus the thread that called the stream.</li>
+<li><strong>Work stealing.</strong> When a thread finishes its own tasks, it takes ("steals") tasks from the queue of a busy thread. So no core sits idle.</li>
+<li><strong>Merging.</strong> The partial results are combined using the collector's combiner.</li>
+</ol>
+<h4>How does it work?</h4>
+<p>Splitting and merging have a cost. A parallel stream is faster only when all of these are true:</p>
+<ul>
+<li>There is a <strong>lot of data</strong> — roughly 10,000+ elements.</li>
+<li>The work per element is <strong>CPU-heavy</strong>.</li>
+<li>The source is <strong>easy to split</strong>.</li>
+<li>There is <strong>no shared mutable state</strong> (no shared variable that threads change).</li>
+<li>The operations are <strong>associative</strong> — grouping the work differently gives the same answer.</li>
+</ul>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="kt">long</span><span class="w"> </span><span class="n">primes</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">LongStream</span><span class="p">.</span><span class="na">rangeClosed</span><span class="p">(</span><span class="mi">2</span><span class="p">,</span><span class="w"> </span><span class="mi">5_000_000</span><span class="p">).</span><span class="na">parallel</span><span class="p">().</span><span class="na">filter</span><span class="p">(</span><span class="n">Primes</span><span class="p">::</span><span class="n">isPrime</span><span class="p">).</span><span class="na">count</span><span class="p">();</span><span class="w">   </span><span class="c1">// good fit</span>
+
+<span class="c1">// Bad fit: blocking I/O on the shared common pool starves everyone else in the JVM</span>
+<span class="n">orderIds</span><span class="p">.</span><span class="na">parallelStream</span><span class="p">().</span><span class="na">map</span><span class="p">(</span><span class="n">id</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">restClient</span><span class="p">.</span><span class="na">fetch</span><span class="p">(</span><span class="n">id</span><span class="p">)).</span><span class="na">toList</span><span class="p">();</span><span class="w">   </span><span class="c1">// don't</span>
+
+<span class="c1">// Wrong result: shared mutable state</span>
+<span class="n">List</span><span class="o">&lt;</span><span class="n">Integer</span><span class="o">&gt;</span><span class="w"> </span><span class="n">out</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">ArrayList</span><span class="o">&lt;&gt;</span><span class="p">();</span>
+<span class="n">IntStream</span><span class="p">.</span><span class="na">range</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="mi">10_000</span><span class="p">).</span><span class="na">parallel</span><span class="p">().</span><span class="na">forEach</span><span class="p">(</span><span class="n">out</span><span class="p">::</span><span class="n">add</span><span class="p">);</span><span class="w">   </span><span class="c1">// lost elements or ArrayIndexOutOfBoundsException</span>
+</code></pre></div>
+
+<h4>When would I use it?</h4>
+<p>Rarely in server code. It fits:</p>
+<ul>
+<li>offline batch calculations,</li>
+<li>CPU-heavy transformations over big in-memory arrays,</li>
+<li>one-off data processing jobs.</li>
+</ul>
+<p>For I/O fan-out — calling many services or URLs at once — use your own executor with <code>CompletableFuture</code>, or virtual threads (Chapter 4).</p>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>The common pool is shared by the whole JVM.</strong> This includes <code>CompletableFuture</code>s that were not given an executor. So one blocking task in it can stall unrelated code elsewhere.</li>
+<li><strong>Order-dependent operations lose most of the benefit.</strong> For example <code>findFirst</code>, <code>forEachOrdered</code> and <code>limit</code>. They force threads to wait for each other.</li>
+<li><strong>Thread-unsafe collectors or lambdas corrupt the results.</strong></li>
+<li><strong>Busy servers don't gain anything.</strong> Every request already uses a thread. So parallel streams just add fighting for CPU (<em>contention</em>) without adding speed.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. How do parallel streams work?</strong> A Spliterator splits the source into chunks. Each chunk runs as a ForkJoin task on the common pool, and idle threads use work stealing to pick up extra tasks. Finally the partial results are combined.</p>
+<p><strong>Q2. When are parallel streams a bad idea?</strong> With small data; with I/O or other blocking work; with shared mutable state; with order-dependent operations; with sources that split poorly; and inside servers, where the common pool is shared by everything.</p>
+<h2 id="s3-5">3.5 Optional</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> <code>Optional</code> is a box that may be empty. The method's return type tells the caller "check the box first", so nobody forgets.</p>
+<p>When a method returns <code>null</code>, you can't see that in its signature. Every caller must <em>remember</em> to check for null. Someone forgets, and you get a <code>NullPointerException</code>.</p>
+<p><code>Optional&lt;T&gt;</code> puts "this may be missing" right in the <strong>return type</strong>. The caller can't ignore it. They must decide what to do when the value is absent.</p>
+<p>C# developers: this is similar in spirit to nullable reference types (<code>User?</code>), but as a real wrapper object.</p>
+<h4>What is happening internally?</h4>
+<p><code>Optional</code> is a small <code>final</code> wrapper class. It holds either one value or nothing. <code>Optional.empty()</code> is one shared object (a singleton).</p>
+<p>It is a <strong>value-based class</strong>. This means its identity has no meaning. So never use <code>synchronized</code> on it, and never compare two Optionals with <code>==</code>. Use <code>equals</code> instead.</p>
+<h4>How does it work?</h4>
+<div class="hl"><pre><span></span><code><span class="n">Optional</span><span class="p">.</span><span class="na">of</span><span class="p">(</span><span class="n">x</span><span class="p">)</span><span class="w">            </span><span class="c1">// x must be non-null (NPE otherwise)</span>
+<span class="n">Optional</span><span class="p">.</span><span class="na">ofNullable</span><span class="p">(</span><span class="n">x</span><span class="p">)</span><span class="w">    </span><span class="c1">// empty if x is null</span>
+<span class="n">opt</span><span class="p">.</span><span class="na">map</span><span class="p">(</span><span class="n">f</span><span class="p">)</span><span class="w">                </span><span class="c1">// transform if present</span>
+<span class="n">opt</span><span class="p">.</span><span class="na">flatMap</span><span class="p">(</span><span class="n">f</span><span class="p">)</span><span class="w">            </span><span class="c1">// f returns Optional — avoids Optional&lt;Optional&lt;T&gt;&gt;</span>
+<span class="n">opt</span><span class="p">.</span><span class="na">filter</span><span class="p">(</span><span class="n">p</span><span class="p">)</span>
+<span class="n">opt</span><span class="p">.</span><span class="na">orElse</span><span class="p">(</span><span class="n">def</span><span class="p">)</span><span class="w">           </span><span class="c1">// def evaluated ALWAYS (eagerly)</span>
+<span class="n">opt</span><span class="p">.</span><span class="na">orElseGet</span><span class="p">(()</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">def</span><span class="p">)</span><span class="w">  </span><span class="c1">// supplier evaluated only when empty (lazy)</span>
+<span class="n">opt</span><span class="p">.</span><span class="na">orElseThrow</span><span class="p">()</span><span class="w">         </span><span class="c1">// NoSuchElementException; or orElseThrow(() -&gt; new NotFound(...))</span>
+<span class="n">opt</span><span class="p">.</span><span class="na">ifPresentOrElse</span><span class="p">(</span><span class="n">consumer</span><span class="p">,</span><span class="w"> </span><span class="n">runnable</span><span class="p">)</span>
+<span class="n">opt</span><span class="p">.</span><span class="na">stream</span><span class="p">()</span><span class="w">              </span><span class="c1">// 0 or 1 element — handy in flatMap</span>
+</code></pre></div>
+
+<p>The most important pair to remember:</p>
+<ul>
+<li><code>orElse(def)</code> — the default is calculated <strong>every time</strong> (eagerly), even when a value is present.</li>
+<li><code>orElseGet(() -&gt; def)</code> — the default is calculated <strong>only when the box is empty</strong> (lazily).</li>
+</ul>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="n">Optional</span><span class="o">&lt;</span><span class="n">User</span><span class="o">&gt;</span><span class="w"> </span><span class="n">u</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">userRepo</span><span class="p">.</span><span class="na">findById</span><span class="p">(</span><span class="n">id</span><span class="p">);</span><span class="w">      </span><span class="c1">// Spring Data returns Optional</span>
+
+<span class="n">String</span><span class="w"> </span><span class="n">city</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">u</span><span class="p">.</span><span class="na">map</span><span class="p">(</span><span class="n">User</span><span class="p">::</span><span class="n">address</span><span class="p">).</span><span class="na">map</span><span class="p">(</span><span class="n">Address</span><span class="p">::</span><span class="n">city</span><span class="p">).</span><span class="na">orElse</span><span class="p">(</span><span class="s">"UNKNOWN"</span><span class="p">);</span>
+<span class="n">User</span><span class="w"> </span><span class="n">mustExist</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">u</span><span class="p">.</span><span class="na">orElseThrow</span><span class="p">(()</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">NotFoundException</span><span class="p">(</span><span class="s">"user "</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">id</span><span class="p">));</span>
+
+<span class="c1">// orElse vs orElseGet</span>
+<span class="n">User</span><span class="w"> </span><span class="n">a</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">cache</span><span class="p">.</span><span class="na">get</span><span class="p">(</span><span class="n">id</span><span class="p">).</span><span class="na">orElse</span><span class="p">(</span><span class="n">loadFromDb</span><span class="p">(</span><span class="n">id</span><span class="p">));</span><span class="w">           </span><span class="c1">// loadFromDb runs EVERY time, even on a cache hit</span>
+<span class="n">User</span><span class="w"> </span><span class="n">b</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">cache</span><span class="p">.</span><span class="na">get</span><span class="p">(</span><span class="n">id</span><span class="p">).</span><span class="na">orElseGet</span><span class="p">(()</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">loadFromDb</span><span class="p">(</span><span class="n">id</span><span class="p">));</span><span class="w">  </span><span class="c1">// runs only on a miss</span>
+
+<span class="c1">// Flatten a list of optionals</span>
+<span class="n">List</span><span class="o">&lt;</span><span class="n">String</span><span class="o">&gt;</span><span class="w"> </span><span class="n">emails</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">users</span><span class="p">.</span><span class="na">stream</span><span class="p">().</span><span class="na">map</span><span class="p">(</span><span class="n">User</span><span class="p">::</span><span class="n">email</span><span class="p">).</span><span class="na">flatMap</span><span class="p">(</span><span class="n">Optional</span><span class="p">::</span><span class="n">stream</span><span class="p">).</span><span class="na">toList</span><span class="p">();</span>
+</code></pre></div>
+
+<h4>When would I use it?</h4>
+<p>Use it as the <strong>return type</strong> of a lookup that may find nothing. For example <code>findById</code> or <code>findFirstActiveScheme</code>.</p>
+<p>Don't use it for:</p>
+<ul>
+<li>fields,</li>
+<li>method parameters,</li>
+<li>collections. Return an empty collection instead of <code>Optional&lt;List&lt;T&gt;&gt;</code>.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Calling <code>opt.get()</code> without checking.</strong> This just swaps the NPE for a <code>NoSuchElementException</code>. Use <code>orElseThrow()</code> so the intent is clear.</li>
+<li><strong><code>orElse(expensiveCall())</code>.</strong> The expensive call runs every time, even when the value is present. Use <code>orElseGet</code>.</li>
+<li><strong><code>Optional</code> fields.</strong> <code>Optional</code> isn't <code>Serializable</code>. It also adds one extra heap object per field.</li>
+<li><strong>Returning <code>null</code> from a method declared to return <code>Optional</code>.</strong> This defeats the whole purpose.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. Why use Optional?</strong> To make "value may be absent" visible in the API signature. It forces callers to handle the empty case, so you get fewer NullPointerExceptions.</p>
+<p><strong>Q2. orElse vs orElseGet?</strong> <code>orElse</code> evaluates its argument eagerly, even when a value is present. <code>orElseGet</code> calls the supplier only when the Optional is empty.</p>
+<p><strong>Q3. Where shouldn't you use Optional?</strong> In fields, method parameters and collections, and in performance-critical inner loops.</p>
+<h2 id="s3-6">3.6 The java.time API</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> The old <code>Date</code> and <code>Calendar</code> classes were buggy and confusing. <code>java.time</code> gives you clean, safe types — one for each idea of time — so date bugs become much rarer.</p>
+<p>The old classes, <code>java.util.Date</code> and <code>Calendar</code>, had many problems:</p>
+<ul>
+<li><strong>Mutable.</strong> Anyone holding a shared date object could change it by accident.</li>
+<li><strong>Not thread-safe.</strong> <code>SimpleDateFormat</code> gives wrong results when many threads use it at once.</li>
+<li><strong>Months start from zero.</strong> January is 0, which causes off-by-one bugs.</li>
+<li><strong>Mixed concepts.</strong> They mix an exact moment in time with a calendar date.</li>
+</ul>
+<p>Our platform runs in 32+ countries. There, a date bug means wrong expiry dates, wrong reports and missed schedules. <code>java.time</code> (Java 8) fixes all of these problems.</p>
+<h4>What is happening internally?</h4>
+<p>Every class in <code>java.time</code> is <strong>immutable and thread-safe</strong>. A "change" like <code>plusDays(1)</code> never edits the object. It returns a new object instead.</p>
+<p>Each type models one clear idea:</p>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>Type</th>
+<th>Represents</th>
+<th>Example use</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Instant</code></td>
+<td>A point on the UTC timeline (seconds + nanos since epoch)</td>
+<td>Event timestamps, DB audit columns, logs</td>
+</tr>
+<tr>
+<td><code>LocalDate</code> / <code>LocalTime</code> / <code>LocalDateTime</code></td>
+<td>Wall-clock values with <strong>no zone</strong></td>
+<td>Birthdays, business dates, "store opens at 09:00"</td>
+</tr>
+<tr>
+<td><code>ZonedDateTime</code> / <code>OffsetDateTime</code></td>
+<td>Date-time with a zone / offset</td>
+<td>Scheduling in Asia/Kolkata, API payloads</td>
+</tr>
+<tr>
+<td><code>ZoneId</code></td>
+<td>A region with DST rules (<code>Asia/Kolkata</code>, <code>Europe/London</code>)</td>
+<td>Conversions</td>
+</tr>
+<tr>
+<td><code>Duration</code> / <code>Period</code></td>
+<td>Time-based amount (hours, seconds) / date-based (days, months)</td>
+<td>Timeouts / validity periods</td>
+</tr>
+<tr>
+<td><code>DateTimeFormatter</code></td>
+<td>Thread-safe formatting/parsing</td>
+<td>APIs, reports</td>
+</tr>
+<tr>
+<td><code>Clock</code></td>
+<td>Source of "now" — injectable</td>
+<td>Testable time</td>
+</tr>
+</tbody>
+</table></div>
+<p>A few terms from the table:</p>
+<ul>
+<li><strong>Epoch</strong> — the fixed starting point, 1 January 1970 UTC.</li>
+<li><strong>Wall-clock value</strong> — what a clock on the wall shows, with no idea which country it is in.</li>
+<li><strong>DST</strong> (Daylight Saving Time) — some countries move clocks one hour forward in summer and back in winter.</li>
+</ul>
+<h4>How does it work?</h4>
+<p>Follow one simple rule:</p>
+<ol>
+<li><strong>Store and calculate in UTC</strong>, using <code>Instant</code>.</li>
+<li><strong>Convert to a time zone only at the edges</strong> — in the UI, in reports, or for a user's schedule.</li>
+</ol>
+<p>For amounts of time, pick the right type:</p>
+<ul>
+<li>Use <code>Period</code> for calendar maths. Adding 1 month to 31 Jan gives 28 Feb (or 29 Feb in a leap year).</li>
+<li>Use <code>Duration</code> for exact elapsed time, like "2 seconds".</li>
+</ul>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="n">Instant</span><span class="w"> </span><span class="n">now</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Instant</span><span class="p">.</span><span class="na">now</span><span class="p">();</span>
+<span class="n">ZonedDateTime</span><span class="w"> </span><span class="n">ist</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">now</span><span class="p">.</span><span class="na">atZone</span><span class="p">(</span><span class="n">ZoneId</span><span class="p">.</span><span class="na">of</span><span class="p">(</span><span class="s">"Asia/Kolkata"</span><span class="p">));</span>
+<span class="n">LocalDate</span><span class="w"> </span><span class="n">today</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">LocalDate</span><span class="p">.</span><span class="na">now</span><span class="p">(</span><span class="n">ZoneId</span><span class="p">.</span><span class="na">of</span><span class="p">(</span><span class="s">"Asia/Kolkata"</span><span class="p">));</span>
+<span class="n">LocalDate</span><span class="w"> </span><span class="n">expiry</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">today</span><span class="p">.</span><span class="na">plusMonths</span><span class="p">(</span><span class="mi">12</span><span class="p">);</span><span class="w">                       </span><span class="c1">// points validity</span>
+<span class="kt">boolean</span><span class="w"> </span><span class="n">expired</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">LocalDate</span><span class="p">.</span><span class="na">now</span><span class="p">().</span><span class="na">isAfter</span><span class="p">(</span><span class="n">expiry</span><span class="p">);</span>
+<span class="kt">long</span><span class="w"> </span><span class="n">daysLeft</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ChronoUnit</span><span class="p">.</span><span class="na">DAYS</span><span class="p">.</span><span class="na">between</span><span class="p">(</span><span class="n">today</span><span class="p">,</span><span class="w"> </span><span class="n">expiry</span><span class="p">);</span>
+<span class="n">Duration</span><span class="w"> </span><span class="n">timeout</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Duration</span><span class="p">.</span><span class="na">ofSeconds</span><span class="p">(</span><span class="mi">2</span><span class="p">);</span>
+<span class="n">String</span><span class="w"> </span><span class="n">s</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">DateTimeFormatter</span><span class="p">.</span><span class="na">ISO_LOCAL_DATE</span><span class="p">.</span><span class="na">format</span><span class="p">(</span><span class="n">today</span><span class="p">);</span><span class="w">     </span><span class="c1">// "2026-10-05"</span>
+
+<span class="c1">// Testable time: inject a Clock instead of calling now() directly</span>
+<span class="kd">class</span> <span class="nc">ExpiryService</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">private</span><span class="w"> </span><span class="kd">final</span><span class="w"> </span><span class="n">Clock</span><span class="w"> </span><span class="n">clock</span><span class="p">;</span>
+<span class="w">    </span><span class="n">ExpiryService</span><span class="p">(</span><span class="n">Clock</span><span class="w"> </span><span class="n">clock</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="k">this</span><span class="p">.</span><span class="na">clock</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">clock</span><span class="p">;</span><span class="w"> </span><span class="p">}</span>
+<span class="w">    </span><span class="kt">boolean</span><span class="w"> </span><span class="nf">isExpired</span><span class="p">(</span><span class="n">Instant</span><span class="w"> </span><span class="n">expiresAt</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="k">return</span><span class="w"> </span><span class="n">Instant</span><span class="p">.</span><span class="na">now</span><span class="p">(</span><span class="n">clock</span><span class="p">).</span><span class="na">isAfter</span><span class="p">(</span><span class="n">expiresAt</span><span class="p">);</span><span class="w"> </span><span class="p">}</span>
+<span class="p">}</span>
+<span class="k">new</span><span class="w"> </span><span class="n">ExpiryService</span><span class="p">(</span><span class="n">Clock</span><span class="p">.</span><span class="na">fixed</span><span class="p">(</span><span class="n">Instant</span><span class="p">.</span><span class="na">parse</span><span class="p">(</span><span class="s">"2027-01-01T00:00:00Z"</span><span class="p">),</span><span class="w"> </span><span class="n">ZoneOffset</span><span class="p">.</span><span class="na">UTC</span><span class="p">));</span><span class="w">   </span><span class="c1">// deterministic tests</span>
+</code></pre></div>
+
+<p>The <code>Clock</code> trick matters for tests. If code calls <code>now()</code> directly, the answer changes every second. If you pass in a <code>Clock</code>, a test can give a fixed time. So the test gives the same result every run — it is <em>deterministic</em>.</p>
+<h4>When would I use it?</h4>
+<p>Everywhere time appears:</p>
+<ul>
+<li>expiry of points and coupons,</li>
+<li>scheduling jobs in a tenant's time zone,</li>
+<li>audit timestamps,</li>
+<li>report periods,</li>
+<li>SLAs and timeouts.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Using <code>LocalDateTime</code> for event timestamps.</strong> It has no zone. So the same value means different moments on servers in different countries. Use <code>Instant</code>.</li>
+<li><strong>Calling <code>LocalDate.now()</code> with the server's default zone.</strong> A server running in UTC will think "today" is still yesterday until 05:30 IST.</li>
+<li><strong>DST.</strong> In zones with DST, some local times don't exist, and some happen twice. India has no DST, but European tenants do.</li>
+<li><strong>Mixing with old JDBC code that uses <code>Date</code>/<code>Timestamp</code>.</strong> Convert at the boundary, for example <code>Timestamp.from(instant)</code>.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. Why is java.time better than Date/Calendar?</strong> It is immutable and thread-safe. It keeps exact instants separate from local and zoned values. Its API is clear, and its formatter is thread-safe.</p>
+<p><strong>Q2. Instant vs LocalDateTime?</strong> <code>Instant</code> is one exact moment on the UTC timeline. <code>LocalDateTime</code> is a wall-clock value with no zone, so it can mean different moments in different places.</p>
+<p><strong>Q3. How do you make time-dependent code testable?</strong> Inject a <code>Clock</code> and call <code>now(clock)</code>. In tests, pass <code>Clock.fixed(...)</code> so time does not move.</p>
+<h2 id="s3-7">3.7 Records</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> A record is a class whose only job is to carry data. You write one line, and Java writes the constructor, getters, <code>equals</code>, <code>hashCode</code> and <code>toString</code> for you.</p>
+<p>Classes that only carry data are everywhere: DTOs, events, value objects, composite keys. Each one needed:</p>
+<ul>
+<li>a constructor,</li>
+<li>getters,</li>
+<li><code>equals</code>,</li>
+<li><code>hashCode</code>,</li>
+<li><code>toString</code>.</li>
+</ul>
+<p>That is about 50 lines of boilerplate, and it is easy to get wrong (1.12). Records (Java 16) generate all of it from a one-line declaration. They are also immutable by design — the values can't change after creation.</p>
+<p>C# developers: this is the same idea as a C# <code>record</code>.</p>
+<h4>What is happening internally?</h4>
+<p>When you write <code>record Money(long paise, String currency) {}</code>, the compiler turns it into a <code>final class extends java.lang.Record</code> with:</p>
+<ul>
+<li>a <code>private final</code> field for each component,</li>
+<li>a <strong>canonical constructor</strong> — the one constructor that takes all components,</li>
+<li>accessor methods named exactly after the components (<code>paise()</code>, not <code>getPaise()</code>),</li>
+<li><code>equals</code>, <code>hashCode</code> and <code>toString</code> that use all components. These are built through <code>invokedynamic</code> and the <code>ObjectMethods</code> helper.</li>
+</ul>
+<p>What records <strong>can</strong> do:</p>
+<ul>
+<li>implement interfaces,</li>
+<li>have static fields and static methods,</li>
+<li>have extra instance methods.</li>
+</ul>
+<p>What records <strong>cannot</strong> do:</p>
+<ul>
+<li>extend another class (they already extend <code>Record</code>),</li>
+<li>declare extra instance fields.</li>
+</ul>
+<h4>How does it work?</h4>
+<p>You can add a <strong>compact constructor</strong>. It has no parameter list. It runs <em>before</em> the fields are assigned. So you use it to check inputs (validation) or to clean them up (normalisation), for example converting <code>"inr"</code> to <code>"INR"</code>.</p>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="kd">public</span><span class="w"> </span><span class="kd">record</span> <span class="nc">Money</span><span class="p">(</span><span class="kt">long</span><span class="w"> </span><span class="n">paise</span><span class="p">,</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="n">currency</span><span class="p">)</span><span class="w"> </span><span class="kd">implements</span><span class="w"> </span><span class="n">Comparable</span><span class="o">&lt;</span><span class="n">Money</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">public</span><span class="w"> </span><span class="n">Money</span><span class="w"> </span><span class="p">{</span><span class="w">                                             </span><span class="c1">// compact constructor</span>
+<span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">paise</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="mi">0</span><span class="p">)</span><span class="w"> </span><span class="k">throw</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">IllegalArgumentException</span><span class="p">(</span><span class="s">"negative amount"</span><span class="p">);</span>
+<span class="w">        </span><span class="n">currency</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Objects</span><span class="p">.</span><span class="na">requireNonNull</span><span class="p">(</span><span class="n">currency</span><span class="p">).</span><span class="na">toUpperCase</span><span class="p">();</span><span class="w">   </span><span class="c1">// normalise before assignment</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">    </span><span class="kd">public</span><span class="w"> </span><span class="kd">static</span><span class="w"> </span><span class="n">Money</span><span class="w"> </span><span class="nf">inr</span><span class="p">(</span><span class="kt">long</span><span class="w"> </span><span class="n">paise</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="k">return</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">Money</span><span class="p">(</span><span class="n">paise</span><span class="p">,</span><span class="w"> </span><span class="s">"INR"</span><span class="p">);</span><span class="w"> </span><span class="p">}</span>
+<span class="w">    </span><span class="kd">public</span><span class="w"> </span><span class="n">Money</span><span class="w"> </span><span class="nf">plus</span><span class="p">(</span><span class="n">Money</span><span class="w"> </span><span class="n">o</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="o">!</span><span class="n">currency</span><span class="p">.</span><span class="na">equals</span><span class="p">(</span><span class="n">o</span><span class="p">.</span><span class="na">currency</span><span class="p">))</span><span class="w"> </span><span class="k">throw</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">IllegalArgumentException</span><span class="p">(</span><span class="s">"currency mismatch"</span><span class="p">);</span>
+<span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">Money</span><span class="p">(</span><span class="n">paise</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">o</span><span class="p">.</span><span class="na">paise</span><span class="p">,</span><span class="w"> </span><span class="n">currency</span><span class="p">);</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">    </span><span class="nd">@Override</span><span class="w"> </span><span class="kd">public</span><span class="w"> </span><span class="kt">int</span><span class="w"> </span><span class="nf">compareTo</span><span class="p">(</span><span class="n">Money</span><span class="w"> </span><span class="n">o</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="k">return</span><span class="w"> </span><span class="n">Long</span><span class="p">.</span><span class="na">compare</span><span class="p">(</span><span class="n">paise</span><span class="p">,</span><span class="w"> </span><span class="n">o</span><span class="p">.</span><span class="na">paise</span><span class="p">);</span><span class="w"> </span><span class="p">}</span>
+<span class="p">}</span>
+
+<span class="kd">record</span> <span class="nc">OrderPlaced</span><span class="p">(</span><span class="n">String</span><span class="w"> </span><span class="n">eventId</span><span class="p">,</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="n">tenantId</span><span class="p">,</span><span class="w"> </span><span class="n">List</span><span class="o">&lt;</span><span class="n">String</span><span class="o">&gt;</span><span class="w"> </span><span class="n">skus</span><span class="p">,</span><span class="w"> </span><span class="n">Instant</span><span class="w"> </span><span class="n">at</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">OrderPlaced</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">skus</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">List</span><span class="p">.</span><span class="na">copyOf</span><span class="p">(</span><span class="n">skus</span><span class="p">);</span><span class="w"> </span><span class="p">}</span><span class="w">                  </span><span class="c1">// records are only SHALLOWLY immutable</span>
+<span class="p">}</span>
+
+<span class="n">Money</span><span class="w"> </span><span class="n">a</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Money</span><span class="p">.</span><span class="na">inr</span><span class="p">(</span><span class="mi">500</span><span class="p">),</span><span class="w"> </span><span class="n">b</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">Money</span><span class="p">(</span><span class="mi">500</span><span class="p">,</span><span class="w"> </span><span class="s">"inr"</span><span class="p">);</span>
+<span class="n">System</span><span class="p">.</span><span class="na">out</span><span class="p">.</span><span class="na">println</span><span class="p">(</span><span class="n">a</span><span class="p">.</span><span class="na">equals</span><span class="p">(</span><span class="n">b</span><span class="p">)</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="s">" "</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">a</span><span class="p">);</span><span class="w">                     </span><span class="c1">// true Money[paise=500, currency=INR]</span>
+</code></pre></div>
+
+<p>Note <code>OrderPlaced</code>. A record's fields are final, but a <code>List</code> inside it can still be changed by whoever holds it. That is what "shallowly immutable" means. <code>List.copyOf</code> makes a read-only copy, so the record is truly safe.</p>
+<h4>When would I use it?</h4>
+<ul>
+<li>API request and response DTOs.</li>
+<li>Kafka event payloads.</li>
+<li>Value objects (like <code>Money</code>).</li>
+<li>Composite map keys — a key made of two or more values.</li>
+<li>Query projections — Spring Data supports records as projections.</li>
+<li>Configuration properties — <code>@ConfigurationProperties</code> records.</li>
+<li>Returning more than one value from a method.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>JPA entities can't be records.</strong> Hibernate needs a no-arg constructor, mutable state, and the ability to create proxies (subclasses). Use records only for DTOs and projections.</li>
+<li><strong>Mutable components leak.</strong> A <code>List</code> or array inside a record can still be changed, unless you copy it in the compact constructor. Arrays have another problem: the generated <code>equals</code> compares them by reference, not by contents.</li>
+<li><strong>Every component is part of <code>equals</code>.</strong> This includes ones you may not want, like timestamps. So choose components with care.</li>
+<li><strong>Changing a record's components breaks its JSON.</strong> Its serialised form changes, which is a breaking change for clients.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. What does a record generate?</strong> Private final fields, a canonical constructor, accessor methods, and <code>equals</code>/<code>hashCode</code>/<code>toString</code> that use all components.</p>
+<p><strong>Q2. Records vs Lombok <code>@Data</code>?</strong> Records are part of the language, they are immutable, and they need no annotation processing. <code>@Data</code> generates mutable getters and setters, and it needs the Lombok library. Use records for DTOs and value objects.</p>
+<p><strong>Q3. Can a JPA entity be a record?</strong> No. JPA needs a no-arg constructor, mutable fields, and classes it can subclass to create proxies.</p>
+<h2 id="s3-8">3.8 Sealed classes and pattern matching</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> A sealed type says "these are the only possible kinds, no others". Then when you <code>switch</code> over it, the compiler can check you handled every kind — and shouts if you forget one.</p>
+<p>Some domains have a <strong>closed</strong> set of variants. For example, a payment result is Success, Declined or Pending — nothing else.</p>
+<p>With a normal open interface, the compiler can't know all the variants. So it can't check that your <code>switch</code> handles every case. When someone adds a new variant, it silently falls into <code>default</code>, and the bug ships.</p>
+<p>Two features fix this:</p>
+<ul>
+<li><strong>Sealed types</strong> make the hierarchy closed. The compiler knows the full list of subtypes.</li>
+<li><strong>Pattern matching</strong> lets you check a type and pull out its data in one step. So the compiler can verify the switch is <em>exhaustive</em> — it covers every case.</li>
+</ul>
+<p>Together they give Java <em>algebraic data types</em> — a type that is "exactly one of these fixed shapes".</p>
+<p>Think of a railway ticket status: Confirmed, RAC or Waitlisted. There is no fourth option. A sealed type lets you say that in code.</p>
+<h4>What is happening internally?</h4>
+<p><strong>Sealed declaration.</strong></p>
+<ul>
+<li><code>sealed interface PaymentResult permits Success, Declined, Pending</code> stores the allowed subclasses in the class file, in the <code>PermittedSubclasses</code> attribute.</li>
+<li>The JVM refuses to load any other subclass.</li>
+<li>Each permitted subclass must itself be <code>final</code>, <code>sealed</code> or <code>non-sealed</code>.</li>
+</ul>
+<p><strong>Pattern matching for <code>instanceof</code> (Java 16).</strong> <code>if (o instanceof Order ord)</code> checks the type and creates the variable <code>ord</code> in one go. No cast is needed.</p>
+<p><strong>Pattern matching for <code>switch</code> and record patterns (Java 21).</strong></p>
+<ul>
+<li><code>case Declined(String reason) when …</code> does three things at once:
+  1. checks the type,
+  2. <em>deconstructs</em> the record — pulls its fields out into variables,
+  3. applies a <em>guard</em> — the extra <code>when</code> condition.</li>
+<li>Pattern switches compile to <code>invokedynamic</code> with <code>SwitchBootstraps.typeSwitch</code>.</li>
+<li>Because the hierarchy is sealed, the compiler knows all the cases. So no <code>default</code> is needed.</li>
+<li>If you add a new variant, every switch that doesn't handle it becomes a <strong>compile error</strong>.</li>
+</ul>
+<h4>How does it work?</h4>
+<ol>
+<li>Declare the sealed hierarchy. Records make ideal leaves (the final concrete types).</li>
+<li>Switch over the base type, with one <code>case</code> per variant.</li>
+<li>Later, add a new variant. Every switch that doesn't cover it now fails to compile, until you handle it.</li>
+</ol>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="kd">public</span><span class="w"> </span><span class="kd">sealed</span><span class="w"> </span><span class="kd">interface</span> <span class="nc">PaymentResult</span><span class="w"> </span><span class="kd">permits</span><span class="w"> </span><span class="n">Success</span><span class="p">,</span><span class="w"> </span><span class="n">Declined</span><span class="p">,</span><span class="w"> </span><span class="n">Pending</span><span class="w"> </span><span class="p">{}</span>
+<span class="kd">public</span><span class="w"> </span><span class="kd">record</span> <span class="nc">Success</span><span class="p">(</span><span class="n">String</span><span class="w"> </span><span class="n">txnId</span><span class="p">,</span><span class="w"> </span><span class="kt">long</span><span class="w"> </span><span class="n">paise</span><span class="p">)</span><span class="w"> </span><span class="kd">implements</span><span class="w"> </span><span class="n">PaymentResult</span><span class="w"> </span><span class="p">{}</span>
+<span class="kd">public</span><span class="w"> </span><span class="kd">record</span> <span class="nc">Declined</span><span class="p">(</span><span class="n">String</span><span class="w"> </span><span class="n">reason</span><span class="p">)</span><span class="w"> </span><span class="kd">implements</span><span class="w"> </span><span class="n">PaymentResult</span><span class="w"> </span><span class="p">{}</span>
+<span class="kd">public</span><span class="w"> </span><span class="kd">record</span> <span class="nc">Pending</span><span class="p">(</span><span class="n">Instant</span><span class="w"> </span><span class="n">retryAt</span><span class="p">)</span><span class="w"> </span><span class="kd">implements</span><span class="w"> </span><span class="n">PaymentResult</span><span class="w"> </span><span class="p">{}</span>
+
+<span class="kd">static</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="nf">describe</span><span class="p">(</span><span class="n">PaymentResult</span><span class="w"> </span><span class="n">r</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="k">switch</span><span class="w"> </span><span class="p">(</span><span class="n">r</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="k">case</span><span class="w"> </span><span class="n">Success</span><span class="p">(</span><span class="n">String</span><span class="w"> </span><span class="n">txnId</span><span class="p">,</span><span class="w"> </span><span class="kt">long</span><span class="w"> </span><span class="n">paise</span><span class="p">)</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="s">"paid %d paise, txn %s"</span><span class="p">.</span><span class="na">formatted</span><span class="p">(</span><span class="n">paise</span><span class="p">,</span><span class="w"> </span><span class="n">txnId</span><span class="p">);</span>
+<span class="w">        </span><span class="k">case</span><span class="w"> </span><span class="n">Declined</span><span class="p">(</span><span class="n">String</span><span class="w"> </span><span class="n">reason</span><span class="p">)</span><span class="w"> </span><span class="n">when</span><span class="w"> </span><span class="n">reason</span><span class="p">.</span><span class="na">contains</span><span class="p">(</span><span class="s">"limit"</span><span class="p">)</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="s">"over limit — ask for another method"</span><span class="p">;</span>
+<span class="w">        </span><span class="k">case</span><span class="w"> </span><span class="n">Declined</span><span class="w"> </span><span class="n">d</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="s">"declined: "</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">d</span><span class="p">.</span><span class="na">reason</span><span class="p">();</span>
+<span class="w">        </span><span class="k">case</span><span class="w"> </span><span class="n">Pending</span><span class="p">(</span><span class="n">Instant</span><span class="w"> </span><span class="n">at</span><span class="p">)</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="s">"retry at "</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">at</span><span class="p">;</span>
+<span class="w">    </span><span class="p">};</span><span class="w">                                    </span><span class="c1">// exhaustive: no default needed</span>
+<span class="p">}</span>
+
+<span class="c1">// instanceof pattern</span>
+<span class="n">Object</span><span class="w"> </span><span class="n">payload</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">readMessage</span><span class="p">();</span>
+<span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">payload</span><span class="w"> </span><span class="k">instanceof</span><span class="w"> </span><span class="n">OrderPlaced</span><span class="w"> </span><span class="n">op</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="o">!</span><span class="n">op</span><span class="p">.</span><span class="na">skus</span><span class="p">().</span><span class="na">isEmpty</span><span class="p">())</span><span class="w"> </span><span class="n">handle</span><span class="p">(</span><span class="n">op</span><span class="p">);</span>
+</code></pre></div>
+
+<h4>When would I use it?</h4>
+<ul>
+<li>Results and errors: <code>Result = Ok | Err</code>.</li>
+<li>Domain events: <code>OrderEvent = Placed | Paid | Shipped | Cancelled</code>.</li>
+<li>State machines.</li>
+<li>Command types in a CQRS handler (CQRS = keeping write commands separate from read queries).</li>
+<li>Parsed syntax-tree (AST) nodes. The rules engine in 11.12 uses a sealed <code>Condition</code>.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Adding <code>default</code> to a sealed switch.</strong> It silently switches off the exhaustiveness check. A new variant will then fall into <code>default</code> without any compile error.</li>
+<li><strong>Placement rules across modules or packages.</strong> Permitted subclasses must be in the same module. If you are not using modules (the <em>unnamed module</em>), they must be in the same package.</li>
+<li><strong>Case order matters.</strong> Guards (<code>when</code>) are checked from top to bottom. Put specific cases before general ones. Otherwise the compiler reports a <em>dominated pattern</em> — a case that can never be reached.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. What are sealed classes for?</strong> To restrict which classes can extend a type. This makes the hierarchy closed and known to the compiler, so pattern-matching switches can be checked for exhaustiveness.</p>
+<p><strong>Q2. What does pattern matching for switch add?</strong> It allows type patterns, record deconstruction and guards (<code>when</code>) in <code>case</code> labels. The compiler also checks exhaustiveness over sealed types.</p>
+<p><strong>Q3. How does this compare to the Visitor pattern?</strong> It reaches the same goal — one operation per variant — without the boilerplate of double dispatch (the <code>accept</code>/<code>visit</code> back-and-forth calls). A new operation is just a new method with a switch.</p>
+<h2 id="s3-9">3.9 Switch expressions, <code>var</code> and text blocks</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> Three small features that make everyday code shorter and safer: a <code>switch</code> that returns a value and never falls through, <code>var</code> to skip repeating long types, and <code>"""</code> for clean multi-line strings.</p>
+<p>Each feature removes a common bug or a lot of noise:</p>
+<ul>
+<li>Old <code>switch</code> statements <em>fell through</em> to the next case when you forgot a <code>break</code>. They also couldn't return a value.</li>
+<li>Long generic types made variable declarations hard to read.</li>
+<li>Multi-line SQL or JSON strings needed <code>+</code> and <code>\n</code> everywhere.</li>
+</ul>
+<h4>What is happening internally?</h4>
+<p><strong>Switch expressions (Java 14).</strong></p>
+<ul>
+<li><code>case X -&gt;</code> arms never fall through.</li>
+<li>The whole switch <strong>yields a value</strong> — you can assign it to a variable.</li>
+<li>Inside a block arm <code>{ ... }</code>, use <code>yield</code> to return the value.</li>
+<li>The compiler checks exhaustiveness for enums and sealed types.</li>
+</ul>
+<p><strong><code>var</code> (Java 10).</strong></p>
+<ul>
+<li>The compiler works out the type of a local variable from its right-hand side. This is <em>type inference</em>, and it happens at compile time.</li>
+<li>The variable still has one fixed type. This is <strong>not</strong> dynamic typing like JavaScript.</li>
+<li>It only works for local variables that have an initial value. It doesn't work for fields, parameters or return types.</li>
+<li>C# developers: it is the same as C# <code>var</code>.</li>
+</ul>
+<p><strong>Text blocks (Java 15).</strong></p>
+<ul>
+<li>A <code>"""</code> literal can span many lines.</li>
+<li>The compiler removes the common indentation and makes line endings consistent.</li>
+<li>The result is an ordinary <code>String</code>.</li>
+</ul>
+<h4>How does it work?</h4>
+<div class="hl"><pre><span></span><code><span class="kt">int</span><span class="w"> </span><span class="n">bonus</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">switch</span><span class="w"> </span><span class="p">(</span><span class="n">tier</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">case</span><span class="w"> </span><span class="n">SILVER</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="mi">100</span><span class="p">;</span>
+<span class="w">    </span><span class="k">case</span><span class="w"> </span><span class="n">GOLD</span><span class="p">,</span><span class="w"> </span><span class="n">PLATINUM</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="mi">250</span><span class="p">;</span><span class="w">          </span><span class="c1">// multiple labels, no fall-through</span>
+<span class="p">};</span>
+<span class="n">String</span><span class="w"> </span><span class="n">label</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">switch</span><span class="w"> </span><span class="p">(</span><span class="n">code</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">case</span><span class="w"> </span><span class="mi">1</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="s">"one"</span><span class="p">;</span>
+<span class="w">    </span><span class="k">default</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">log</span><span class="p">.</span><span class="na">debug</span><span class="p">(</span><span class="s">"unknown {}"</span><span class="p">,</span><span class="w"> </span><span class="n">code</span><span class="p">);</span><span class="w"> </span><span class="kd">yield</span><span class="w"> </span><span class="s">"other"</span><span class="p">;</span><span class="w"> </span><span class="p">}</span>
+<span class="p">};</span>
+
+<span class="kd">var</span><span class="w"> </span><span class="n">byOutlet</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">HashMap</span><span class="o">&lt;</span><span class="n">String</span><span class="p">,</span><span class="w"> </span><span class="n">List</span><span class="o">&lt;</span><span class="n">Order</span><span class="o">&gt;&gt;</span><span class="p">();</span><span class="w">   </span><span class="c1">// inferred HashMap&lt;String, List&lt;Order&gt;&gt;</span>
+<span class="k">for</span><span class="w"> </span><span class="p">(</span><span class="kd">var</span><span class="w"> </span><span class="n">e</span><span class="w"> </span><span class="p">:</span><span class="w"> </span><span class="n">byOutlet</span><span class="p">.</span><span class="na">entrySet</span><span class="p">())</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="cm">/* e is Map.Entry&lt;String, List&lt;Order&gt;&gt; */</span><span class="w"> </span><span class="p">}</span>
+
+<span class="n">String</span><span class="w"> </span><span class="n">sql</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"""</span>
+<span class="s">    SELECT outlet_id, SUM(points) AS total</span>
+<span class="s">    FROM ledger_entry</span>
+<span class="s">    WHERE tenant_id = ?</span>
+<span class="s">    GROUP BY outlet_id</span>
+<span class="s">    """</span><span class="p">;</span>
+</code></pre></div>
+
+<h4>Example</h4>
+<p>See the code above. In interviews:</p>
+<ul>
+<li>write switch expressions for state machines and enum mappings,</li>
+<li>write text blocks for SQL inside <code>@Query</code> annotations.</li>
+</ul>
+<h4>When would I use it?</h4>
+<ul>
+<li><strong>Switch expressions</strong> — for any mapping over an enum or a sealed type.</li>
+<li><strong><code>var</code></strong> — when the type is obvious from the right-hand side, like <code>var list = new ArrayList&lt;Order&gt;()</code>.</li>
+<li><strong>Text blocks</strong> — for SQL, JSON test fixtures (sample data for tests) and templates.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong><code>var x = getThing();</code></strong> hides the type when it isn't obvious. This hurts readability.</li>
+<li><strong><code>var list = new ArrayList&lt;&gt;();</code></strong> infers <code>ArrayList&lt;Object&gt;</code>, because there is nothing to infer the element type from.</li>
+<li><strong>Text block whitespace.</strong> Trailing spaces at line ends are removed unless you escape them with <code>\s</code>. A closing <code>"""</code> on its own line adds a final newline.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. Is <code>var</code> dynamic typing?</strong> No. The type is inferred once, at compile time, and then it is fixed. <code>var</code> only removes the repeated type name from the declaration.</p>
+<p><strong>Q2. What does <code>yield</code> do?</strong> It returns a value from a block-style arm (<code>{ ... }</code>) of a switch expression.</p>
+<h2 id="s3-10">3.10 What else is new in Java 21</h2>
+<ul>
+<li><strong>Virtual threads</strong> — very light threads managed by the JVM, not the OS. They let you run a huge number of blocking I/O tasks at once (full section: 4.12).</li>
+<li><strong>Sequenced collections</strong> — new interfaces <code>SequencedCollection</code> and <code>SequencedMap</code>. They give the same methods everywhere: <code>getFirst()</code>, <code>getLast()</code>, <code>reversed()</code>, <code>firstEntry()</code>, <code>pollLastEntry()</code>. They work on lists, deques, <code>LinkedHashMap</code> and <code>TreeMap</code>.</li>
+<li><strong>Record patterns and pattern-matching switch</strong> — now final (no longer preview) in 21 (3.8).</li>
+<li><strong>Generational ZGC</strong> — the low-pause garbage collector, now with separate young and old generations (5.5).</li>
+<li><strong>Mention-only previews</strong> (features you can try but which may still change):</li>
+<li><em>structured concurrency</em> — start a group of tasks together and treat them as one unit;</li>
+<li><em>scoped values</em> — an immutable replacement for <code>ThreadLocal</code>;</li>
+<li><em>unnamed variables</em> <code>_</code> — final in Java 22.</li>
+<li><strong>String templates</strong> were previewed and then withdrawn. So don't mention them as a feature.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. What are the headline features of Java 21?</strong> Virtual threads; record patterns and pattern matching for switch (now final); sequenced collections; and generational ZGC. There are also previews of structured concurrency and scoped values.</p>

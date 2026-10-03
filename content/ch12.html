@@ -1,0 +1,824 @@
+<p>You already write SQL every day on SQL Server, PostgreSQL, ClickHouse and Trino. So this chapter skips the syntax basics. It focuses on what SDE2 interviews actually test:</p>
+<ul>
+<li>How the database runs a query.</li>
+<li>Why an index is used — or ignored.</li>
+<li>What happens when many transactions run at the same time.</li>
+<li>The SQL you are asked to write live: joins, window functions and CTEs (named sub-steps of a query).</li>
+</ul>
+<p>Examples use PostgreSQL syntax. Where SQL Server is different, the difference is noted.</p>
+<p>This sample schema is used in the whole chapter:</p>
+<div class="hl"><pre><span></span><code><span class="k">CREATE</span><span class="w"> </span><span class="k">TABLE</span><span class="w"> </span><span class="n">outlet</span><span class="w"> </span><span class="p">(</span><span class="n">id</span><span class="w"> </span><span class="nb">BIGINT</span><span class="w"> </span><span class="k">PRIMARY</span><span class="w"> </span><span class="k">KEY</span><span class="p">,</span><span class="w"> </span><span class="n">tenant_id</span><span class="w"> </span><span class="nb">INT</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span><span class="w"> </span><span class="n">city</span><span class="w"> </span><span class="nb">TEXT</span><span class="p">,</span><span class="w"> </span><span class="n">created_at</span><span class="w"> </span><span class="n">TIMESTAMPTZ</span><span class="p">);</span>
+<span class="k">CREATE</span><span class="w"> </span><span class="k">TABLE</span><span class="w"> </span><span class="n">rep</span><span class="w">    </span><span class="p">(</span><span class="n">id</span><span class="w"> </span><span class="nb">BIGINT</span><span class="w"> </span><span class="k">PRIMARY</span><span class="w"> </span><span class="k">KEY</span><span class="p">,</span><span class="w"> </span><span class="n">tenant_id</span><span class="w"> </span><span class="nb">INT</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span><span class="w"> </span><span class="n">name</span><span class="w"> </span><span class="nb">TEXT</span><span class="p">,</span><span class="w"> </span><span class="n">manager_id</span><span class="w"> </span><span class="nb">BIGINT</span><span class="w"> </span><span class="k">REFERENCES</span><span class="w"> </span><span class="n">rep</span><span class="p">(</span><span class="n">id</span><span class="p">));</span>
+<span class="k">CREATE</span><span class="w"> </span><span class="k">TABLE</span><span class="w"> </span><span class="n">orders</span><span class="w"> </span><span class="p">(</span><span class="n">id</span><span class="w"> </span><span class="nb">BIGINT</span><span class="w"> </span><span class="k">PRIMARY</span><span class="w"> </span><span class="k">KEY</span><span class="p">,</span><span class="w"> </span><span class="n">tenant_id</span><span class="w"> </span><span class="nb">INT</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span><span class="w"> </span><span class="n">outlet_id</span><span class="w"> </span><span class="nb">BIGINT</span><span class="w"> </span><span class="k">REFERENCES</span><span class="w"> </span><span class="n">outlet</span><span class="p">(</span><span class="n">id</span><span class="p">),</span>
+<span class="w">                     </span><span class="n">rep_id</span><span class="w"> </span><span class="nb">BIGINT</span><span class="w"> </span><span class="k">REFERENCES</span><span class="w"> </span><span class="n">rep</span><span class="p">(</span><span class="n">id</span><span class="p">),</span><span class="w"> </span><span class="n">amount</span><span class="w"> </span><span class="nb">NUMERIC</span><span class="p">(</span><span class="mi">12</span><span class="p">,</span><span class="mi">2</span><span class="p">),</span><span class="w"> </span><span class="n">status</span><span class="w"> </span><span class="nb">TEXT</span><span class="p">,</span><span class="w"> </span><span class="n">created_at</span><span class="w"> </span><span class="n">TIMESTAMPTZ</span><span class="p">);</span>
+</code></pre></div>
+
+<h2 id="s12-1">12.1 Joins and how the engine executes them</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> A join stitches rows from two tables together using a matching column. Picking the right join gives the right answer. Knowing how the database runs the join tells you why the same query is fast today and slow tomorrow.</p>
+<p>Real questions almost always need more than one table. For example:</p>
+<ul>
+<li>"Outlets that never placed an order."</li>
+<li>"Each rep with their manager."</li>
+<li>"Revenue per city."</li>
+</ul>
+<p>If you choose the right join type, you get the correct answer. If you also know how the engine <em>executes</em> the join, you can explain performance changes. The same query can be fast one day and slow the next, because the database picked a different way to run it.</p>
+<h4>What is happening internally?</h4>
+<p>There are two layers. First, the <strong>logical</strong> join type — <em>what</em> rows you want back:</p>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>Join</th>
+<th>Returns</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>INNER JOIN</code></td>
+<td>Only rows that have a match on both sides</td>
+</tr>
+<tr>
+<td><code>LEFT JOIN</code></td>
+<td>All left rows; the right-side columns are NULL where there is no match</td>
+</tr>
+<tr>
+<td><code>FULL OUTER JOIN</code></td>
+<td>All rows from both sides, with NULLs where there is no match</td>
+</tr>
+<tr>
+<td><code>CROSS JOIN</code></td>
+<td>Every left row paired with every right row (Cartesian product)</td>
+</tr>
+<tr>
+<td>Self join</td>
+<td>A table joined to itself (rep → manager)</td>
+</tr>
+<tr>
+<td>Semi join (<code>EXISTS</code>, <code>IN</code>)</td>
+<td>Left rows that have at least one match — each left row appears once, not duplicated</td>
+</tr>
+<tr>
+<td>Anti join (<code>NOT EXISTS</code>)</td>
+<td>Left rows that have no match at all</td>
+</tr>
+</tbody>
+</table></div>
+<p>Second, the <strong>physical</strong> algorithm — <em>how</em> the database actually does the matching. A component called the <strong>query planner</strong> picks the algorithm. It decides using table <strong>statistics</strong>: stored facts like row counts and how values are spread.</p>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>Algorithm</th>
+<th>How it works</th>
+<th>Best when</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Nested loop</td>
+<td>For each row on the outer side, look up the matching inner rows (ideally using an index)</td>
+<td>The outer input is small and the inner side has an index</td>
+</tr>
+<tr>
+<td>Hash join</td>
+<td>Build a hash table from the smaller input, then check each row of the larger input against it</td>
+<td>Both inputs are large and unsorted, and the join uses equality (<code>=</code>)</td>
+</tr>
+<tr>
+<td>Merge join</td>
+<td>Both inputs are sorted on the join key; walk through them side by side</td>
+<td>Both inputs are already sorted (for example, by indexes), or large range joins</td>
+</tr>
+</tbody>
+</table></div>
+<p>Think of a nested loop like a shopkeeper checking each customer's name in a register. It is fast when there are only a few customers and the register has an alphabetical index. It is very slow for 10 lakh customers.</p>
+<h4>How does it work?</h4>
+<p>The planner works like this:</p>
+<ol>
+<li>It estimates how many rows each step will produce.</li>
+<li>It tries different join orders and different algorithms.</li>
+<li>It gives each option a cost.</li>
+<li>It picks the cheapest plan.</li>
+</ol>
+<p>The plan is only as good as the estimates. Estimates go wrong when statistics are old (<em>stale</em>), or when two columns are related in a way the planner does not know (<em>correlated columns</em>). Then the planner makes a bad choice. The most common bad choice is a nested loop that runs over far more rows than it expected.</p>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="c1">-- Anti join: outlets that never ordered. Prefer NOT EXISTS to NOT IN (NOT IN returns nothing if the subquery yields a NULL)</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="n">o</span><span class="p">.</span><span class="n">id</span><span class="p">,</span><span class="w"> </span><span class="n">o</span><span class="p">.</span><span class="n">city</span>
+<span class="k">FROM</span><span class="w"> </span><span class="n">outlet</span><span class="w"> </span><span class="n">o</span>
+<span class="k">WHERE</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">EXISTS</span><span class="w"> </span><span class="p">(</span><span class="k">SELECT</span><span class="w"> </span><span class="mi">1</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">orders</span><span class="w"> </span><span class="n">x</span><span class="w"> </span><span class="k">WHERE</span><span class="w"> </span><span class="n">x</span><span class="p">.</span><span class="n">outlet_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">o</span><span class="p">.</span><span class="n">id</span><span class="p">);</span>
+
+<span class="c1">-- Self join: each rep with their manager (LEFT keeps reps with no manager)</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="n">r</span><span class="p">.</span><span class="n">name</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">rep</span><span class="p">,</span><span class="w"> </span><span class="n">m</span><span class="p">.</span><span class="n">name</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">manager</span>
+<span class="k">FROM</span><span class="w"> </span><span class="n">rep</span><span class="w"> </span><span class="n">r</span><span class="w"> </span><span class="k">LEFT</span><span class="w"> </span><span class="k">JOIN</span><span class="w"> </span><span class="n">rep</span><span class="w"> </span><span class="n">m</span><span class="w"> </span><span class="k">ON</span><span class="w"> </span><span class="n">m</span><span class="p">.</span><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">r</span><span class="p">.</span><span class="n">manager_id</span><span class="p">;</span>
+
+<span class="c1">-- The LEFT JOIN trap: a WHERE filter on the right table turns it into an INNER JOIN</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="n">o</span><span class="p">.</span><span class="n">id</span><span class="p">,</span><span class="w"> </span><span class="k">COUNT</span><span class="p">(</span><span class="n">x</span><span class="p">.</span><span class="n">id</span><span class="p">)</span>
+<span class="k">FROM</span><span class="w"> </span><span class="n">outlet</span><span class="w"> </span><span class="n">o</span><span class="w"> </span><span class="k">LEFT</span><span class="w"> </span><span class="k">JOIN</span><span class="w"> </span><span class="n">orders</span><span class="w"> </span><span class="n">x</span><span class="w"> </span><span class="k">ON</span><span class="w"> </span><span class="n">x</span><span class="p">.</span><span class="n">outlet_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">o</span><span class="p">.</span><span class="n">id</span>
+<span class="k">WHERE</span><span class="w"> </span><span class="n">x</span><span class="p">.</span><span class="n">status</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">'DELIVERED'</span><span class="w">            </span><span class="c1">-- outlets with no orders disappear (x.status is NULL)</span>
+<span class="k">GROUP</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">o</span><span class="p">.</span><span class="n">id</span><span class="p">;</span>
+<span class="c1">-- Fix: move the condition into ON</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="n">o</span><span class="p">.</span><span class="n">id</span><span class="p">,</span><span class="w"> </span><span class="k">COUNT</span><span class="p">(</span><span class="n">x</span><span class="p">.</span><span class="n">id</span><span class="p">)</span>
+<span class="k">FROM</span><span class="w"> </span><span class="n">outlet</span><span class="w"> </span><span class="n">o</span><span class="w"> </span><span class="k">LEFT</span><span class="w"> </span><span class="k">JOIN</span><span class="w"> </span><span class="n">orders</span><span class="w"> </span><span class="n">x</span><span class="w"> </span><span class="k">ON</span><span class="w"> </span><span class="n">x</span><span class="p">.</span><span class="n">outlet_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">o</span><span class="p">.</span><span class="n">id</span><span class="w"> </span><span class="k">AND</span><span class="w"> </span><span class="n">x</span><span class="p">.</span><span class="n">status</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">'DELIVERED'</span>
+<span class="k">GROUP</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">o</span><span class="p">.</span><span class="n">id</span><span class="p">;</span>
+</code></pre></div>
+
+<h4>When would I use it?</h4>
+<p>In every reporting query and API query that needs more than one table. Interviews often ask you to write anti joins, self joins and LEFT JOIN aggregations live, on the spot.</p>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>NOT IN with NULLs.</strong> If the subquery returns even one NULL, NOT IN returns no rows at all.</li>
+<li><strong>LEFT JOIN filter in WHERE.</strong> A WHERE condition on the right table quietly turns the LEFT JOIN into an INNER JOIN.</li>
+<li><strong>Accidental Cartesian product.</strong> You forget the join condition, so every row pairs with every other row.</li>
+<li><strong>Duplicate rows from a one-to-many join before aggregating.</strong> One outlet with ten orders becomes ten rows, so sums get multiplied. Aggregate first, then join.</li>
+<li><strong>Stale statistics.</strong> The planner thinks a table is small and picks a nested loop over millions of rows. Refresh statistics with <code>ANALYZE</code> in PostgreSQL or <code>UPDATE STATISTICS</code> in SQL Server.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. Why NOT EXISTS instead of NOT IN?</strong> If the subquery returns even one NULL, NOT IN returns no rows at all. NOT EXISTS gives the correct result in that case, and the database usually runs it as an efficient anti join.</p>
+<p><strong>Q2. Nested loop vs hash vs merge join?</strong> Use a nested loop when the outer input is small and the inner side has an index. A hash join suits large, unsorted inputs joined on equality. A merge join is best when both inputs are already sorted on the join key.</p>
+<p><strong>Q3. Why does a LEFT JOIN sometimes behave like an INNER JOIN?</strong> For unmatched rows, the right table's columns are NULL. A WHERE condition on those columns removes exactly those rows. To keep them, move the condition into the ON clause.</p>
+<h2 id="s12-2">12.2 Window functions</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> A window function lets each row look at its neighbours — rows in the same group — and calculate something like a rank or a running total. Unlike GROUP BY, it does not squash the rows together; every row stays in the result.</p>
+<p>Many questions need a result on each row that depends on other rows. For example:</p>
+<ul>
+<li>The rank of a rep within their team.</li>
+<li>A running total of sales.</li>
+<li>The previous month's value.</li>
+<li>The top N items in each category.</li>
+</ul>
+<p><code>GROUP BY</code> does not help here, because it collapses many rows into one. Self joins and correlated subqueries (a subquery that runs once per outer row) work, but they are slow and messy.</p>
+<p>Window functions solve this. They calculate over a "window" of related rows <strong>while keeping every row</strong>. They come up again and again in live SQL rounds.</p>
+<h4>What is happening internally?</h4>
+<p>The general shape is:</p>
+<div class="hl"><pre><span></span><code><span class="k">function</span><span class="p">(...)</span><span class="w"> </span><span class="n">OVER</span><span class="w"> </span><span class="p">(</span><span class="n">PARTITION</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="o">&lt;</span><span class="k">group</span><span class="o">&gt;</span><span class="w"> </span><span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="o">&lt;</span><span class="k">order</span><span class="o">&gt;</span><span class="w"> </span><span class="p">[</span><span class="k">ROWS</span><span class="o">|</span><span class="n">RANGE</span><span class="w"> </span><span class="k">BETWEEN</span><span class="w"> </span><span class="p">...</span><span class="w"> </span><span class="k">AND</span><span class="w"> </span><span class="p">...])</span>
+</code></pre></div>
+
+<p>What the engine does:</p>
+<ol>
+<li>It sorts (or hashes) the rows by the partition key and the order key.</li>
+<li>For each row, it works out the <em>frame</em> — the set of rows the function should look at.</li>
+<li>It computes the function for that row over its frame.</li>
+</ol>
+<p><strong>When windows run:</strong> they are evaluated <strong>after</strong> WHERE, GROUP BY and HAVING, but <strong>before</strong> ORDER BY and LIMIT. Because of this, you cannot filter on a window result in the WHERE of the same query. Wrap the query in a subquery or CTE, and filter outside.</p>
+<p>The main function families:</p>
+<ul>
+<li><strong>Ranking:</strong> <code>ROW_NUMBER</code> (1,2,3,4 — always unique), <code>RANK</code> (1,2,2,4 — ties share a rank, then a gap), <code>DENSE_RANK</code> (1,2,2,3 — ties share a rank, no gap), <code>NTILE(n)</code> (splits rows into n equal buckets).</li>
+<li><strong>Offsets:</strong> <code>LAG</code> (previous row's value), <code>LEAD</code> (next row's value), <code>FIRST_VALUE</code>, <code>LAST_VALUE</code>.</li>
+<li><strong>Aggregates over windows:</strong> <code>SUM</code>, <code>AVG</code>, <code>COUNT</code>, <code>MIN</code>, <code>MAX</code>.</li>
+<li><strong>Frame default:</strong> if you write ORDER BY but no frame, the default is <code>RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW</code>. <code>RANGE</code> treats rows with equal ORDER BY values (ties) as one group of "peers". So in a running total, all tied rows get the same total — which surprises people. To avoid this, write <code>ROWS</code> explicitly.</li>
+</ul>
+<p>Think of a class result sheet. Each student's row stays on the sheet, but next to it you write their rank within their own section. That is a window function with <code>PARTITION BY section ORDER BY marks DESC</code>.</p>
+<h4>How does it work?</h4>
+<p>Here, R2 and R3 tie at 700. <code>DENSE_RANK</code> gives both rank 2, and the next rep gets 3 (no gap):</p>
+<div class="hl"><pre><span></span><code>monthly_sales (tenant 7, Oct):   rep  sales   DENSE_RANK() OVER (PARTITION BY tenant, month ORDER BY sales DESC)
+                                  R1   900     1
+                                  R2   700     2
+                                  R3   700     2
+                                  R4   500     3
+</code></pre></div>
+
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="c1">-- 1. Top 3 reps per tenant per month (the classic)</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="p">(</span>
+<span class="w">  </span><span class="k">SELECT</span><span class="w"> </span><span class="n">tenant_id</span><span class="p">,</span><span class="w"> </span><span class="k">month</span><span class="p">,</span><span class="w"> </span><span class="n">rep_id</span><span class="p">,</span><span class="w"> </span><span class="n">sales</span><span class="p">,</span>
+<span class="w">         </span><span class="n">DENSE_RANK</span><span class="p">()</span><span class="w"> </span><span class="n">OVER</span><span class="w"> </span><span class="p">(</span><span class="n">PARTITION</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">tenant_id</span><span class="p">,</span><span class="w"> </span><span class="k">month</span><span class="w"> </span><span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">sales</span><span class="w"> </span><span class="k">DESC</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">r</span>
+<span class="w">  </span><span class="k">FROM</span><span class="w"> </span><span class="n">monthly_sales</span><span class="p">)</span><span class="w"> </span><span class="n">t</span>
+<span class="k">WHERE</span><span class="w"> </span><span class="n">r</span><span class="w"> </span><span class="o">&lt;=</span><span class="w"> </span><span class="mi">3</span><span class="p">;</span>
+
+<span class="c1">-- 2. Running total and 7-day moving average per outlet</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="n">outlet_id</span><span class="p">,</span><span class="w"> </span><span class="n">order_date</span><span class="p">,</span><span class="w"> </span><span class="n">amount</span><span class="p">,</span>
+<span class="w">       </span><span class="k">SUM</span><span class="p">(</span><span class="n">amount</span><span class="p">)</span><span class="w"> </span><span class="n">OVER</span><span class="w"> </span><span class="p">(</span><span class="n">PARTITION</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">outlet_id</span><span class="w"> </span><span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">order_date</span><span class="w"> </span><span class="k">ROWS</span><span class="w"> </span><span class="k">BETWEEN</span><span class="w"> </span><span class="n">UNBOUNDED</span><span class="w"> </span><span class="n">PRECEDING</span><span class="w"> </span><span class="k">AND</span><span class="w"> </span><span class="k">CURRENT</span><span class="w"> </span><span class="k">ROW</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">running_total</span><span class="p">,</span>
+<span class="w">       </span><span class="k">AVG</span><span class="p">(</span><span class="n">amount</span><span class="p">)</span><span class="w"> </span><span class="n">OVER</span><span class="w"> </span><span class="p">(</span><span class="n">PARTITION</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">outlet_id</span><span class="w"> </span><span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">order_date</span><span class="w"> </span><span class="k">ROWS</span><span class="w"> </span><span class="k">BETWEEN</span><span class="w"> </span><span class="mi">6</span><span class="w"> </span><span class="n">PRECEDING</span><span class="w"> </span><span class="k">AND</span><span class="w"> </span><span class="k">CURRENT</span><span class="w"> </span><span class="k">ROW</span><span class="p">)</span><span class="w">         </span><span class="k">AS</span><span class="w"> </span><span class="n">avg_7d</span>
+<span class="k">FROM</span><span class="w"> </span><span class="n">daily_outlet_sales</span><span class="p">;</span>
+
+<span class="c1">-- 3. Month-over-month growth</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="k">month</span><span class="p">,</span><span class="w"> </span><span class="n">revenue</span><span class="p">,</span>
+<span class="w">       </span><span class="n">ROUND</span><span class="p">(</span><span class="mi">100</span><span class="p">.</span><span class="mi">0</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="p">(</span><span class="n">revenue</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">LAG</span><span class="p">(</span><span class="n">revenue</span><span class="p">)</span><span class="w"> </span><span class="n">OVER</span><span class="w"> </span><span class="p">(</span><span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="k">month</span><span class="p">))</span>
+<span class="w">             </span><span class="o">/</span><span class="w"> </span><span class="k">NULLIF</span><span class="p">(</span><span class="n">LAG</span><span class="p">(</span><span class="n">revenue</span><span class="p">)</span><span class="w"> </span><span class="n">OVER</span><span class="w"> </span><span class="p">(</span><span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="k">month</span><span class="p">),</span><span class="w"> </span><span class="mi">0</span><span class="p">),</span><span class="w"> </span><span class="mi">2</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">mom_pct</span>
+<span class="k">FROM</span><span class="w"> </span><span class="n">monthly_revenue</span><span class="p">;</span>
+
+<span class="c1">-- 4. Each outlet's first order (dedupe: keep one row per group)</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="p">(</span>
+<span class="w">  </span><span class="k">SELECT</span><span class="w"> </span><span class="n">o</span><span class="p">.</span><span class="o">*</span><span class="p">,</span><span class="w"> </span><span class="n">ROW_NUMBER</span><span class="p">()</span><span class="w"> </span><span class="n">OVER</span><span class="w"> </span><span class="p">(</span><span class="n">PARTITION</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">outlet_id</span><span class="w"> </span><span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">created_at</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">rn</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">orders</span><span class="w"> </span><span class="n">o</span><span class="p">)</span><span class="w"> </span><span class="n">t</span>
+<span class="k">WHERE</span><span class="w"> </span><span class="n">rn</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span><span class="p">;</span>
+
+<span class="c1">-- 5. Share of tenant revenue per outlet (window over an aggregate)</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="n">tenant_id</span><span class="p">,</span><span class="w"> </span><span class="n">outlet_id</span><span class="p">,</span><span class="w"> </span><span class="k">SUM</span><span class="p">(</span><span class="n">amount</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">rev</span><span class="p">,</span>
+<span class="w">       </span><span class="mi">100</span><span class="p">.</span><span class="mi">0</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="k">SUM</span><span class="p">(</span><span class="n">amount</span><span class="p">)</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="k">SUM</span><span class="p">(</span><span class="k">SUM</span><span class="p">(</span><span class="n">amount</span><span class="p">))</span><span class="w"> </span><span class="n">OVER</span><span class="w"> </span><span class="p">(</span><span class="n">PARTITION</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">tenant_id</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">pct_of_tenant</span>
+<span class="k">FROM</span><span class="w"> </span><span class="n">orders</span><span class="w"> </span><span class="k">GROUP</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">tenant_id</span><span class="p">,</span><span class="w"> </span><span class="n">outlet_id</span><span class="p">;</span>
+
+<span class="c1">-- 6. Gaps and islands: reps who visited on 5+ consecutive days</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="n">rep_id</span><span class="p">,</span><span class="w"> </span><span class="k">MIN</span><span class="p">(</span><span class="n">visit_date</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">streak_start</span><span class="p">,</span><span class="w"> </span><span class="k">MAX</span><span class="p">(</span><span class="n">visit_date</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">streak_end</span><span class="p">,</span><span class="w"> </span><span class="k">COUNT</span><span class="p">(</span><span class="o">*</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">days</span>
+<span class="k">FROM</span><span class="w"> </span><span class="p">(</span>
+<span class="w">  </span><span class="k">SELECT</span><span class="w"> </span><span class="n">rep_id</span><span class="p">,</span><span class="w"> </span><span class="n">visit_date</span><span class="p">,</span>
+<span class="w">         </span><span class="n">visit_date</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="p">(</span><span class="n">ROW_NUMBER</span><span class="p">()</span><span class="w"> </span><span class="n">OVER</span><span class="w"> </span><span class="p">(</span><span class="n">PARTITION</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">rep_id</span><span class="w"> </span><span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">visit_date</span><span class="p">))::</span><span class="nb">int</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">grp</span>
+<span class="w">  </span><span class="k">FROM</span><span class="w"> </span><span class="p">(</span><span class="k">SELECT</span><span class="w"> </span><span class="k">DISTINCT</span><span class="w"> </span><span class="n">rep_id</span><span class="p">,</span><span class="w"> </span><span class="n">visit_date</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">visits</span><span class="p">)</span><span class="w"> </span><span class="n">v</span>
+<span class="p">)</span><span class="w"> </span><span class="n">s</span>
+<span class="k">GROUP</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">rep_id</span><span class="p">,</span><span class="w"> </span><span class="n">grp</span>
+<span class="k">HAVING</span><span class="w"> </span><span class="k">COUNT</span><span class="p">(</span><span class="o">*</span><span class="p">)</span><span class="w"> </span><span class="o">&gt;=</span><span class="w"> </span><span class="mi">5</span><span class="p">;</span>
+<span class="c1">-- consecutive dates minus their row number give the same value → that value identifies each streak</span>
+</code></pre></div>
+
+<p>For example 6, the trick is simple. Consecutive dates go up by one each day. Row numbers also go up by one each row. So date minus row number stays the same along a streak. When a day is missed, the value jumps. That constant value labels each streak, and you group by it.</p>
+<h4>When would I use it?</h4>
+<ul>
+<li>Leaderboards and rankings (incentive standings).</li>
+<li>Deduplication — keeping one row per group.</li>
+<li>Period-over-period comparisons (this month vs last month).</li>
+<li>Running balances and account statements.</li>
+<li>Streaks and sessionisation (grouping events into sessions).</li>
+<li>Percent-of-total reports.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Filtering on a window column in WHERE.</strong> This is not allowed. Wrap the query in a subquery and filter outside.</li>
+<li><strong><code>LAST_VALUE</code> returns the current row.</strong> This happens because the default frame ends at the current row. Set the frame to <code>ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING</code>.</li>
+<li><strong><code>RANGE</code> vs <code>ROWS</code> surprises with ties.</strong> Tied rows get the same running total under <code>RANGE</code>.</li>
+<li><strong>Huge sorts spill to disk on big partitions.</strong> The sort no longer fits in memory and becomes slow. An index on the partition and order keys helps.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. ROW_NUMBER vs RANK vs DENSE_RANK?</strong> ROW_NUMBER gives a unique sequence (1,2,3,4). RANK lets ties share a rank and then leaves a gap (1,2,2,4). DENSE_RANK lets ties share a rank with no gap (1,2,2,3).</p>
+<p><strong>Q2. How do you get the top N rows per group?</strong> In a subquery or CTE, rank rows with <code>PARTITION BY group ORDER BY metric DESC</code>. Then, in the outer query, keep only rows where the rank is N or less.</p>
+<p><strong>Q3. How do you compute a running total?</strong> Use <code>SUM(x) OVER (PARTITION BY key ORDER BY t ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)</code>. Write <code>ROWS</code> explicitly so tied values don't get the same total.</p>
+<h2 id="s12-3">12.3 CTEs and recursive queries</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> A CTE gives a name to one step of a big query, so you can read the query top to bottom like a recipe. A recursive CTE repeats a step again and again — perfect for walking down a manager → team tree.</p>
+<p>Long queries with subqueries nested inside subqueries are hard to read and hard to debug. A <strong>common table expression (CTE)</strong> gives each step a name. Then the query reads from top to bottom, step by step.</p>
+<p>A <strong>recursive CTE</strong> goes further. It solves hierarchy problems — manager chains, category trees, distributor networks. Without recursion, you cannot solve these in a single query, because you don't know in advance how many levels deep the tree goes.</p>
+<h4>What is happening internally?</h4>
+<ul>
+<li><strong>A normal CTE</strong> (<code>WITH name AS (…)</code>) defines a named subquery that lives only for that one statement.</li>
+<li>PostgreSQL 12 and later <strong>inline</strong> CTEs. This means the CTE is copied into the main query and optimised like a normal subquery. The exception is when you mark it <code>MATERIALIZED</code> — then it is computed once and stored.</li>
+<li>SQL Server always inlines CTEs.</li>
+<li>So a CTE is a readability tool, not a performance tool.</li>
+<li><strong>A recursive CTE</strong> has two parts joined by <code>UNION ALL</code>:</li>
+<li>An <strong>anchor</strong> member — the starting rows.</li>
+<li>A <strong>recursive</strong> member — a query that joins the CTE back to the table to find the next level.</li>
+</ul>
+<p>The engine runs it in a loop:</p>
+<ol>
+<li>Run the anchor to get the first set of rows.</li>
+<li>Feed those rows into the recursive member to get the next level.</li>
+<li>Feed the new rows in again.</li>
+<li>Stop when a step returns no new rows.</li>
+</ol>
+<p>Think of a family tree. You start with one grandparent (the anchor). Then you find their children, then the children's children, and so on — until a generation has no children.</p>
+<h4>How does it work?</h4>
+<div class="hl"><pre><span></span><code>iteration 0 (anchor):    direct reports of 42           → {7, 9}
+iteration 1:             reports of {7, 9}             → {15, 16, 21}
+iteration 2:             reports of {15, 16, 21}       → {}   → stop
+</code></pre></div>
+
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="c1">-- Readable multi-step report</span>
+<span class="k">WITH</span><span class="w"> </span><span class="n">delivered</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="p">(</span>
+<span class="w">  </span><span class="k">SELECT</span><span class="w"> </span><span class="n">rep_id</span><span class="p">,</span><span class="w"> </span><span class="n">date_trunc</span><span class="p">(</span><span class="s1">'month'</span><span class="p">,</span><span class="w"> </span><span class="n">created_at</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="k">month</span><span class="p">,</span><span class="w"> </span><span class="k">SUM</span><span class="p">(</span><span class="n">amount</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">sales</span>
+<span class="w">  </span><span class="k">FROM</span><span class="w"> </span><span class="n">orders</span><span class="w"> </span><span class="k">WHERE</span><span class="w"> </span><span class="n">status</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">'DELIVERED'</span><span class="w"> </span><span class="k">GROUP</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="mi">2</span>
+<span class="p">),</span>
+<span class="n">ranked</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="p">(</span>
+<span class="w">  </span><span class="k">SELECT</span><span class="w"> </span><span class="o">*</span><span class="p">,</span><span class="w"> </span><span class="n">RANK</span><span class="p">()</span><span class="w"> </span><span class="n">OVER</span><span class="w"> </span><span class="p">(</span><span class="n">PARTITION</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="k">month</span><span class="w"> </span><span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">sales</span><span class="w"> </span><span class="k">DESC</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">r</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">delivered</span>
+<span class="p">)</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">ranked</span><span class="w"> </span><span class="k">WHERE</span><span class="w"> </span><span class="n">r</span><span class="w"> </span><span class="o">&lt;=</span><span class="w"> </span><span class="mi">10</span><span class="p">;</span>
+
+<span class="c1">-- Everyone under manager 42, with depth (sales hierarchy)</span>
+<span class="k">WITH</span><span class="w"> </span><span class="k">RECURSIVE</span><span class="w"> </span><span class="n">team</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="p">(</span>
+<span class="w">  </span><span class="k">SELECT</span><span class="w"> </span><span class="n">id</span><span class="p">,</span><span class="w"> </span><span class="n">name</span><span class="p">,</span><span class="w"> </span><span class="n">manager_id</span><span class="p">,</span><span class="w"> </span><span class="mi">1</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">depth</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">rep</span><span class="w"> </span><span class="k">WHERE</span><span class="w"> </span><span class="n">manager_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">42</span><span class="w">          </span><span class="c1">-- anchor</span>
+<span class="w">  </span><span class="k">UNION</span><span class="w"> </span><span class="k">ALL</span>
+<span class="w">  </span><span class="k">SELECT</span><span class="w"> </span><span class="n">r</span><span class="p">.</span><span class="n">id</span><span class="p">,</span><span class="w"> </span><span class="n">r</span><span class="p">.</span><span class="n">name</span><span class="p">,</span><span class="w"> </span><span class="n">r</span><span class="p">.</span><span class="n">manager_id</span><span class="p">,</span><span class="w"> </span><span class="n">t</span><span class="p">.</span><span class="n">depth</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="mi">1</span>
+<span class="w">  </span><span class="k">FROM</span><span class="w"> </span><span class="n">rep</span><span class="w"> </span><span class="n">r</span><span class="w"> </span><span class="k">JOIN</span><span class="w"> </span><span class="n">team</span><span class="w"> </span><span class="n">t</span><span class="w"> </span><span class="k">ON</span><span class="w"> </span><span class="n">r</span><span class="p">.</span><span class="n">manager_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">t</span><span class="p">.</span><span class="n">id</span><span class="w">                                   </span><span class="c1">-- recursive step</span>
+<span class="w">  </span><span class="k">WHERE</span><span class="w"> </span><span class="n">t</span><span class="p">.</span><span class="n">depth</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="mi">20</span><span class="w">                                                              </span><span class="c1">-- guard against cycles in bad data</span>
+<span class="p">)</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">team</span><span class="w"> </span><span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">depth</span><span class="p">;</span>
+<span class="c1">-- SQL Server: identical without the RECURSIVE keyword; limit with OPTION (MAXRECURSION n)</span>
+</code></pre></div>
+
+<h4>When would I use it?</h4>
+<ul>
+<li>Breaking complex reports into named steps.</li>
+<li>Organisation and sales hierarchies — for example, rolling incentives up to managers.</li>
+<li>Bill-of-materials (a product made of parts, which are made of smaller parts).</li>
+<li>Graph-like walks that don't go very deep.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Infinite recursion on cyclic data.</strong> If bad data says A manages B and B manages A, the loop never ends. Add a depth limit, or keep an array of the path already visited and stop when you see a repeat.</li>
+<li><strong>Assuming CTEs are materialised (or not).</strong> Engines behave differently. Don't assume a CTE is computed once.</li>
+<li><strong>Very deep or very wide recursion on big tables.</strong> This gets slow. For large hierarchies, consider a <em>closure table</em> (a table storing every ancestor–descendant pair) or a <em>materialised path</em> (storing the full path like <code>/1/42/7/</code> on each row).</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. What is a recursive CTE?</strong> It is a CTE with two parts: an anchor query that gives the starting rows, and a recursive query that refers back to the CTE. The engine repeats the recursive part until no new rows come out. It is used for hierarchies.</p>
+<p><strong>Q2. Do CTEs improve performance?</strong> Usually no. Modern PostgreSQL and SQL Server inline them, so they run like normal subqueries. Their real benefit is readability. In PostgreSQL, use <code>MATERIALIZED</code> when you deliberately want the CTE computed once.</p>
+<h2 id="s12-4">12.4 Classic SQL interview problems and evaluation order</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> Live SQL rounds keep asking the same handful of problems. Learn the templates, and learn the order in which SQL runs each clause — then you can write them fast and explain why they work.</p>
+<p>Live SQL rounds reuse a small set of patterns:</p>
+<ul>
+<li>Nth highest value.</li>
+<li>Finding and deleting duplicates.</li>
+<li>"Did it happen in every period?" (this is called <em>relational division</em>).</li>
+<li>Pivots — turning row values into columns.</li>
+<li>Retention — who came back next month.</li>
+</ul>
+<p>If you know these patterns, and the logical order in which SQL runs, you can write them quickly and explain them clearly.</p>
+<h4>What is happening internally?</h4>
+<p><strong>Logical evaluation order</strong> — the order SQL conceptually runs each clause. It explains many alias and filter errors:
+<code>FROM/JOIN → WHERE → GROUP BY → HAVING → window functions → SELECT → DISTINCT → ORDER BY → LIMIT/OFFSET</code></p>
+<p>What this means in practice:</p>
+<ul>
+<li>WHERE runs before SELECT. So WHERE cannot see the aliases you define in SELECT.</li>
+<li>WHERE runs before GROUP BY. So WHERE cannot filter on aggregates like <code>SUM</code>. Use HAVING for that.</li>
+<li>Window functions run after WHERE. So you cannot filter on a window result at the same level.</li>
+</ul>
+<h4>How does it work?</h4>
+<p>First, recognise which pattern the question is. Then apply that pattern's template from the examples below.</p>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="c1">-- Nth highest salary (N = 2), ties handled</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="k">DISTINCT</span><span class="w"> </span><span class="n">salary</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="p">(</span>
+<span class="w">  </span><span class="k">SELECT</span><span class="w"> </span><span class="n">salary</span><span class="p">,</span><span class="w"> </span><span class="n">DENSE_RANK</span><span class="p">()</span><span class="w"> </span><span class="n">OVER</span><span class="w"> </span><span class="p">(</span><span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">salary</span><span class="w"> </span><span class="k">DESC</span><span class="p">)</span><span class="w"> </span><span class="n">r</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">employee</span><span class="p">)</span><span class="w"> </span><span class="n">t</span>
+<span class="k">WHERE</span><span class="w"> </span><span class="n">r</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">2</span><span class="p">;</span>
+
+<span class="c1">-- Delete duplicate rows by business key, keeping the earliest</span>
+<span class="k">DELETE</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">orders</span><span class="w"> </span><span class="n">o</span><span class="w"> </span><span class="k">USING</span><span class="w"> </span><span class="p">(</span>
+<span class="w">  </span><span class="k">SELECT</span><span class="w"> </span><span class="n">id</span><span class="p">,</span><span class="w"> </span><span class="n">ROW_NUMBER</span><span class="p">()</span><span class="w"> </span><span class="n">OVER</span><span class="w"> </span><span class="p">(</span><span class="n">PARTITION</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">tenant_id</span><span class="p">,</span><span class="w"> </span><span class="n">external_ref</span><span class="w"> </span><span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">created_at</span><span class="p">)</span><span class="w"> </span><span class="n">rn</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">orders</span><span class="p">)</span><span class="w"> </span><span class="n">d</span>
+<span class="k">WHERE</span><span class="w"> </span><span class="n">o</span><span class="p">.</span><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">d</span><span class="p">.</span><span class="n">id</span><span class="w"> </span><span class="k">AND</span><span class="w"> </span><span class="n">d</span><span class="p">.</span><span class="n">rn</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="mi">1</span><span class="p">;</span>
+
+<span class="c1">-- Outlets that ordered in every month of 2026 (relational division)</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="n">outlet_id</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">orders</span>
+<span class="k">WHERE</span><span class="w"> </span><span class="n">created_at</span><span class="w"> </span><span class="o">&gt;=</span><span class="w"> </span><span class="s1">'2026-01-01'</span><span class="w"> </span><span class="k">AND</span><span class="w"> </span><span class="n">created_at</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="s1">'2027-01-01'</span>
+<span class="k">GROUP</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">outlet_id</span>
+<span class="k">HAVING</span><span class="w"> </span><span class="k">COUNT</span><span class="p">(</span><span class="k">DISTINCT</span><span class="w"> </span><span class="n">date_trunc</span><span class="p">(</span><span class="s1">'month'</span><span class="p">,</span><span class="w"> </span><span class="n">created_at</span><span class="p">))</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">12</span><span class="p">;</span>
+
+<span class="c1">-- Pivot with conditional aggregation (works everywhere)</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="n">tenant_id</span><span class="p">,</span>
+<span class="w">       </span><span class="k">COUNT</span><span class="p">(</span><span class="o">*</span><span class="p">)</span><span class="w"> </span><span class="n">FILTER</span><span class="w"> </span><span class="p">(</span><span class="k">WHERE</span><span class="w"> </span><span class="n">status</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">'DELIVERED'</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">delivered</span><span class="p">,</span><span class="w">      </span><span class="c1">-- SQL Server: SUM(CASE WHEN status='DELIVERED' THEN 1 ELSE 0 END)</span>
+<span class="w">       </span><span class="k">COUNT</span><span class="p">(</span><span class="o">*</span><span class="p">)</span><span class="w"> </span><span class="n">FILTER</span><span class="w"> </span><span class="p">(</span><span class="k">WHERE</span><span class="w"> </span><span class="n">status</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">'CANCELLED'</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">cancelled</span>
+<span class="k">FROM</span><span class="w"> </span><span class="n">orders</span><span class="w"> </span><span class="k">GROUP</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">tenant_id</span><span class="p">;</span>
+
+<span class="c1">-- Month-on-month retention: active in month M and also in M+1</span>
+<span class="k">WITH</span><span class="w"> </span><span class="n">m</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="p">(</span><span class="k">SELECT</span><span class="w"> </span><span class="k">DISTINCT</span><span class="w"> </span><span class="n">outlet_id</span><span class="p">,</span><span class="w"> </span><span class="n">date_trunc</span><span class="p">(</span><span class="s1">'month'</span><span class="p">,</span><span class="w"> </span><span class="n">created_at</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">mon</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">orders</span><span class="p">)</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="n">a</span><span class="p">.</span><span class="n">mon</span><span class="p">,</span><span class="w"> </span><span class="k">COUNT</span><span class="p">(</span><span class="o">*</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">active</span><span class="p">,</span><span class="w"> </span><span class="k">COUNT</span><span class="p">(</span><span class="n">b</span><span class="p">.</span><span class="n">outlet_id</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">retained</span>
+<span class="k">FROM</span><span class="w"> </span><span class="n">m</span><span class="w"> </span><span class="n">a</span><span class="w"> </span><span class="k">LEFT</span><span class="w"> </span><span class="k">JOIN</span><span class="w"> </span><span class="n">m</span><span class="w"> </span><span class="n">b</span><span class="w"> </span><span class="k">ON</span><span class="w"> </span><span class="n">b</span><span class="p">.</span><span class="n">outlet_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">a</span><span class="p">.</span><span class="n">outlet_id</span><span class="w"> </span><span class="k">AND</span><span class="w"> </span><span class="n">b</span><span class="p">.</span><span class="n">mon</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">a</span><span class="p">.</span><span class="n">mon</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="nb">interval</span><span class="w"> </span><span class="s1">'1 month'</span>
+<span class="k">GROUP</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">a</span><span class="p">.</span><span class="n">mon</span><span class="w"> </span><span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">a</span><span class="p">.</span><span class="n">mon</span><span class="p">;</span>
+</code></pre></div>
+
+<h4>When would I use it?</h4>
+<p>In SQL rounds, in analytics questions during system-design interviews, and in your daily reporting work.</p>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Using <code>LIMIT 1 OFFSET N-1</code> for Nth highest.</strong> This is wrong when there are ties. Use <code>DENSE_RANK</code> instead.</li>
+<li><strong><code>COUNT(col)</code> vs <code>COUNT(*)</code> with NULLs.</strong> <code>COUNT(col)</code> skips NULLs; <code>COUNT(*)</code> counts every row.</li>
+<li><strong>Comparing dates using a function on the column.</strong> For example <code>DATE(created_at) = …</code>. This stops the index from being used — it is <em>non-sargable</em> (see 12.5).</li>
+<li><strong>Integer division in percentages.</strong> <code>5 / 10</code> gives 0 in integer maths. Multiply by <code>100.0</code> to force decimal maths.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. WHERE vs HAVING?</strong> WHERE filters individual rows before grouping. HAVING filters whole groups after aggregation.</p>
+<p><strong>Q2. Why can't I use a SELECT alias in WHERE?</strong> In the logical order, WHERE runs before SELECT, so the alias doesn't exist yet. Either repeat the expression in WHERE, or wrap the query and filter outside.</p>
+<h2 id="s12-5">12.5 How indexes work: B+ trees, clustered and covering indexes</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> An index is like the index at the back of a book. Instead of reading every page to find a word, you look it up and jump straight to the right page. Without it, the database reads the whole table.</p>
+<p>Without an index, the database must scan the whole table to find rows. The work grows with table size — O(n) disk pages. With the right index, a lookup reads only 3–4 pages, no matter how big the table is.</p>
+<p>Most "the API takes 30 seconds" problems are really index problems. And "why isn't my index being used?" is one of the top SDE2 database questions.</p>
+<h4>What is happening internally?</h4>
+<p>Relational database indexes are <strong>B+ trees</strong>. A B+ tree is:</p>
+<ul>
+<li><strong>Balanced</strong> — every path from the top to the bottom has the same length.</li>
+<li><strong>Very wide</strong> — each 8 KB page holds hundreds of keys.</li>
+</ul>
+<p>It has two kinds of pages:</p>
+<ul>
+<li><strong>Internal pages</strong> hold <em>separator keys</em> (signposts like "keys below 1000 go left") and pointers to child pages.</li>
+<li><strong>Leaf pages</strong> hold the actual keys in sorted order. <strong>Each leaf is linked to its neighbours.</strong> So a range scan finds the first leaf, then simply walks along the leaves in order.</li>
+</ul>
+<p>Because each page fans out to about 500 children, a billion rows need only about 4 levels. The top levels are used so often that they stay in memory.</p>
+<p>Think of a library. The signboard at the entrance tells you which floor. The floor sign tells you which shelf. The shelf has books in sorted order, and you can walk along it. Three or four steps, however big the library is.</p>
+<div class="hl"><pre><span></span><code>                 [ 1000 | 5000 ]                      root (cached)
+        ┌─────────────┼──────────────┐
+  [200|600]       [2000|3500]     [7000|9000]          internal
+   ↓   ↓   ↓        ↓    ↓   ↓      ↓    ↓   ↓
+ leaf ⇄ leaf ⇄ leaf ⇄ leaf ⇄ leaf ⇄ leaf ⇄ leaf …      sorted keys + row pointers, linked for range scans
+</code></pre></div>
+
+<p>The main kinds of index:</p>
+<ul>
+<li><strong>Clustered index</strong> (SQL Server, MySQL InnoDB): the table rows themselves <em>are</em> the leaf level. Rows are stored in primary-key order. There can be only one per table.</li>
+<li>Secondary indexes store the primary key, not a direct row address. So a lookup through a secondary index goes: index → primary key → row. SQL Server calls this a <em>key lookup</em>.</li>
+<li>Random UUID primary keys land in random places. This causes <em>page splits</em> (a full page is split in two to make room) and fragmentation. Sequential or time-ordered keys just add to the end neatly (11.22).</li>
+<li><strong>Heap + secondary indexes</strong> (PostgreSQL): rows live in an unordered pile called the <em>heap</em>. Every index points to a row's physical location, called the TID.</li>
+<li><strong>Covering index</strong>: an index that contains every column the query needs. So the engine never has to visit the table at all. In PostgreSQL this is an <em>index-only scan</em>. In SQL Server you add extra columns with <code>INCLUDE</code>.</li>
+<li><strong>Other index types:</strong></li>
+<li><strong>Hash</strong> — equality (<code>=</code>) only.</li>
+<li><strong>GIN</strong> — PostgreSQL JSONB, arrays and full-text search.</li>
+<li><strong>GiST/BRIN</strong> — GiST for geo data; BRIN for huge tables that are naturally in order (like append-only time data).</li>
+<li><strong>Partial</strong> — indexes only some rows, e.g. <code>WHERE status = 'PENDING'</code>.</li>
+<li><strong>Unique</strong> — also how you enforce idempotency keys (keys that make a repeated request safe to apply only once).</li>
+</ul>
+<h4>How does it work?</h4>
+<p><strong>Composite index column order.</strong> A composite index covers several columns. It works like a phone book sorted by (last name, first name). Follow these rules:</p>
+<ol>
+<li>Put equality-filtered columns first (<code>tenant_id</code>, <code>status</code>).</li>
+<li>Then put the range or sort column (<code>created_at</code>).</li>
+<li><strong>Leftmost-prefix rule:</strong> an index on <code>(tenant_id, status, created_at)</code> helps <code>WHERE tenant_id = ?</code> and <code>WHERE tenant_id AND status</code>. It does <strong>not</strong> help <code>WHERE status = ?</code> alone. A phone book sorted by last name can't help you find everyone with first name "Rahul".</li>
+</ol>
+<p><strong>Why an index gets ignored:</strong></p>
+<ul>
+<li><strong>A function or calculation on the column.</strong> <code>WHERE DATE(created_at) = '2026-10-01'</code> can't use the index on <code>created_at</code>. Rewrite it as a range: <code>created_at &gt;= '2026-10-01' AND created_at &lt; '2026-10-02'</code>. A filter that can use an index like this is called "sargable". Or create an expression index on <code>DATE(created_at)</code>.</li>
+<li><strong>An implicit type conversion.</strong> For example, a VARCHAR column compared to a number. In SQL Server, NVARCHAR vs VARCHAR mismatches do the same.</li>
+<li><strong>A leading wildcard.</strong> <code>LIKE '%abc'</code> can't use a normal index, because you don't know the start of the value. Use trigram or full-text indexes.</li>
+<li><strong>Low selectivity.</strong> If the filter matches roughly 10–20% or more of the rows, reading the whole table in order is cheaper than jumping around for many random lookups.</li>
+<li><strong><code>OR</code> across different columns.</strong> Rewrite as <code>UNION ALL</code>, or rely on the engine's bitmap OR (combining two index results).</li>
+<li><strong>Stale statistics, or a cached plan built for different parameter values.</strong> In SQL Server, this second one is called <em>parameter sniffing</em>: the plan was built for the first parameter value it saw, and is bad for others.</li>
+</ul>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="k">CREATE</span><span class="w"> </span><span class="k">INDEX</span><span class="w"> </span><span class="n">ix_orders_tenant_status_created</span>
+<span class="w">  </span><span class="k">ON</span><span class="w"> </span><span class="n">orders</span><span class="w"> </span><span class="p">(</span><span class="n">tenant_id</span><span class="p">,</span><span class="w"> </span><span class="n">status</span><span class="p">,</span><span class="w"> </span><span class="n">created_at</span><span class="w"> </span><span class="k">DESC</span><span class="p">)</span><span class="w"> </span><span class="n">INCLUDE</span><span class="w"> </span><span class="p">(</span><span class="n">amount</span><span class="p">);</span>
+<span class="c1">-- Serves: WHERE tenant_id = ? AND status = ? ORDER BY created_at DESC LIMIT 50   (no sort needed)</span>
+<span class="c1">--         SELECT SUM(amount) … same filter                                         (index-only, no table access)</span>
+<span class="c1">-- Doesn't serve: WHERE status = 'OPEN'  (tenant_id not constrained → leftmost prefix broken)</span>
+</code></pre></div>
+
+<h4>When would I use it?</h4>
+<ul>
+<li>On the filter, join and sort columns of every frequent query.</li>
+<li>Unique indexes for business keys and idempotency.</li>
+<li>Partial indexes for small "hot" subsets — for example, outbox rows not yet published, or pending payments.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Too many indexes.</strong> Every write must update every index. This costs storage and multiplies write work (<em>write amplification</em>).</li>
+<li><strong>Duplicate or unused indexes.</strong> Check the usage statistics and drop them.</li>
+<li><strong>Wrong column order</strong> in a composite index.</li>
+<li><strong>Indexing a low-cardinality column alone</strong>, like <code>status</code>. A column with only a few distinct values doesn't narrow things down much.</li>
+<li><strong>Random UUID keys in clustered indexes.</strong> They cause page splits and fragmentation.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. How does a B+ tree index speed up queries?</strong> It keeps keys sorted in a tree that is shallow and very wide. So a lookup reads only about 3–4 pages. Its leaves are linked together, so range scans read them one after another.</p>
+<p><strong>Q2. Clustered vs non-clustered index?</strong> A clustered index stores the table rows themselves in key order, so there can be only one per table. A non-clustered index is a separate structure that points to the rows.</p>
+<p><strong>Q3. Why might the database not use my index?</strong> Common reasons: a function or type conversion on the column, a leading wildcard, low selectivity, the wrong composite column order, stale statistics, or a bad cached plan.</p>
+<p><strong>Q4. How do you choose composite index column order?</strong> Put equality filters first, then range or sort columns. Respect the leftmost-prefix rule. Add INCLUDE columns so the index covers the whole query.</p>
+<h2 id="s12-6">12.6 Query plans and query optimisation</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> A query plan is the database's step-by-step route for running your query. Reading it shows you exactly where the time went, so you fix the real problem instead of guessing.</p>
+<p>Guessing why a query is slow can waste days. The query plan shows exactly what the database did:</p>
+<ul>
+<li>Which indexes it used.</li>
+<li>Which join algorithms it chose.</li>
+<li>How many rows came out of each step.</li>
+<li>Where the time went.</li>
+</ul>
+<p>Reading plans is how you turn "it's slow" into a specific fix. It is also the heart of a good performance story in an interview — like your ~30 s → ~10 s API improvement.</p>
+<h4>What is happening internally?</h4>
+<ul>
+<li><code>EXPLAIN</code> shows the plan the optimiser chose. It shows <strong>estimated</strong> rows and costs. It does not run the query.</li>
+<li><code>EXPLAIN ANALYZE</code> actually <strong>runs</strong> the query. It shows the <strong>actual</strong> rows and timings for each step.</li>
+<li><code>BUFFERS</code> adds how many pages were read from memory cache vs from disk.</li>
+<li>In SQL Server, the equivalent is the <em>actual execution plan</em>, plus <em>Query Store</em> for history over time.</li>
+</ul>
+<p>Think of Google Maps. <code>EXPLAIN</code> is the route it suggests before you leave. <code>EXPLAIN ANALYZE</code> is the record of the trip you actually took, with the time spent on each road.</p>
+<h4>How does it work?</h4>
+<p>Look for these clues in the plan:</p>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>Plan clue</th>
+<th>Meaning</th>
+<th>Usual fix</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Seq Scan</code> on a large table with a selective filter</td>
+<td>There is no index the planner can use</td>
+<td>Add a composite index that matches the filter + sort</td>
+</tr>
+<tr>
+<td>Estimated 10 rows vs actual 500,000</td>
+<td>Bad statistics, or columns related in a way the planner doesn't know</td>
+<td><code>ANALYZE</code>, extended statistics, or rewrite the query</td>
+</tr>
+<tr>
+<td>Nested Loop with a huge outer side</td>
+<td>Wrong join choice caused by a bad estimate</td>
+<td>Fix the estimates; index the inner side</td>
+</tr>
+<tr>
+<td><code>Sort … external merge Disk</code></td>
+<td>The sort did not fit in memory and spilled to disk</td>
+<td>An index that already gives the order, or more <code>work_mem</code></td>
+</tr>
+<tr>
+<td><code>Index Scan</code> + many heap fetches / SQL Server Key Lookup in a loop</td>
+<td>The index does not cover the query, so each row needs a trip to the table</td>
+<td>Add <code>INCLUDE</code> columns</td>
+</tr>
+<tr>
+<td>Large <code>Rows Removed by Filter</code></td>
+<td>The index finds rows, but most are thrown away afterwards</td>
+<td>Add the filtered column to the index</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Optimisation checklist</strong> — work through it in order:</p>
+<ol>
+<li><strong>Measure first.</strong> Find which query takes most of the time. Use the slow query log, <code>pg_stat_statements</code>, SQL Server Query Store, or APM traces.</li>
+<li><strong>Read the plan.</strong> Compare estimated rows with actual rows.</li>
+<li><strong>Index for the access path.</strong> Cover the filter first, then the sort, then the columns the query returns.</li>
+<li><strong>Return less data.</strong> Select only the columns you need. Use keyset pagination (continue from the last seen key, instead of a large OFFSET). Aggregate in the database, not in Java.</li>
+<li><strong>Remove N+1 patterns</strong> (7.10) — one query for a list, then one more query per item. Batch them with <code>IN (...)</code> or a join.</li>
+<li><strong>Pre-aggregate.</strong> Use materialised views, summary tables, or ClickHouse for analytics.</li>
+<li><strong>Partition</strong> big tables so queries skip irrelevant partitions (12.8).</li>
+<li><strong>Cache</strong> results that don't change often. Move heavy reports to read replicas or an OLAP system.</li>
+<li><strong>Verify</strong> the result using the same metrics after the change.</li>
+</ol>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="k">EXPLAIN</span><span class="w"> </span><span class="p">(</span><span class="k">ANALYZE</span><span class="p">,</span><span class="w"> </span><span class="n">BUFFERS</span><span class="p">)</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="n">outlet_id</span><span class="p">,</span><span class="w"> </span><span class="k">SUM</span><span class="p">(</span><span class="n">amount</span><span class="p">)</span>
+<span class="k">FROM</span><span class="w"> </span><span class="n">orders</span>
+<span class="k">WHERE</span><span class="w"> </span><span class="n">tenant_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">7</span><span class="w"> </span><span class="k">AND</span><span class="w"> </span><span class="n">created_at</span><span class="w"> </span><span class="o">&gt;=</span><span class="w"> </span><span class="n">now</span><span class="p">()</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="nb">interval</span><span class="w"> </span><span class="s1">'30 days'</span>
+<span class="k">GROUP</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">outlet_id</span><span class="p">;</span>
+
+<span class="c1">-- Before: Seq Scan on orders (actual rows 9,800,000 scanned, 120,000 kept) … 8,400 ms</span>
+<span class="c1">-- Add:    CREATE INDEX CONCURRENTLY ix_orders_tenant_created ON orders (tenant_id, created_at) INCLUDE (outlet_id, amount);</span>
+<span class="c1">-- After:  Index Only Scan using ix_orders_tenant_created (actual rows 120,000) … 95 ms</span>
+</code></pre></div>
+
+<blockquote class="co saythis">
+<p><strong>Say this:</strong> "The incentive dashboard API took ~30 seconds. APM showed 90% of the time in one aggregation query. The plan was a sequential scan over the whole orders table because we filtered on <code>DATE(created_at)</code>. I rewrote the predicate as a range, added a composite covering index on (tenant, created_at) including the aggregated columns, and moved one heavy breakdown to a pre-aggregated table. The endpoint went to ~10 seconds and the DB CPU dropped." Adapt this to what you actually did — only claim the steps you took.</p>
+</blockquote>
+<h4>When would I use it?</h4>
+<ul>
+<li>Every slow-endpoint investigation.</li>
+<li>Every new query on a big table — check its plan before you ship it.</li>
+<li>Design reviews of reporting features.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Testing plans on tiny dev data.</strong> On production volumes, the planner chooses differently.</li>
+<li><strong>Adding indexes blindly.</strong> Each index adds write cost.</li>
+<li><strong>Running <code>EXPLAIN ANALYZE</code> on destructive statements in production.</strong> It really executes them — an UPDATE or DELETE will change data. Wrap it in a transaction and roll back.</li>
+<li><strong>Fixing one query while the real problem is the number of queries.</strong> For example, an N+1 pattern firing hundreds of fast queries.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. How would you find and fix a slow query?</strong> First find it, using the slow log, Query Store or APM. Run EXPLAIN ANALYZE and compare estimated rows with actual rows. Then fix indexes or rewrite the filters, return less data, and remove N+1 patterns. If needed, pre-aggregate or partition. Finally, confirm the improvement with metrics.</p>
+<p><strong>Q2. EXPLAIN vs EXPLAIN ANALYZE?</strong> EXPLAIN shows the planned strategy with estimates only. EXPLAIN ANALYZE actually runs the query and reports the real rows and timings for each step.</p>
+<h2 id="s12-7">12.7 Transactions, MVCC, locks and database deadlocks</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> Many users change the same data at the same time. The database must keep them from stepping on each other — without making everyone wait in one long queue. MVCC and locks are how it does this.</p>
+<p>Hundreds of transactions hit the same tables at the same moment. How the database keeps them apart (<em>isolation</em>) decides two things:</p>
+<ul>
+<li><strong>Correctness</strong> — no money spent twice, no update silently lost.</li>
+<li><strong>Throughput</strong> — who blocks whom, and how much work gets done per second.</li>
+</ul>
+<p>Once you understand MVCC and locking, you can explain strange results (<em>anomalies</em>), deadlocks, and "why is this query just waiting?".</p>
+<h4>What is happening internally?</h4>
+<p><strong>MVCC</strong> stands for multi-version concurrency control. PostgreSQL, Oracle and MySQL InnoDB use it, and so does SQL Server when snapshot isolation is on. Here is how it works:</p>
+<ul>
+<li>An UPDATE does not overwrite the row. It writes a <strong>new version</strong> of the row. The old version stays for transactions that started earlier.</li>
+<li>Each transaction reads the versions that were committed as of its <strong>snapshot</strong> — a fixed point in time. In READ COMMITTED, the snapshot is taken at the start of each statement. In REPEATABLE READ, it is taken at the start of the transaction.</li>
+<li>So <strong>readers don't block writers, and writers don't block readers.</strong> But writers still block <strong>other writers</strong> on the same row.</li>
+<li>PostgreSQL keeps the old versions inside the table. They are called <em>dead tuples</em>. <code>VACUUM</code> cleans them up. A <strong>long-running transaction</strong> stops this cleanup, so the table grows with junk. This is called <em>bloat</em>.</li>
+<li><strong>SQL Server's default READ COMMITTED uses locks, not versions.</strong> Readers take shared locks and can block writers. If you turn on <code>READ_COMMITTED_SNAPSHOT</code>, it uses row versions stored in tempdb instead. This is a real difference from your SQL Server experience, and worth mentioning in an interview.</li>
+</ul>
+<p>Think of a bank passbook. When a new entry is written, your earlier printout still shows the old balance. Someone reading the old printout doesn't stop the clerk from writing a new entry.</p>
+<p><strong>Locks (simplified):</strong></p>
+<ul>
+<li><strong>Shared (S)</strong> — taken for reads when the isolation level uses locking.</li>
+<li><strong>Exclusive (X)</strong> — taken for writes.</li>
+<li><strong>Update (U)</strong> — SQL Server only. Taken when you read a row you plan to update. It avoids <em>conversion deadlocks</em>, where two readers both try to upgrade to a write lock.</li>
+<li><strong>Intention locks</strong> — placed at table or page level to signal "someone has a lock inside here".</li>
+<li><strong>Range/gap locks</strong> — lock a range of keys, not just existing rows. Used in SERIALIZABLE in SQL Server and REPEATABLE READ in InnoDB. They prevent <em>phantoms</em> — new rows appearing in a range you already read.</li>
+</ul>
+<p><strong>Explicit row locks:</strong> <code>SELECT … FOR UPDATE</code> (PostgreSQL/MySQL) or <code>WITH (UPDLOCK, ROWLOCK)</code> (SQL Server). <code>FOR UPDATE SKIP LOCKED</code> lets many workers each take <em>different</em> rows from a queue table, without waiting on each other. This is used for outbox relays and job schedulers.</p>
+<p><strong>Lock escalation</strong> (SQL Server): if one statement holds thousands of row locks, SQL Server may swap them for a single table lock. That blocks everyone. So split big updates into smaller chunks (batches).</p>
+<p><strong>Deadlock:</strong> transaction A locks row 1 and waits for row 2. At the same time, transaction B locks row 2 and waits for row 1. Neither can move. The database's deadlock detector finds this cycle and aborts one of the transactions. PostgreSQL reports <code>deadlock detected</code>. SQL Server reports error 1205, "chosen as deadlock victim".</p>
+<h4>How does it work?</h4>
+<p>Step by step:</p>
+<ol>
+<li>T1 updates account A, so it locks A.</li>
+<li>T2 updates account B, so it locks B.</li>
+<li>T1 now wants B. B is locked by T2, so T1 waits.</li>
+<li>T2 now wants A. A is locked by T1, so T2 waits.</li>
+<li>Each waits for the other — a cycle. The database rolls one back.</li>
+</ol>
+<div class="hl"><pre><span></span><code>T1: UPDATE account SET balance=balance-10 WHERE id='A'   (locks A)
+T2: UPDATE account SET balance=balance-10 WHERE id='B'   (locks B)
+T1: UPDATE account SET balance=balance+10 WHERE id='B'   (waits for T2)
+T2: UPDATE account SET balance=balance+10 WHERE id='A'   (waits for T1) → cycle → one is rolled back
+Fix: always update accounts in ascending id order (both lock A first).
+</code></pre></div>
+
+<p><strong>Isolation anomalies</strong> (full table in 7.14):</p>
+<ul>
+<li><strong>Dirty read</strong> — reading data another transaction hasn't committed yet.</li>
+<li><strong>Non-repeatable read</strong> — reading the same row twice and getting different values.</li>
+<li><strong>Phantom</strong> — running the same range query twice and getting new rows.</li>
+<li><strong>Lost update</strong> — two transactions update the same row, and one update overwrites the other.</li>
+<li><strong>Write skew</strong> — two transactions read the same condition, and each writes a <em>different</em> row. Together they break a rule that each one alone would have kept. Example: two admins each approve "the last" budget slot, so two slots get used.</li>
+</ul>
+<p>Write skew needs SERIALIZABLE isolation, or an explicit <code>FOR UPDATE</code> on the rows you read.</p>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="c1">-- Job queue table consumed by many workers without blocking each other</span>
+<span class="k">BEGIN</span><span class="p">;</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="n">id</span><span class="p">,</span><span class="w"> </span><span class="n">payload</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">outbox</span>
+<span class="k">WHERE</span><span class="w"> </span><span class="n">published_at</span><span class="w"> </span><span class="k">IS</span><span class="w"> </span><span class="k">NULL</span>
+<span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">created_at</span>
+<span class="k">LIMIT</span><span class="w"> </span><span class="mi">100</span>
+<span class="k">FOR</span><span class="w"> </span><span class="k">UPDATE</span><span class="w"> </span><span class="n">SKIP</span><span class="w"> </span><span class="n">LOCKED</span><span class="p">;</span><span class="w">          </span><span class="c1">-- each worker gets a disjoint batch</span>
+<span class="c1">-- publish to Kafka …</span>
+<span class="k">UPDATE</span><span class="w"> </span><span class="n">outbox</span><span class="w"> </span><span class="k">SET</span><span class="w"> </span><span class="n">published_at</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">now</span><span class="p">()</span><span class="w"> </span><span class="k">WHERE</span><span class="w"> </span><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">ANY</span><span class="p">(:</span><span class="n">ids</span><span class="p">);</span>
+<span class="k">COMMIT</span><span class="p">;</span>
+</code></pre></div>
+
+<h4>When would I use it?</h4>
+<ul>
+<li>Designing concurrent updates — balances, inventory, seat holds.</li>
+<li>Job tables and outbox tables.</li>
+<li>Batch updates on busy ("hot") tables.</li>
+<li>Debugging blocking — "which session holds the lock?". In PostgreSQL, use <code>pg_locks</code> + <code>pg_stat_activity</code>. In SQL Server, use <code>sys.dm_tran_locks</code> and blocked process reports.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Long transactions.</strong> They hold locks longer, cause bloat, and cause replication lag.</li>
+<li><strong>Network calls inside transactions.</strong> A slow HTTP call keeps locks held the whole time.</li>
+<li><strong>Inconsistent lock ordering.</strong> Different code paths lock rows in different orders, which causes deadlocks.</li>
+<li><strong>Missing indexes.</strong> An UPDATE without a useful index scans and locks more rows than needed.</li>
+<li><strong>Not retrying deadlock victims and serialisation failures.</strong> These are normal and expected. Retry them with a small backoff (a short wait), and make the retry idempotent — safe to run twice.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. What is MVCC?</strong> Writers create new versions of a row instead of overwriting it. Readers see a consistent snapshot. So reads and writes don't block each other. Old versions are cleaned up later.</p>
+<p><strong>Q2. How do database deadlocks happen and how do you handle them?</strong> Transactions wait on each other's row locks in a cycle, and the database aborts one of them. Prevent it with a consistent lock order, short transactions, good indexes and single-statement updates. Retry the victim.</p>
+<p><strong>Q3. What is write skew and how do you prevent it?</strong> Two concurrent transactions read overlapping data. Based on it, each writes a different row, and together they break a rule (an invariant). Prevent it with SERIALIZABLE isolation, or by locking the rows you read with <code>FOR UPDATE</code>.</p>
+<p><strong>Q4. What does <code>FOR UPDATE SKIP LOCKED</code> do?</strong> It locks the selected rows and skips any rows already locked by others. So parallel workers each grab different work items without blocking each other.</p>
+<h2 id="s12-8">12.8 Data modelling: normalisation, denormalisation and table partitioning</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> Normalising means storing each fact in one place, so it can't go out of sync. Denormalising means copying data on purpose to make reads faster. Partitioning means cutting one huge table into smaller pieces, usually by month.</p>
+<p>The schema decides three things:</p>
+<ul>
+<li><strong>Correctness</strong> — no <em>update anomalies</em> (the same fact stored twice, with one copy updated and the other not).</li>
+<li><strong>Performance</strong> — how many joins each request needs.</li>
+<li><strong>Operability</strong> — how you archive or delete old data.</li>
+</ul>
+<p>A senior engineer knows when to normalise, when to denormalise on purpose, and how to keep huge tables manageable.</p>
+<h4>What is happening internally?</h4>
+<p><strong>Normal forms, one line each:</strong></p>
+<ul>
+<li><strong>1NF</strong>: each column holds a single value, and there are no repeating groups. For example, no comma-separated SKU list in one column.</li>
+<li><strong>2NF</strong>: no column depends on only <em>part</em> of a composite key.</li>
+<li><strong>3NF</strong>: no transitive dependencies — a column should not depend on another non-key column. An outlet's city belongs in <code>outlet</code>, not repeated in every order.</li>
+<li><strong>BCNF</strong>: every determinant (a column that decides another column's value) is a candidate key.</li>
+</ul>
+<p><strong>Denormalisation</strong> means copying data so you avoid joins or recalculation. Use it for:</p>
+<ul>
+<li>Read-heavy paths.</li>
+<li>Analytics tables.</li>
+<li>Cached aggregates — for example, a <code>balance</code> column kept next to the ledger and checked against it (reconciled) every night.</li>
+<li><strong>Historical snapshots</strong> that must not change when master data changes. Store the price <em>at order time</em> on the order line. This is a correctness requirement, not just a performance trick.</li>
+</ul>
+<p><strong>Table partitioning</strong> splits a large table into child tables by a key — usually time. This is inside one database. It is different from sharding, which spreads data across servers (11.9). Benefits:</p>
+<ul>
+<li>Queries that filter on the key touch only the relevant partitions. This is called <strong>partition pruning</strong>.</li>
+<li>Dropping an old partition is instant. A huge <code>DELETE</code> is slow and heavy.</li>
+<li>Each partition's indexes are smaller.</li>
+</ul>
+<p>Think of an office that keeps one file cabinet per month. To find last week's papers, you open only this month's cabinet. To throw away 2019, you remove the 2019 cabinets — no need to pull out papers one by one.</p>
+<h4>How does it work?</h4>
+<div class="hl"><pre><span></span><code><span class="k">CREATE</span><span class="w"> </span><span class="k">TABLE</span><span class="w"> </span><span class="n">ledger_entry</span><span class="w"> </span><span class="p">(</span>
+<span class="w">  </span><span class="n">id</span><span class="w"> </span><span class="nb">BIGINT</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span><span class="w"> </span><span class="n">tenant_id</span><span class="w"> </span><span class="nb">TEXT</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span><span class="w"> </span><span class="n">account_id</span><span class="w"> </span><span class="nb">TEXT</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span>
+<span class="w">  </span><span class="n">points</span><span class="w"> </span><span class="nb">BIGINT</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span><span class="w"> </span><span class="n">created_at</span><span class="w"> </span><span class="n">TIMESTAMPTZ</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span>
+<span class="w">  </span><span class="k">PRIMARY</span><span class="w"> </span><span class="k">KEY</span><span class="w"> </span><span class="p">(</span><span class="n">id</span><span class="p">,</span><span class="w"> </span><span class="n">created_at</span><span class="p">)</span><span class="w">                       </span><span class="c1">-- the partition key must be part of the PK/unique keys</span>
+<span class="p">)</span><span class="w"> </span><span class="n">PARTITION</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">RANGE</span><span class="w"> </span><span class="p">(</span><span class="n">created_at</span><span class="p">);</span>
+
+<span class="k">CREATE</span><span class="w"> </span><span class="k">TABLE</span><span class="w"> </span><span class="n">ledger_entry_2026_10</span><span class="w"> </span><span class="n">PARTITION</span><span class="w"> </span><span class="k">OF</span><span class="w"> </span><span class="n">ledger_entry</span>
+<span class="w">  </span><span class="k">FOR</span><span class="w"> </span><span class="k">VALUES</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="p">(</span><span class="s1">'2026-10-01'</span><span class="p">)</span><span class="w"> </span><span class="k">TO</span><span class="w"> </span><span class="p">(</span><span class="s1">'2026-11-01'</span><span class="p">);</span>
+<span class="c1">-- monthly job creates next month's partition; retention job detaches/drops partitions older than 7 years (or archives them)</span>
+</code></pre></div>
+
+<h4>Example</h4>
+<p>The orders table grows by 60M rows a year. You use monthly range partitions. Now:</p>
+<ul>
+<li>Dashboard queries for "last 30 days" scan only one or two partitions.</li>
+<li>GDPR or retention deletes become a simple <code>DROP TABLE orders_2019_01</code>.</li>
+<li>Vacuum and index maintenance run per partition, which is smaller and faster.</li>
+</ul>
+<h4>When would I use it?</h4>
+<ul>
+<li><strong>Normalise</strong> OLTP (transactional) schemas by default.</li>
+<li><strong>Denormalise</strong> on purpose, for read paths that are proven slow, and for history.</li>
+<li><strong>Partition</strong> tables that keep growing forever (ledgers, events, orders, logs) by time. Choose a partition key that appears in almost every query's filter.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Denormalised copies drift out of sync.</strong> Decide which copy is the source of truth. Decide how the copies get updated — events, triggers, or reconciliation jobs.</li>
+<li><strong>Partitioning on a key that queries don't filter by.</strong> Then every query scans every partition.</li>
+<li><strong>Too many tiny partitions.</strong> The planner spends too long just planning.</li>
+<li><strong>Unique constraints must include the partition key.</strong> You can't enforce uniqueness on <code>id</code> alone across partitions.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. When would you denormalise?</strong> For read-heavy paths where joins cost too much, for analytics, for cached aggregates, and for historical snapshots such as the price at order time.</p>
+<p><strong>Q2. Partitioning vs sharding?</strong> Partitioning splits a table inside one database, so queries can skip partitions and old data is easy to drop. Sharding spreads data across many database servers, to get more capacity and more write throughput.</p>
+<h2 id="s12-9">12.9 OLTP vs OLAP: where ClickHouse and Trino fit</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> The database that takes orders (OLTP) is built for many tiny reads and writes. Dashboards need the opposite — a few huge scans over months of data. So analytics goes to a different kind of database (OLAP), like ClickHouse, which is built for scanning.</p>
+<p>A dashboard that adds up months of orders across thousands of outlets will crush a transactional database. It will also slow down checkout for real users. Analytical work needs a different storage design.</p>
+<p>Your experience with ClickHouse and Trino is a strength here. Be ready to explain <em>why</em> they are fast.</p>
+<h4>What is happening internally?</h4>
+<p>OLTP means online transaction processing. OLAP means online analytical processing.</p>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th></th>
+<th>OLTP (PostgreSQL, SQL Server)</th>
+<th>OLAP (ClickHouse, BigQuery, Snowflake; Trino over a lake)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Workload</td>
+<td>Many small reads and writes by key</td>
+<td>A few huge scans and aggregations</td>
+</tr>
+<tr>
+<td>Storage</td>
+<td>Row-oriented (all columns of one row stored together)</td>
+<td><strong>Column-oriented</strong> (each column stored separately, heavily compressed)</td>
+</tr>
+<tr>
+<td>Indexes</td>
+<td>B+ trees for point lookups</td>
+<td>Sparse primary index + sort order; skip indexes; min/max per block</td>
+</tr>
+<tr>
+<td>Updates</td>
+<td>Cheap and transactional</td>
+<td>Expensive or done later in the background (mutations, ReplacingMergeTree)</td>
+</tr>
+<tr>
+<td>Joins</td>
+<td>Strong</td>
+<td>Possible but costly; prefer wide, denormalised tables</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Why columnar storage is fast for analytics:</strong></p>
+<ul>
+<li>A query that sums <code>amount</code> by <code>outlet_id</code> reads only those two columns. It skips the rest.</li>
+<li>Similar values are stored next to each other, so they compress 5–10×. Less data to read from disk.</li>
+<li><em>Vectorised execution</em> processes values in batches, using SIMD (one CPU instruction working on many values at once).</li>
+</ul>
+<p>Think of a school register. A row store is like one file per student, with all their marks. To find the class average in Maths, you open every file. A column store is like one sheet with only the Maths marks of all students — you read just that one sheet.</p>
+<p><strong>ClickHouse MergeTree:</strong></p>
+<ol>
+<li>Inserted data is sorted by the table's <code>ORDER BY</code> key.</li>
+<li>It is written as immutable (never changed) <strong>parts</strong>.</li>
+<li>Parts are merged together in the background.</li>
+<li>The sparse primary index stores one mark per <strong>granule</strong> (a block of 8,192 rows). So a query reads only the granules that can match.</li>
+<li><strong>Materialised views</strong> keep rollups up to date at insert time.</li>
+<li>TTLs (time-to-live rules) move or drop old data automatically.</li>
+</ol>
+<p><strong>Trino</strong> is a distributed SQL query engine with <strong>no storage of its own</strong>. It <em>federates</em> queries — one SQL query can read from many sources: Hive/Iceberg tables on object storage, PostgreSQL, Kafka, ClickHouse. It is great for ad-hoc analysis across systems. It is not meant for low-latency serving to users.</p>
+<h4>How does it work?</h4>
+<p>The data flow:</p>
+<ol>
+<li>PostgreSQL holds the source of truth.</li>
+<li>CDC (change data capture — Debezium reads every change from the database log) sends changes to Kafka.</li>
+<li>ClickHouse reads from Kafka. A materialised view builds daily sales per outlet for dashboards and incentive metrics.</li>
+<li>Batch exports go to a data lake (Iceberg on Blob storage). Trino queries the lake, Postgres and ClickHouse together for ad-hoc analysis.</li>
+</ol>
+<div class="hl"><pre><span></span><code>PostgreSQL (truth) ──CDC (Debezium)──► Kafka ──► ClickHouse (MergeTree, ORDER BY (tenant_id, outlet_id, day))
+                                                    └─ materialised view: daily sales per outlet → dashboards, incentive metrics
+Data lake (Iceberg on Blob) ◄── batch exports; Trino queries lake + Postgres + ClickHouse for ad-hoc analysis
+</code></pre></div>
+
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="k">CREATE</span><span class="w"> </span><span class="k">TABLE</span><span class="w"> </span><span class="n">sales_events</span><span class="w"> </span><span class="p">(</span>
+<span class="w">  </span><span class="n">tenant_id</span><span class="w"> </span><span class="n">UInt32</span><span class="p">,</span><span class="w"> </span><span class="n">outlet_id</span><span class="w"> </span><span class="n">UInt64</span><span class="p">,</span><span class="w"> </span><span class="n">sku</span><span class="w"> </span><span class="n">LowCardinality</span><span class="p">(</span><span class="n">String</span><span class="p">),</span><span class="w"> </span><span class="n">amount</span><span class="w"> </span><span class="nb">Decimal</span><span class="p">(</span><span class="mi">12</span><span class="p">,</span><span class="mi">2</span><span class="p">),</span><span class="w"> </span><span class="n">event_time</span><span class="w"> </span><span class="n">DateTime</span>
+<span class="p">)</span><span class="w"> </span><span class="n">ENGINE</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">MergeTree</span>
+<span class="n">PARTITION</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">toYYYYMM</span><span class="p">(</span><span class="n">event_time</span><span class="p">)</span>
+<span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="p">(</span><span class="n">tenant_id</span><span class="p">,</span><span class="w"> </span><span class="n">outlet_id</span><span class="p">,</span><span class="w"> </span><span class="n">event_time</span><span class="p">)</span>
+<span class="n">TTL</span><span class="w"> </span><span class="n">event_time</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="nb">INTERVAL</span><span class="w"> </span><span class="mi">3</span><span class="w"> </span><span class="k">YEAR</span><span class="p">;</span>
+
+<span class="c1">-- Scans only the granules for tenant 7 in the last 30 days, reading 3 columns</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="n">outlet_id</span><span class="p">,</span><span class="w"> </span><span class="k">sum</span><span class="p">(</span><span class="n">amount</span><span class="p">)</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">sales_events</span>
+<span class="k">WHERE</span><span class="w"> </span><span class="n">tenant_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">7</span><span class="w"> </span><span class="k">AND</span><span class="w"> </span><span class="n">event_time</span><span class="w"> </span><span class="o">&gt;=</span><span class="w"> </span><span class="n">now</span><span class="p">()</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="nb">INTERVAL</span><span class="w"> </span><span class="mi">30</span><span class="w"> </span><span class="k">DAY</span>
+<span class="k">GROUP</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">outlet_id</span><span class="w"> </span><span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="k">sum</span><span class="p">(</span><span class="n">amount</span><span class="p">)</span><span class="w"> </span><span class="k">DESC</span><span class="w"> </span><span class="k">LIMIT</span><span class="w"> </span><span class="mi">10</span><span class="p">;</span>
+</code></pre></div>
+
+<blockquote class="co saythis">
+<p><strong>Say this:</strong> "Transactional truth stays in PostgreSQL or SQL Server; changes stream via CDC and Kafka into ClickHouse for dashboards and incentive aggregates; Trino handles ad-hoc analysis across sources. That split keeps heavy analytics from ever hurting checkout latency."</p>
+</blockquote>
+<h4>When would I use it?</h4>
+<ul>
+<li>Dashboards and reports.</li>
+<li>Incentive metric aggregation (13.14).</li>
+<li>Metrics and log analytics (13.11).</li>
+<li>Any query over months or years of events.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Using ClickHouse like an OLTP database.</strong> Frequent single-row updates and deletes, or point lookups by non-key columns, perform badly.</li>
+<li><strong>A poor <code>ORDER BY</code> key.</strong> Queries can't skip granules, so they read everything.</li>
+<li><strong>Too many small inserts.</strong> Each insert creates a new part. Batch your inserts.</li>
+<li><strong>Expecting strong consistency.</strong> The analytics store is fed asynchronously, so it is always slightly behind the source.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. Row store vs column store?</strong> A row store keeps each row together, which is ideal for transactional point reads and writes. A column store keeps each column together, which is ideal for scanning and aggregating a few columns over many rows, with high compression.</p>
+<p><strong>Q2. Why is ClickHouse fast for aggregations?</strong> It uses columnar storage, so it reads only the needed columns. Data is heavily compressed. Data is sorted by the primary key, and a sparse index lets it skip granules. It uses vectorised execution. And materialised views pre-aggregate data at insert time.</p>
+<p><strong>Q3. What is Trino used for?</strong> Distributed SQL across many data sources, without storing any data itself. It is used for ad-hoc analytics across a data lake and operational databases.</p>

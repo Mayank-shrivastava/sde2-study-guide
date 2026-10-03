@@ -1,0 +1,820 @@
+<p>Short, flashcard-sized answers for your last two weeks of revision. Every row is also in the companion Anki CSV, so you can review on your phone. If an answer here feels unfamiliar, go back to the chapter section shown in brackets.</p>
+<h2 id="s16-1">16.1 Core Java</h2>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>Question</th>
+<th>Answer</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>JDK vs JRE vs JVM?</td>
+<td>JVM (Java Virtual Machine) runs bytecode; JRE (runtime) = JVM + libraries; JDK (dev kit) = JRE + dev tools (javac, jcmd…). [1.1]</td>
+</tr>
+<tr>
+<td>Is Java pass-by-value?</td>
+<td>Always. For objects, the reference is copied, not the object. [1.6]</td>
+</tr>
+<tr>
+<td>Why is String immutable?</td>
+<td>So it can be pooled and shared, kept secure, cache its hashCode, and be thread-safe. [1.4]</td>
+</tr>
+<tr>
+<td><code>==</code> vs <code>equals</code>?</td>
+<td><code>==</code> compares references (or primitive values); <code>equals</code> compares logical content. [1.12]</td>
+</tr>
+<tr>
+<td>equals/hashCode contract?</td>
+<td>Equal objects must have equal hash codes; equal hash codes do not mean equal objects. [1.12]</td>
+</tr>
+<tr>
+<td>Integer cache range?</td>
+<td>−128 to 127, when using <code>Integer.valueOf</code> (and autoboxing). [1.2]</td>
+</tr>
+<tr>
+<td>StringBuilder vs StringBuffer?</td>
+<td>Same methods; StringBuffer is synchronized, so slower. Use StringBuilder. [1.5]</td>
+</tr>
+<tr>
+<td>Interface vs abstract class?</td>
+<td>Interface: a contract for many unrelated classes, no state. Abstract class: shared state and code for related classes. [1.10]</td>
+</tr>
+<tr>
+<td>Overloading vs overriding?</td>
+<td>Overloading: chosen at compile time by parameters. Overriding: chosen at runtime by the actual object type. [1.9]</td>
+</tr>
+<tr>
+<td>Can static methods be overridden?</td>
+<td>No, they are hidden; the call depends on the reference type, not the object. [1.9]</td>
+</tr>
+<tr>
+<td><code>final</code> on variable/method/class?</td>
+<td>Variable: assign once / method: can't override / class: can't subclass. [1.7]</td>
+</tr>
+<tr>
+<td>Checked vs unchecked exceptions?</td>
+<td>Checked: must declare or handle. Unchecked: RuntimeException subclasses, no need. [1.15]</td>
+</tr>
+<tr>
+<td>Does <code>finally</code> always run?</td>
+<td>Yes, except on System.exit or a JVM crash. Never return from finally. [1.15]</td>
+</tr>
+<tr>
+<td>try-with-resources?</td>
+<td>Closes AutoCloseable resources automatically, in reverse order; extra exceptions are kept as "suppressed". [1.15]</td>
+</tr>
+<tr>
+<td>Type erasure consequences?</td>
+<td>Generic types vanish at runtime, so: no primitives as type args, no <code>new T()</code>, no generic arrays, no instanceof on parameterised types. [1.16]</td>
+</tr>
+<tr>
+<td>PECS?</td>
+<td>Producer <code>extends</code>, consumer <code>super</code>: read from <code>? extends T</code>, write to <code>? super T</code>. [1.16]</td>
+</tr>
+<tr>
+<td>How to make a class immutable?</td>
+<td>Final class, private final fields, no setters, defensive copies of mutable fields. [1.14]</td>
+</tr>
+<tr>
+<td>Comparable vs Comparator?</td>
+<td>Comparable: natural order inside the class. Comparator: outside order you can combine. [1.13]</td>
+</tr>
+<tr>
+<td>Why not <code>a - b</code> in comparators?</td>
+<td>It can overflow and give the wrong sign; use <code>Integer.compare</code>. [1.13]</td>
+</tr>
+<tr>
+<td>Shallow vs deep copy?</td>
+<td>Shallow shares nested objects; deep copies them too. Prefer copy constructors over clone. [1.14]</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="s16-2">16.2 Collections</h2>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>Question</th>
+<th>Answer</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>HashMap default capacity and load factor?</td>
+<td>16 and 0.75, so it resizes at 12 entries. [2.4]</td>
+</tr>
+<tr>
+<td>When does a HashMap bucket treeify?</td>
+<td>When a chain reaches 8 and the table has ≥ 64 slots; turns back into a list at 6. [2.4]</td>
+</tr>
+<tr>
+<td>Why power-of-two capacity?</td>
+<td>Index is a fast <code>(n-1) &amp; hash</code>, and on resize each entry stays or moves by exactly n (one bit decides). [2.4]</td>
+</tr>
+<tr>
+<td>HashMap worst-case lookup in Java 8+?</td>
+<td>O(log n), because big buckets become trees. [2.4]</td>
+</tr>
+<tr>
+<td>Null keys in HashMap / ConcurrentHashMap / TreeMap?</td>
+<td>One allowed / none / none (it needs to compare keys). [2.4, 4.9]</td>
+</tr>
+<tr>
+<td>ArrayList growth?</td>
+<td>Grows 1.5× by copying into a bigger array (Arrays.copyOf). [2.2]</td>
+</tr>
+<tr>
+<td>ArrayList vs LinkedList?</td>
+<td>ArrayList: fast index access and CPU-cache friendly. LinkedList: O(1) insert only at a node you already hold. Pick ArrayList almost always. [2.2, 2.3]</td>
+</tr>
+<tr>
+<td>What backs HashSet?</td>
+<td>A HashMap whose values are a dummy object. [2.7]</td>
+</tr>
+<tr>
+<td>TreeMap complexity and structure?</td>
+<td>A red-black (self-balancing) tree, O(log n), with NavigableMap methods like floorKey/ceilingKey. [2.6]</td>
+</tr>
+<tr>
+<td>LinkedHashMap access order?</td>
+<td><code>new LinkedHashMap&lt;&gt;(cap, 0.75f, true)</code> + override removeEldestEntry → an LRU (least recently used) cache. [2.5]</td>
+</tr>
+<tr>
+<td>Stack/queue class to use?</td>
+<td>ArrayDeque. [2.8]</td>
+</tr>
+<tr>
+<td>Is PriorityQueue iteration sorted?</td>
+<td>No; only the head is guaranteed to be the minimum. [2.9]</td>
+</tr>
+<tr>
+<td>Fail-fast vs fail-safe iterators?</td>
+<td>Fail-fast throws CME (ConcurrentModificationException) if the collection changes; fail-safe iterates a snapshot or weakly consistent view. [2.10]</td>
+</tr>
+<tr>
+<td>Remove while iterating?</td>
+<td>Use <code>iterator.remove()</code> or <code>removeIf</code>. [2.10]</td>
+</tr>
+<tr>
+<td><code>Arrays.asList</code> gotcha?</td>
+<td>Fixed size (no add/remove); with an <code>int[]</code> you get <code>List&lt;int[]&gt;</code>. [2.11]</td>
+</tr>
+<tr>
+<td>unmodifiableList vs List.copyOf?</td>
+<td>A read-only view of the original vs an independent immutable copy. [2.11]</td>
+</tr>
+<tr>
+<td>Sort algorithms used?</td>
+<td>Primitives: dual-pivot quicksort; objects: TimSort (stable — equal items keep their order). [2.11]</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="s16-3">16.3 Java 8–21</h2>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>Question</th>
+<th>Answer</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Functional interface?</td>
+<td>Exactly one abstract method; a lambda can be used for it. [3.1]</td>
+</tr>
+<tr>
+<td>Function vs Supplier vs Consumer vs Predicate?</td>
+<td>T→R, ()→T, T→void, T→boolean. [3.1]</td>
+</tr>
+<tr>
+<td>Intermediate vs terminal ops?</td>
+<td>Intermediate: lazy, return a stream. Terminal: actually run the pipeline. [3.2]</td>
+</tr>
+<tr>
+<td>map vs flatMap?</td>
+<td>One-to-one vs one-to-many, flattened into one stream. [3.2]</td>
+</tr>
+<tr>
+<td>Reuse a stream?</td>
+<td>No — you get IllegalStateException. [3.2]</td>
+</tr>
+<tr>
+<td>Parallel streams risk?</td>
+<td>They use the shared common ForkJoinPool, so blocking calls starve it; overhead is not worth it for small data. [3.4]</td>
+</tr>
+<tr>
+<td>toMap duplicate keys?</td>
+<td>IllegalStateException, unless you pass a merge function. [3.3]</td>
+</tr>
+<tr>
+<td>groupingBy with counting?</td>
+<td><code>groupingBy(f, Collectors.counting())</code> → Map<K, Long>. [3.3]</td>
+</tr>
+<tr>
+<td>orElse vs orElseGet?</td>
+<td>orElse always builds the default (eager); orElseGet builds it only if needed (lazy). [3.5]</td>
+</tr>
+<tr>
+<td>Where not to use Optional?</td>
+<td>Fields, method parameters, collections. [3.5]</td>
+</tr>
+<tr>
+<td>Record features?</td>
+<td>Final class, immutable fields, auto-generated accessors/equals/hashCode/toString, compact constructor for checks. [3.7]</td>
+</tr>
+<tr>
+<td>Sealed classes?</td>
+<td>Limit which classes can extend it with <code>permits</code>; switches can then cover all cases. [3.8]</td>
+</tr>
+<tr>
+<td>Switch expression <code>yield</code>?</td>
+<td>Returns a value from a block <code>{ }</code> arm of a switch expression. [3.9]</td>
+</tr>
+<tr>
+<td>Virtual threads?</td>
+<td>Cheap threads scheduled by the JVM that step off the OS thread during blocking I/O; for I/O-bound concurrency. [4.12]</td>
+</tr>
+<tr>
+<td>Pinning?</td>
+<td>A virtual thread can't step off its OS thread (inside synchronized or native code) in Java 21. [4.12]</td>
+</tr>
+<tr>
+<td>Instant vs LocalDateTime?</td>
+<td>A point in time in UTC vs a date-time with no time zone. [3.6]</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="s16-4">16.4 Concurrency</h2>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>Question</th>
+<th>Answer</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>start() vs run()?</td>
+<td>start() runs the code on a new thread; run() runs it on the current thread. [4.1]</td>
+</tr>
+<tr>
+<td>sleep vs wait?</td>
+<td>sleep keeps its locks; wait releases the monitor and needs notify to wake. [4.5]</td>
+</tr>
+<tr>
+<td>Why wait in a loop?</td>
+<td>Threads can wake up for no reason (spurious wakeups), and the condition may have changed. [4.5]</td>
+</tr>
+<tr>
+<td>volatile guarantees?</td>
+<td>Visibility + ordering, but not atomicity (<code>count++</code> is still unsafe). [4.6]</td>
+</tr>
+<tr>
+<td>happens-before examples?</td>
+<td>Unlock→next lock, volatile write→read, Thread.start, Thread.join, submitting to an executor. [4.6]</td>
+</tr>
+<tr>
+<td>Why volatile in DCL singleton?</td>
+<td>In DCL (double-checked locking), it stops other threads seeing a half-built object. [4.6]</td>
+</tr>
+<tr>
+<td>ReentrantLock over synchronized?</td>
+<td>tryLock with timeout, can be interrupted, fairness option, multiple Conditions. [4.7]</td>
+</tr>
+<tr>
+<td>CAS and ABA?</td>
+<td>CAS = atomic compare-and-swap. ABA (value changes A→B→A unnoticed) is fixed with stamped references. [4.8]</td>
+</tr>
+<tr>
+<td>LongAdder vs AtomicLong?</td>
+<td>LongAdder spreads updates over many cells → faster when many threads update; reading the sum is slower. [4.8]</td>
+</tr>
+<tr>
+<td>ThreadPoolExecutor admission order?</td>
+<td>Core threads first → then queue → then extra threads up to max → then reject. [4.3]</td>
+</tr>
+<tr>
+<td>Problem with newFixedThreadPool?</td>
+<td>Its queue has no limit → memory blows up under load. [4.3]</td>
+</tr>
+<tr>
+<td>Rejection policies?</td>
+<td>Abort, CallerRuns, Discard, DiscardOldest. [4.3]</td>
+</tr>
+<tr>
+<td>Pool size I/O-bound?</td>
+<td>cores × (1 + wait time / compute time). [4.3]</td>
+</tr>
+<tr>
+<td>CHM in Java 8?</td>
+<td>ConcurrentHashMap: CAS on empty bins, synchronized on the bin's head node, lock-free reads, threads help with resizing. [4.9]</td>
+</tr>
+<tr>
+<td>containsKey-then-put race fix?</td>
+<td>Use one atomic call: putIfAbsent / computeIfAbsent / merge / compute. [4.9]</td>
+</tr>
+<tr>
+<td>CountDownLatch vs CyclicBarrier vs Semaphore?</td>
+<td>Wait for N events (one-shot) / N threads wait for each other (reusable) / limit how many run at once. [4.10]</td>
+</tr>
+<tr>
+<td>thenApply vs thenCompose vs thenCombine?</td>
+<td>Map the value / flatMap another async call / zip two futures together. [4.11]</td>
+</tr>
+<tr>
+<td>CompletableFuture default executor problem?</td>
+<td>It uses the shared common pool — pass your own executor for I/O. [4.11]</td>
+</tr>
+<tr>
+<td>Deadlock conditions and prevention?</td>
+<td>Mutual exclusion, hold-and-wait, no preemption, circular wait; prevent with fixed lock order or tryLock. [4.13]</td>
+</tr>
+<tr>
+<td>How to detect deadlock in prod?</td>
+<td>Take a thread dump; look for "Found one Java-level deadlock". [4.13]</td>
+</tr>
+<tr>
+<td>ThreadLocal risk?</td>
+<td>Values leak into the next request on a pooled thread; always call remove(). [4.15]</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="s16-5">16.5 JVM</h2>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>Question</th>
+<th>Answer</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Heap generations?</td>
+<td>Young (Eden, S0, S1 survivor spaces) and Old. [5.3]</td>
+</tr>
+<tr>
+<td>PermGen replaced by?</td>
+<td>Metaspace (in native memory) in Java 8. [5.2]</td>
+</tr>
+<tr>
+<td>GC roots?</td>
+<td>Starting points for GC: thread stacks, static fields, JNI (native code) references, active threads. [5.4]</td>
+</tr>
+<tr>
+<td>Default GC since Java 9?</td>
+<td>G1. [5.5]</td>
+</tr>
+<tr>
+<td>G1 vs ZGC?</td>
+<td>G1: heap split into regions, aims for a pause-time target. ZGC: compacts while the app runs, pauses under 1 ms. [5.5]</td>
+</tr>
+<tr>
+<td>StackOverflowError cause?</td>
+<td>Recursion that goes too deep. [5.2]</td>
+</tr>
+<tr>
+<td>Memory leak causes in Java?</td>
+<td>Static caches, listeners never removed, ThreadLocals, inner classes holding the outer object, unclosed resources, keys changed after insert. [5.7]</td>
+</tr>
+<tr>
+<td>Tools for high CPU?</td>
+<td><code>top -H</code> → convert thread ID to hex → find that nid in a thread dump; or JFR (Java Flight Recorder) / async-profiler. [5.8]</td>
+</tr>
+<tr>
+<td>Tools for OOM?</td>
+<td>For OutOfMemoryError: <code>-XX:+HeapDumpOnOutOfMemoryError</code> + MAT (Memory Analyzer) dominator tree; compare heap histograms over time. [5.9]</td>
+</tr>
+<tr>
+<td>Class loader delegation?</td>
+<td>A loader asks its parent first; order is bootstrap → platform → app. [5.1]</td>
+</tr>
+<tr>
+<td>JIT tiers?</td>
+<td>Interpreter → C1 (quick compile) → C2 (optimised compile), with deoptimisation if assumptions break. [5.10]</td>
+</tr>
+<tr>
+<td>Container heap sizing?</td>
+<td><code>-XX:MaxRAMPercentage≈75</code> (heap = about 75% of the container's memory). [5.11]</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="s16-6">16.6 Spring Boot and JPA</h2>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>Question</th>
+<th>Answer</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>@SpringBootApplication = ?</td>
+<td>@Configuration + @EnableAutoConfiguration + @ComponentScan. [6.9]</td>
+</tr>
+<tr>
+<td>Why constructor injection?</td>
+<td>Final fields, clear dependencies, easy to test, circular dependencies fail at start-up. [6.2]</td>
+</tr>
+<tr>
+<td>@Component vs @Bean?</td>
+<td>@Component: a class found by scanning. @Bean: a factory method inside a @Configuration class. [6.3]</td>
+</tr>
+<tr>
+<td>Bean scopes?</td>
+<td>singleton, prototype, request, session, application. [6.5]</td>
+</tr>
+<tr>
+<td>Prototype in singleton fix?</td>
+<td>Get a fresh one each time via ObjectProvider / @Lookup / a scoped proxy. [6.5]</td>
+</tr>
+<tr>
+<td>Bean lifecycle order?</td>
+<td>Construct → inject → Aware callbacks → BPP (BeanPostProcessor) before → @PostConstruct → BPP after (proxy made here) → @PreDestroy. [6.6]</td>
+</tr>
+<tr>
+<td>How does auto-configuration work?</td>
+<td>Starters bring conditional config classes; they step back if you define the bean yourself. [6.9]</td>
+</tr>
+<tr>
+<td>Self-invocation problem?</td>
+<td>Calling a method from the same class skips the proxy → no @Transactional/@Async/@Cacheable. [6.7]</td>
+</tr>
+<tr>
+<td>JDK proxy vs CGLIB?</td>
+<td>JDK proxy: based on an interface. CGLIB: makes a subclass (Boot's default). [6.7]</td>
+</tr>
+<tr>
+<td>Property precedence top?</td>
+<td>Command-line args &gt; environment variables &gt; profile files &gt; application.yml. [6.8]</td>
+</tr>
+<tr>
+<td>Filter vs Interceptor?</td>
+<td>Filter: Servlet level, before Spring. Interceptor: Spring MVC level, knows which handler runs. [7.5]</td>
+</tr>
+<tr>
+<td>Global error handling?</td>
+<td>@RestControllerAdvice + @ExceptionHandler → return a ProblemDetail. [7.4]</td>
+</tr>
+<tr>
+<td>N+1 fixes?</td>
+<td>Fetch join, @EntityGraph, batch fetch size, DTO (plain data object) projection. [7.10]</td>
+</tr>
+<tr>
+<td>LazyInitializationException?</td>
+<td>A lazy field is read after the session closed; load it inside the transaction; turn off OSIV (Open Session In View). [7.11]</td>
+</tr>
+<tr>
+<td>Dirty checking?</td>
+<td>Changes to managed entities are UPDATEd automatically at flush. [7.9]</td>
+</tr>
+<tr>
+<td>Default fetch types?</td>
+<td>ToOne is EAGER, ToMany is LAZY — make ToOne LAZY too. [7.8]</td>
+</tr>
+<tr>
+<td>@Transactional default rollback?</td>
+<td>Only on unchecked exceptions and Errors, not checked exceptions. [7.12]</td>
+</tr>
+<tr>
+<td>REQUIRED vs REQUIRES_NEW vs NESTED?</td>
+<td>Join existing or create one / always a separate new one / a savepoint inside the current one. [7.13]</td>
+</tr>
+<tr>
+<td>Isolation levels?</td>
+<td>Read Uncommitted, Read Committed (Postgres default), Repeatable Read (MySQL default), Serializable. [7.14]</td>
+</tr>
+<tr>
+<td>Optimistic vs pessimistic locking?</td>
+<td>Optimistic: @Version column + retry on conflict. Pessimistic: SELECT FOR UPDATE locks the row. [7.15]</td>
+</tr>
+<tr>
+<td>Prevent overdraw atomically?</td>
+<td><code>UPDATE ... SET bal = bal - p WHERE id=? AND bal &gt;= p</code> and check the updated row count. [7.15]</td>
+</tr>
+<tr>
+<td>IDENTITY vs SEQUENCE ids?</td>
+<td>IDENTITY turns off Hibernate batch inserts; SEQUENCE allows them. [7.16]</td>
+</tr>
+<tr>
+<td>ddl-auto in prod?</td>
+<td>Set to validate, and change schema with Flyway/Liquibase migrations. [7.16]</td>
+</tr>
+<tr>
+<td>JWT validation checks?</td>
+<td>Signature, exp (expiry), iss (issuer), aud (audience). [8.2]</td>
+</tr>
+<tr>
+<td>When CSRF needed?</td>
+<td>For cookie-based browser sessions; not for APIs using bearer tokens. [8.1]</td>
+</tr>
+<tr>
+<td>@WebMvcTest vs @SpringBootTest?</td>
+<td>Only the web layer vs the full application context. [8.4]</td>
+</tr>
+<tr>
+<td>Why Testcontainers?</td>
+<td>Tests run against a real DB/Kafka in Docker, so behaviour matches production. [8.4]</td>
+</tr>
+<tr>
+<td>Kafka consumer idempotency?</td>
+<td>Safe to process twice: store processed event IDs (unique key) in the same transaction as the effect. [8.5]</td>
+</tr>
+<tr>
+<td>Cache-aside write rule?</td>
+<td>Update the DB first, then evict (delete) the cache key. [8.6]</td>
+</tr>
+<tr>
+<td>Circuit breaker states?</td>
+<td>Closed → Open → Half-open. [8.7]</td>
+</tr>
+<tr>
+<td>Scheduled job once per cluster?</td>
+<td>ShedLock / Quartz in cluster mode / a Kubernetes CronJob. [8.8]</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="s16-7">16.7 LLD</h2>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>Question</th>
+<th>Answer</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>SOLID?</td>
+<td>Single responsibility, Open/closed, Liskov substitution, Interface segregation, Dependency inversion. [9.3–9.7]</td>
+</tr>
+<tr>
+<td>Composition over inheritance — why?</td>
+<td>Less tight coupling, can change behaviour at runtime, no fragile base class. [9.1]</td>
+</tr>
+<tr>
+<td>Strategy vs State?</td>
+<td>Strategy: the client picks the algorithm. State: the object moves itself between states. [9.17, 9.19]</td>
+</tr>
+<tr>
+<td>Decorator vs Proxy vs Adapter?</td>
+<td>Add behaviour / control access / convert one interface into another. [9.12–9.14]</td>
+</tr>
+<tr>
+<td>Factory vs Builder?</td>
+<td>Factory decides which class to create; Builder builds one complex object step by step. [9.9, 9.10]</td>
+</tr>
+<tr>
+<td>Best singleton in Java?</td>
+<td>An enum, or the holder-class idiom. [9.8]</td>
+</tr>
+<tr>
+<td>Pattern for undo?</td>
+<td>Command (+ Memento to save state). [9.20]</td>
+</tr>
+<tr>
+<td>Pattern for rule trees?</td>
+<td>Composite + Specification (+ Strategy for payouts). [10.12]</td>
+</tr>
+<tr>
+<td>Parking lot concurrency?</td>
+<td>Atomically take a spot from a thread-safe free-spot structure, one per spot type. [10.2]</td>
+</tr>
+<tr>
+<td>LRU in O(1)?</td>
+<td>HashMap + doubly linked list with dummy head/tail (sentinel) nodes. [10.3]</td>
+</tr>
+<tr>
+<td>Seat double-booking prevention?</td>
+<td>Lock per show / conditional DB update / Redis SET NX (set only if absent) with TTL. [10.10]</td>
+</tr>
+<tr>
+<td>Splitwise simplify?</td>
+<td>Work out net balances, then greedily match the biggest debtor and creditor using two heaps. [10.9]</td>
+</tr>
+<tr>
+<td>LLD interview order?</td>
+<td>Requirements → entities → relationships → interfaces/patterns → code → walk through a scenario → extensions. [9.25]</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="s16-8">16.8 HLD</h2>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>Question</th>
+<th>Answer</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1M requests/day ≈ ? QPS</td>
+<td>About 12 QPS (queries per second), since a day ≈ 10⁵ seconds. [11.2]</td>
+</tr>
+<tr>
+<td>99.9% vs 99.99% downtime/year?</td>
+<td>About 8.8 hours vs about 53 minutes. [11.3]</td>
+</tr>
+<tr>
+<td>L4 vs L7 load balancer?</td>
+<td>L4 routes on TCP/IP info only; L7 understands HTTP (paths, headers). [11.4]</td>
+</tr>
+<tr>
+<td>Cache stampede fixes?</td>
+<td>Let only one request reload (single-flight or lock), add random jitter to TTLs, serve stale data while refreshing. [11.5]</td>
+</tr>
+<tr>
+<td>Cache penetration fix?</td>
+<td>Cache "not found" results too; or use a Bloom filter to reject unknown keys. [11.5]</td>
+</tr>
+<tr>
+<td>Composite index rule?</td>
+<td>Works from the leftmost column; put equality columns before range columns. [12.5]</td>
+</tr>
+<tr>
+<td>Quorum condition?</td>
+<td>R + W &gt; N (read replicas + write replicas &gt; total replicas). [11.8]</td>
+</tr>
+<tr>
+<td>Replication lag anomaly fix?</td>
+<td>Read-your-writes: read from the leader right after a user writes. [11.8]</td>
+</tr>
+<tr>
+<td>Good shard key?</td>
+<td>Many distinct values, spreads load evenly, matches the main way you query. [11.9]</td>
+</tr>
+<tr>
+<td>CAP in one line?</td>
+<td>When the network splits, you must choose consistency or availability. [11.10]</td>
+</tr>
+<tr>
+<td>PACELC adds?</td>
+<td>Else (no split): choose low latency or consistency. [11.10]</td>
+</tr>
+<tr>
+<td>Consistent hashing benefit?</td>
+<td>Adding/removing a node moves only ~1/N of keys; virtual nodes even out the load. [11.11]</td>
+</tr>
+<tr>
+<td>Queue vs log?</td>
+<td>Queue: message deleted once acknowledged, spreads work. Log: messages kept, can be replayed, ordered per partition. [11.12]</td>
+</tr>
+<tr>
+<td>Kafka ordering?</td>
+<td>Only within one partition; pick the message key with that in mind. [11.13]</td>
+</tr>
+<tr>
+<td>Kafka max consumer parallelism?</td>
+<td>The number of partitions. [11.13]</td>
+</tr>
+<tr>
+<td>No-loss Kafka config?</td>
+<td>acks=all, replication factor 3, min.insync.replicas=2, idempotent producer. [11.13]</td>
+</tr>
+<tr>
+<td>Exactly-once across systems?</td>
+<td>Deliver at-least-once + make consumers idempotent (safe to process twice). [11.12]</td>
+</tr>
+<tr>
+<td>Dual-write fix?</td>
+<td>Transactional outbox table + a relay or CDC (change data capture) to publish. [11.15]</td>
+</tr>
+<tr>
+<td>Saga types?</td>
+<td>Choreography (services react to events) vs orchestration (one coordinator directs). [11.15]</td>
+</tr>
+<tr>
+<td>URL shortener ID generation?</td>
+<td>Hand out pre-allocated ID ranges to servers + encode in base62. [13.1]</td>
+</tr>
+<tr>
+<td>Feed fan-out choice?</td>
+<td>Push for normal users, pull for celebrities (hybrid). [13.4]</td>
+</tr>
+<tr>
+<td>Chat delivery transport?</td>
+<td>WebSockets + a registry of who is connected where + push notification if offline. [13.5]</td>
+</tr>
+<tr>
+<td>Leaderboard store?</td>
+<td>Redis sorted sets (ZINCRBY, ZREVRANGE, ZREVRANK). [13.9]</td>
+</tr>
+<tr>
+<td>Typeahead structure?</td>
+<td>A trie with the top-K suggestions precomputed at each node; sharded and cached. [13.10]</td>
+</tr>
+<tr>
+<td>Nearby drivers index?</td>
+<td>Geohash/Redis GEO, a quadtree, or H3 hexagon cells. [13.13]</td>
+</tr>
+<tr>
+<td>Payments correctness keys?</td>
+<td>State machine, idempotency at every step, double-entry ledger, reconciliation. [13.8]</td>
+</tr>
+<tr>
+<td>SLI vs SLO vs SLA?</td>
+<td>What you measure / your internal target / the promise in the contract. [11.20]</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="s16-9">16.9 Databases and SQL</h2>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>Question</th>
+<th>Answer</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>LEFT JOIN filter trap?</td>
+<td>A condition on the right table in WHERE turns it into an INNER JOIN; put it in ON. [12.1]</td>
+</tr>
+<tr>
+<td>NOT IN vs NOT EXISTS?</td>
+<td>NOT IN returns nothing if the subquery has a NULL; use NOT EXISTS. [12.1]</td>
+</tr>
+<tr>
+<td>Nested loop vs hash vs merge join?</td>
+<td>Small outer + indexed inner / large unsorted with equality / both inputs already sorted. [12.1]</td>
+</tr>
+<tr>
+<td>ROW_NUMBER vs RANK vs DENSE_RANK?</td>
+<td>1,2,3,4 / 1,2,2,4 / 1,2,2,3. [12.2]</td>
+</tr>
+<tr>
+<td>Top N per group?</td>
+<td>DENSE_RANK() OVER (PARTITION BY g ORDER BY x DESC) in a subquery, then filter &lt;= N. [12.2]</td>
+</tr>
+<tr>
+<td>Running total?</td>
+<td>SUM(x) OVER (PARTITION BY k ORDER BY t ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW). [12.2]</td>
+</tr>
+<tr>
+<td>Previous row value?</td>
+<td>LAG(x) OVER (ORDER BY t). [12.2]</td>
+</tr>
+<tr>
+<td>Gaps and islands trick?</td>
+<td>date − ROW_NUMBER() stays the same for every row in a consecutive streak. [12.2]</td>
+</tr>
+<tr>
+<td>Recursive CTE use?</td>
+<td>Hierarchies: manager chains, category trees. [12.3]</td>
+</tr>
+<tr>
+<td>SQL logical evaluation order?</td>
+<td>FROM → WHERE → GROUP BY → HAVING → window → SELECT → DISTINCT → ORDER BY → LIMIT. [12.4]</td>
+</tr>
+<tr>
+<td>B+ tree lookup cost?</td>
+<td>About 3–4 page reads even for a billion rows; leaves are linked, so ranges are fast. [12.5]</td>
+</tr>
+<tr>
+<td>Clustered vs non-clustered index?</td>
+<td>Clustered: the rows themselves are stored in key order (only one per table). Non-clustered: a separate structure pointing to rows. [12.5]</td>
+</tr>
+<tr>
+<td>Covering index?</td>
+<td>Has every column the query needs (via INCLUDE) → no trip to the table. [12.5]</td>
+</tr>
+<tr>
+<td>Why is my index not used?</td>
+<td>Function/cast on the column, leading wildcard (<code>LIKE '%x'</code>), filter matches too many rows, wrong column order, outdated statistics. [12.5]</td>
+</tr>
+<tr>
+<td>Reading EXPLAIN — first check?</td>
+<td>Estimated vs actual row counts; full scans where a filter is selective; sorts spilling to disk. [12.6]</td>
+</tr>
+<tr>
+<td>MVCC?</td>
+<td>Multi-version concurrency control: writers create new row versions, readers see a snapshot, so reads and writes don't block each other. [12.7]</td>
+</tr>
+<tr>
+<td>SQL Server READ COMMITTED difference?</td>
+<td>It uses locks, unless READ_COMMITTED_SNAPSHOT is turned on. [12.7]</td>
+</tr>
+<tr>
+<td>Avoid DB deadlocks?</td>
+<td>Touch rows in the same order, keep transactions short, good indexes, single atomic statements, retry the victim. [12.7]</td>
+</tr>
+<tr>
+<td>Write skew?</td>
+<td>Two transactions read the same condition, then write different rows, breaking a rule together; needs SERIALIZABLE or FOR UPDATE. [12.7]</td>
+</tr>
+<tr>
+<td>FOR UPDATE SKIP LOCKED use?</td>
+<td>Many workers each pick different rows from a job or outbox table, without waiting on each other. [12.7]</td>
+</tr>
+<tr>
+<td>Partitioning vs sharding?</td>
+<td>Partitioning: split a table inside one DB (skip partitions, drop old data). Sharding: split across servers (scale writes). [12.8]</td>
+</tr>
+<tr>
+<td>Row store vs column store?</td>
+<td>Row store for OLTP (single-row reads/writes); column store for OLAP (big scans and aggregates). [12.9]</td>
+</tr>
+<tr>
+<td>RabbitMQ vs Kafka?</td>
+<td>RabbitMQ: routing, ack and TTL per message, work queues. Kafka: very high throughput, messages kept and replayable. [11.12]</td>
+</tr>
+</tbody>
+</table></div>

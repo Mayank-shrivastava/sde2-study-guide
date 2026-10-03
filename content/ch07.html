@@ -1,0 +1,1500 @@
+<h2 id="s7-1">7.1 How a request flows through Spring MVC</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> A request does not jump straight into your controller. It passes through a fixed line of "counters" — Tomcat, filters, the DispatcherServlet, interceptors — and if you know that line, you can find where any problem happens.</p>
+<p>Sometimes a request is slow. Sometimes it returns the wrong status code. Sometimes it skips your validation, or it never reaches your controller at all. To debug any of these, you must know every component the request passes through, and in which order.</p>
+<p>Interviewers ask "What happens when a request hits a Spring Boot app?" to check exactly this.</p>
+<h4>What is happening internally?</h4>
+<div class="hl"><pre><span></span><code>HTTP request
+ → Tomcat connector: accepts the socket; a worker thread from Tomcat's pool (default max 200) takes the request
+ → Servlet FILTER chain (in order): CharacterEncoding, Spring Security's FilterChainProxy, your tenant/correlation filters, CORS
+ → DispatcherServlet (the "front controller", one servlet for the whole app)
+     1. HandlerMapping: find the handler for METHOD + PATH (RequestMappingHandlerMapping matches @GetMapping etc.)
+     2. HandlerInterceptor.preHandle (each interceptor; can short-circuit)
+     3. HandlerAdapter invokes the controller method:
+          argument resolvers: @PathVariable, @RequestParam, @RequestHeader, @RequestBody
+             (@RequestBody → HttpMessageConverter → Jackson ObjectMapper deserialises JSON)
+          validation: @Valid / @Validated → Bean Validation
+     4. Controller → service → repository … returns a value
+     5. Return value handler: HttpMessageConverter serialises it to JSON (content negotiation via Accept)
+     6. HandlerInterceptor.postHandle / afterCompletion
+     7. Exceptions anywhere in 3–5 → HandlerExceptionResolvers → @ControllerAdvice @ExceptionHandler
+ → back through filters → response bytes on the socket
+</code></pre></div>
+
+<p>Here is the same flow in plain steps:</p>
+<ol>
+<li><strong>Tomcat</strong> (the web server inside Spring Boot) accepts the connection. It gives the request to one worker thread from its thread pool. The default maximum is 200 threads.</li>
+<li><strong>Filters</strong> run one after another. A <em>filter</em> is code that runs for every request before Spring MVC sees it — for example, security checks or reading the tenant ID.</li>
+<li>The <strong>DispatcherServlet</strong> receives the request. It is the <em>front controller</em> — one single entry point for the whole app that sends each request to the right place.</li>
+<li>Inside it: find the controller method, run interceptors, convert JSON into Java objects, validate them, call your code, convert the result back to JSON.</li>
+<li>If anything throws an exception, your <code>@ControllerAdvice</code> handler turns it into an error response.</li>
+<li>The response goes back out through the filters and onto the network.</li>
+</ol>
+<p><strong>One request = one Tomcat thread for its whole life.</strong> This is true unless you use async MVC, WebFlux or virtual threads.</p>
+<p>So every blocking call — a DB query, an HTTP call to another service — keeps that thread busy while it waits. Because of this, timeouts on outbound calls and pool sizes matter a lot. Think of a bank with 200 counters: if every clerk is stuck waiting on a phone call, new customers stand in the queue.</p>
+<h4>How does it work?</h4>
+<ul>
+<li><code>HandlerMapping</code> builds its lookup table once, at startup, from all <code>@RequestMapping</code> methods. So if two methods map to the same URL and method, the app fails at startup — not later.</li>
+<li><em>Content negotiation</em> means choosing the format of the data. Spring looks at the <code>Accept</code> header (what the client wants back) and the <code>Content-Type</code> header (what the client sent). Based on these, it picks a converter. For JSON, Jackson is used by default.</li>
+<li>The HTTP status code comes from one of three places:</li>
+<li>the return type (<code>ResponseEntity</code>),</li>
+<li>the <code>@ResponseStatus</code> annotation,</li>
+<li>or an exception handler.</li>
+</ul>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code>POST /api/v1/accounts/A1/redemptions  {"points": 500, "rewardCode": "AMZ100"}
+1. Tomcat thread http-nio-8080-exec-12 picks it up
+2. SecurityFilterChain validates the JWT → SecurityContext set
+3. TenantFilter reads X-Tenant-Id → TenantContext (ThreadLocal)
+4. HandlerMapping → RedemptionController.redeem(String, String, RedeemRequest)
+5. Jackson builds RedeemRequest; @Valid checks @Positive points → OK
+6. Service runs in a @Transactional proxy → DB → returns RedemptionResponse
+7. Jackson writes JSON, ResponseEntity sets 201 + Location
+8. Filters' finally blocks clear TenantContext and MDC
+</code></pre></div>
+
+<p>Note step 8. Tomcat threads are reused for the next request. So the filters must clear <code>TenantContext</code> and <code>MDC</code> in a <code>finally</code> block. Otherwise the next request on that thread could see the previous tenant's data.</p>
+<h4>When would I use it?</h4>
+<p>Use this knowledge when you are:</p>
+<ul>
+<li>Debugging a <strong>404</strong> (no controller matched the URL).</li>
+<li>Debugging a <strong>415</strong> (the client sent the wrong <code>Content-Type</code>).</li>
+<li>Debugging a <strong>406</strong> (the client's <code>Accept</code> header asks for a format you can't produce).</li>
+<li>Finding out why validation did not run.</li>
+<li>Fixing filter order problems — for example, auth must run before tenant resolution.</li>
+<li>Planning capacity. The number of requests you can handle depends on threads × time per request.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Slow downstream calls use up all Tomcat threads.</strong> New requests then wait in a queue (the size is set by <em>accept count</em>). When that queue is full too, new connections are refused.</li>
+<li><strong>A filter forgets to call <code>chain.doFilter</code></strong>, so the request stops there. Or a filter does not clean up its ThreadLocals in <code>finally</code>, so data leaks to the next request on the same thread.</li>
+<li><strong>Large request bodies are read fully into memory</strong>, which can cause memory pressure.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. What happens when a request hits a Spring Boot app?</strong> Tomcat gives the request a thread from its pool. Then servlet filters run, such as security. Next the DispatcherServlet takes over: HandlerMapping finds the controller method, interceptors run, and the HandlerAdapter prepares the method arguments — Jackson turns the JSON into objects and validation runs. Then the controller runs, and a message converter writes the response as JSON. If an exception is thrown anywhere, @ControllerAdvice handles it.</p>
+<p><strong>Q2. What is the DispatcherServlet?</strong> It is Spring MVC's front controller — one single servlet that receives every request. It sends each request to the right handler using mappings, adapters, resolvers and converters.</p>
+<h2 id="s7-2">7.2 REST controllers and HTTP semantics</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> Your API is a promise to everyone who calls it. If you use the right URLs, HTTP methods and status codes, callers know what to expect and can safely retry. If you use the wrong ones, you get duplicate orders and confused clients.</p>
+<p>An API is a contract. Mobile apps, partner systems and other services all depend on it.</p>
+<p>When resources, methods and status codes are correct, the API is:</p>
+<ul>
+<li><strong>predictable</strong> — callers know what each call does,</li>
+<li><strong>cacheable</strong> — GET responses can be cached,</li>
+<li><strong>safe to retry</strong> — a retry does not cause damage.</li>
+</ul>
+<p>When they are wrong, you get duplicate orders, broken clients and confusing support tickets.</p>
+<h4>What is happening internally?</h4>
+<ul>
+<li>Methods in a <code>@RestController</code> return normal Java objects. Spring converts these to JSON for you. This conversion is called <em>serialisation</em>.</li>
+<li><code>ResponseEntity&lt;T&gt;</code> gives you full control of the response: the status, the headers and the body.</li>
+<li>Method parameters get their values from different parts of the request:</li>
+<li>the URL path → <code>@PathVariable</code>,</li>
+<li>the query string (<code>?page=2</code>) → <code>@RequestParam</code>,</li>
+<li>the headers → <code>@RequestHeader</code>,</li>
+<li>the JSON body → <code>@RequestBody</code>.</li>
+<li>For paging, Spring can fill a <code>Pageable</code> object from the <code>page</code>, <code>size</code> and <code>sort</code> parameters.</li>
+</ul>
+<h4>How does it work?</h4>
+<p>First, one important word. <em>Idempotent</em> means: doing the same call two times has the same effect as doing it once. Deleting order 5 twice still leaves order 5 deleted. <em>Safe</em> means the call changes nothing at all.</p>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Meaning</th>
+<th>Idempotent?</th>
+<th>Typical success status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GET</td>
+<td>Read</td>
+<td>Yes (and safe — changes nothing)</td>
+<td>200</td>
+</tr>
+<tr>
+<td>POST</td>
+<td>Create / action</td>
+<td><strong>No</strong> (make it idempotent with an idempotency key)</td>
+<td>201 + Location, or 202 for async</td>
+</tr>
+<tr>
+<td>PUT</td>
+<td>Replace the whole resource</td>
+<td>Yes</td>
+<td>200 / 204</td>
+</tr>
+<tr>
+<td>PATCH</td>
+<td>Update only some fields</td>
+<td>Not guaranteed</td>
+<td>200 / 204</td>
+</tr>
+<tr>
+<td>DELETE</td>
+<td>Remove</td>
+<td>Yes</td>
+<td>204</td>
+</tr>
+</tbody>
+</table></div>
+<p>Error status codes:</p>
+<ul>
+<li><strong>400</strong> — the request is malformed or fails validation.</li>
+<li><strong>401</strong> — the caller is not logged in (unauthenticated).</li>
+<li><strong>403</strong> — the caller is logged in but not allowed (forbidden).</li>
+<li><strong>404</strong> — not found.</li>
+<li><strong>409</strong> — conflict, such as a duplicate or a version clash.</li>
+<li><strong>422</strong> — the input is valid, but a business rule says no.</li>
+<li><strong>429</strong> — too many requests (rate limited).</li>
+<li><strong>500</strong> — a bug on the server.</li>
+<li><strong>502 / 503 / 504</strong> — a service you depend on has a problem.</li>
+</ul>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="nd">@RestController</span>
+<span class="nd">@RequestMapping</span><span class="p">(</span><span class="s">"/api/v1/accounts/{accountId}/redemptions"</span><span class="p">)</span>
+<span class="kd">class</span> <span class="nc">RedemptionController</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">private</span><span class="w"> </span><span class="kd">final</span><span class="w"> </span><span class="n">RedemptionService</span><span class="w"> </span><span class="n">service</span><span class="p">;</span>
+<span class="w">    </span><span class="n">RedemptionController</span><span class="p">(</span><span class="n">RedemptionService</span><span class="w"> </span><span class="n">service</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="k">this</span><span class="p">.</span><span class="na">service</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">service</span><span class="p">;</span><span class="w"> </span><span class="p">}</span>
+
+<span class="w">    </span><span class="nd">@PostMapping</span>
+<span class="w">    </span><span class="n">ResponseEntity</span><span class="o">&lt;</span><span class="n">RedemptionResponse</span><span class="o">&gt;</span><span class="w"> </span><span class="nf">redeem</span><span class="p">(</span><span class="nd">@PathVariable</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="n">accountId</span><span class="p">,</span>
+<span class="w">                                              </span><span class="nd">@RequestHeader</span><span class="p">(</span><span class="s">"Idempotency-Key"</span><span class="p">)</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="n">idemKey</span><span class="p">,</span>
+<span class="w">                                              </span><span class="nd">@Valid</span><span class="w"> </span><span class="nd">@RequestBody</span><span class="w"> </span><span class="n">RedeemRequest</span><span class="w"> </span><span class="n">req</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="n">RedemptionResponse</span><span class="w"> </span><span class="n">r</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">service</span><span class="p">.</span><span class="na">redeem</span><span class="p">(</span><span class="n">TenantContext</span><span class="p">.</span><span class="na">current</span><span class="p">(),</span><span class="w"> </span><span class="n">accountId</span><span class="p">,</span><span class="w"> </span><span class="n">idemKey</span><span class="p">,</span><span class="w"> </span><span class="n">req</span><span class="p">.</span><span class="na">points</span><span class="p">());</span>
+<span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="n">ResponseEntity</span><span class="p">.</span><span class="na">created</span><span class="p">(</span><span class="n">URI</span><span class="p">.</span><span class="na">create</span><span class="p">(</span><span class="s">"/api/v1/accounts/%s/redemptions/%s"</span><span class="p">.</span><span class="na">formatted</span><span class="p">(</span><span class="n">accountId</span><span class="p">,</span><span class="w"> </span><span class="n">r</span><span class="p">.</span><span class="na">id</span><span class="p">())))</span>
+<span class="w">                             </span><span class="p">.</span><span class="na">body</span><span class="p">(</span><span class="n">r</span><span class="p">);</span>
+<span class="w">    </span><span class="p">}</span>
+
+<span class="w">    </span><span class="nd">@GetMapping</span>
+<span class="w">    </span><span class="n">List</span><span class="o">&lt;</span><span class="n">RedemptionResponse</span><span class="o">&gt;</span><span class="w"> </span><span class="nf">list</span><span class="p">(</span><span class="nd">@PathVariable</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="n">accountId</span><span class="p">,</span>
+<span class="w">                                  </span><span class="nd">@RequestParam</span><span class="p">(</span><span class="n">required</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">false</span><span class="p">)</span><span class="w"> </span><span class="n">Long</span><span class="w"> </span><span class="n">afterId</span><span class="p">,</span><span class="w">          </span><span class="c1">// keyset cursor</span>
+<span class="w">                                  </span><span class="nd">@RequestParam</span><span class="p">(</span><span class="n">defaultValue</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"20"</span><span class="p">)</span><span class="w"> </span><span class="nd">@Max</span><span class="p">(</span><span class="mi">100</span><span class="p">)</span><span class="w"> </span><span class="kt">int</span><span class="w"> </span><span class="n">size</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="n">service</span><span class="p">.</span><span class="na">list</span><span class="p">(</span><span class="n">accountId</span><span class="p">,</span><span class="w"> </span><span class="n">afterId</span><span class="p">,</span><span class="w"> </span><span class="n">size</span><span class="p">);</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+
+<span class="kd">public</span><span class="w"> </span><span class="kd">record</span> <span class="nc">RedeemRequest</span><span class="p">(</span><span class="nd">@Positive</span><span class="w"> </span><span class="kt">long</span><span class="w"> </span><span class="n">points</span><span class="p">,</span><span class="w"> </span><span class="nd">@NotBlank</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="n">rewardCode</span><span class="p">)</span><span class="w"> </span><span class="p">{}</span>
+<span class="kd">public</span><span class="w"> </span><span class="kd">record</span> <span class="nc">RedemptionResponse</span><span class="p">(</span><span class="n">String</span><span class="w"> </span><span class="n">id</span><span class="p">,</span><span class="w"> </span><span class="kt">long</span><span class="w"> </span><span class="n">points</span><span class="p">,</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="n">status</span><span class="p">,</span><span class="w"> </span><span class="n">Instant</span><span class="w"> </span><span class="n">createdAt</span><span class="p">)</span><span class="w"> </span><span class="p">{}</span>
+</code></pre></div>
+
+<p>Points to notice:</p>
+<ul>
+<li>The POST returns <strong>201 Created</strong> with a <code>Location</code> header that points to the new redemption.</li>
+<li>The POST requires an <code>Idempotency-Key</code> header, so a retry is safe.</li>
+<li>The GET uses a cursor (<code>afterId</code>) for paging and limits <code>size</code> to at most 100.</li>
+<li>The request and response are small <code>record</code> DTOs.</li>
+</ul>
+<h4>When would I use it?</h4>
+<p>In every API.</p>
+<p>Always return <strong>DTO records</strong> — small classes made only for the API. Never return JPA entities. Entities cause three problems:</p>
+<ol>
+<li>They leak internal fields to the outside world.</li>
+<li>They trigger lazy loading while JSON is being written.</li>
+<li>They tie your API to your database schema, so a schema change breaks clients.</li>
+</ol>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Returning entities.</strong> While Jackson writes JSON, it touches lazy fields. This causes a <code>LazyInitializationException</code>, or N+1 queries (one query for the list, plus one more for each item). Two-way relationships cause infinite recursion. Internal columns get exposed.</li>
+<li><strong>Returning 200 for everything</strong>, with an <code>"error"</code> field in the body. Clients and monitoring tools then can't tell a failure from a success.</li>
+<li><strong>Non-idempotent POSTs retried by mobile apps.</strong> On a flaky network the app retries, and you get duplicate redemptions. Require an <code>Idempotency-Key</code> header (11.14).</li>
+<li><strong>Offset paging on huge tables.</strong> <code>OFFSET 1000000</code> makes the DB walk past a million rows — slow. Results also shift when new rows arrive. Use keyset/cursor paging instead ("give me rows after ID X").</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. PUT vs PATCH vs POST?</strong> PUT replaces the whole resource and is idempotent — repeating it gives the same result. PATCH updates only some fields. POST creates something or triggers an action, and it is not idempotent unless you add an idempotency key.</p>
+<p><strong>Q2. Which status code for a business-rule failure such as insufficient points?</strong> 422 Unprocessable Entity — the input is fine but the rule says no. Use 409 if it is a conflict with the current state. 400 is for input that is malformed or invalid.</p>
+<p><strong>Q3. Why not return JPA entities from controllers?</strong> Because of lazy-loading exceptions, accidental N+1 queries, infinite recursion on two-way mappings, leaking internal fields, and tying the API to the database schema.</p>
+<h2 id="s7-3">7.3 Validation</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> Never trust input from outside. Put simple annotations like <code>@NotBlank</code> on your request class, and Spring checks every request for you — and sends back a clear 400 error if something is wrong.</p>
+<p>Every input from outside must be checked before it reaches business logic or the database. "Outside" means mobile apps, partners, admin panels — anything.</p>
+<p><em>Declarative validation</em> means you declare the rules as annotations instead of writing <code>if</code> checks by hand. This has three benefits:</p>
+<ul>
+<li>The rules live next to the DTO, so they are easy to find.</li>
+<li>They are consistent and easy to test.</li>
+<li>Bad input gets a clear 400 error. Without this, the bad data goes deep into the code and fails later with a confusing 500.</li>
+</ul>
+<h4>What is happening internally?</h4>
+<p>Spring does not validate by itself. It hands the job to <strong>Bean Validation</strong> — the standard Java validation API (Jakarta Validation). The library that actually does the work is Hibernate Validator.</p>
+<p>The steps for a request body:</p>
+<ol>
+<li>Jackson converts the JSON into your object.</li>
+<li>Because the parameter has <code>@Valid</code>, Spring now validates the object.</li>
+<li>Each constraint annotation (like <code>@NotBlank</code>) has a matching <code>ConstraintValidator</code> class that does the check.</li>
+<li>If any check fails, Spring throws <code>MethodArgumentNotValidException</code>.</li>
+</ol>
+<p>For <code>@PathVariable</code> and <code>@RequestParam</code> constraints, it is different. You need <code>@Validated</code> on the class. Failures then throw <code>HandlerMethodValidationException</code> (Spring 6.1+) or <code>ConstraintViolationException</code>.</p>
+<p>If you put <code>@Valid</code> on a nested field, validation also goes inside that nested object. This is called <em>cascading</em>.</p>
+<h4>How does it work?</h4>
+<div class="hl"><pre><span></span><code><span class="kd">public</span><span class="w"> </span><span class="kd">record</span> <span class="nc">CreateCampaignRequest</span><span class="p">(</span>
+<span class="w">        </span><span class="nd">@NotBlank</span><span class="w"> </span><span class="nd">@Size</span><span class="p">(</span><span class="n">max</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">80</span><span class="p">)</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="n">name</span><span class="p">,</span>
+<span class="w">        </span><span class="nd">@NotNull</span><span class="w"> </span><span class="nd">@FutureOrPresent</span><span class="w"> </span><span class="n">LocalDate</span><span class="w"> </span><span class="n">startDate</span><span class="p">,</span>
+<span class="w">        </span><span class="nd">@NotNull</span><span class="w"> </span><span class="n">LocalDate</span><span class="w"> </span><span class="n">endDate</span><span class="p">,</span>
+<span class="w">        </span><span class="nd">@NotEmpty</span><span class="w"> </span><span class="n">List</span><span class="o">&lt;</span><span class="nd">@NotBlank</span><span class="w"> </span><span class="n">String</span><span class="o">&gt;</span><span class="w"> </span><span class="n">skuCodes</span><span class="p">,</span><span class="w">          </span><span class="c1">// container element constraints</span>
+<span class="w">        </span><span class="nd">@Valid</span><span class="w"> </span><span class="nd">@NotNull</span><span class="w"> </span><span class="n">RewardSpec</span><span class="w"> </span><span class="n">reward</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w">                </span><span class="c1">// cascade into the nested object</span>
+
+<span class="w">    </span><span class="nd">@AssertTrue</span><span class="p">(</span><span class="n">message</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"endDate must be after startDate"</span><span class="p">)</span>
+<span class="w">    </span><span class="kt">boolean</span><span class="w"> </span><span class="nf">isRangeValid</span><span class="p">()</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="k">return</span><span class="w"> </span><span class="n">startDate</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="kc">null</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="n">endDate</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="kc">null</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="n">endDate</span><span class="p">.</span><span class="na">isAfter</span><span class="p">(</span><span class="n">startDate</span><span class="p">);</span><span class="w"> </span><span class="p">}</span>
+<span class="p">}</span>
+<span class="kd">public</span><span class="w"> </span><span class="kd">record</span> <span class="nc">RewardSpec</span><span class="p">(</span><span class="nd">@NotNull</span><span class="w"> </span><span class="n">RewardType</span><span class="w"> </span><span class="n">type</span><span class="p">,</span><span class="w"> </span><span class="nd">@Positive</span><span class="w"> </span><span class="kt">long</span><span class="w"> </span><span class="n">value</span><span class="p">)</span><span class="w"> </span><span class="p">{}</span>
+</code></pre></div>
+
+<p>What this shows:</p>
+<ul>
+<li>Simple field rules: <code>@NotBlank</code>, <code>@Size</code>, <code>@NotNull</code>, <code>@FutureOrPresent</code>.</li>
+<li>Rules on list items: <code>List&lt;@NotBlank String&gt;</code> checks every SKU code in the list.</li>
+<li><code>@Valid</code> on <code>reward</code> means the rules inside <code>RewardSpec</code> are also checked.</li>
+<li><code>@AssertTrue</code> on a method checks a rule that needs two fields together — the end date must be after the start date.</li>
+</ul>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="c1">// Custom constraint: Indian mobile number</span>
+<span class="nd">@Target</span><span class="p">({</span><span class="n">ElementType</span><span class="p">.</span><span class="na">FIELD</span><span class="p">,</span><span class="w"> </span><span class="n">ElementType</span><span class="p">.</span><span class="na">PARAMETER</span><span class="p">,</span><span class="w"> </span><span class="n">ElementType</span><span class="p">.</span><span class="na">RECORD_COMPONENT</span><span class="p">})</span>
+<span class="nd">@Retention</span><span class="p">(</span><span class="n">RetentionPolicy</span><span class="p">.</span><span class="na">RUNTIME</span><span class="p">)</span>
+<span class="nd">@Constraint</span><span class="p">(</span><span class="n">validatedBy</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">IndianMobileValidator</span><span class="p">.</span><span class="na">class</span><span class="p">)</span>
+<span class="kd">public</span><span class="w"> </span><span class="nd">@interface</span><span class="w"> </span><span class="n">IndianMobile</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">String</span><span class="w"> </span><span class="nf">message</span><span class="p">()</span><span class="w"> </span><span class="k">default</span><span class="w"> </span><span class="s">"must be a valid Indian mobile number"</span><span class="p">;</span>
+<span class="w">    </span><span class="n">Class</span><span class="o">&lt;?&gt;[]</span><span class="w"> </span><span class="nf">groups</span><span class="p">()</span><span class="w"> </span><span class="k">default</span><span class="w"> </span><span class="p">{};</span>
+<span class="w">    </span><span class="n">Class</span><span class="o">&lt;?</span><span class="w"> </span><span class="kd">extends</span><span class="w"> </span><span class="n">Payload</span><span class="o">&gt;[]</span><span class="w"> </span><span class="nf">payload</span><span class="p">()</span><span class="w"> </span><span class="k">default</span><span class="w"> </span><span class="p">{};</span>
+<span class="p">}</span>
+<span class="kd">public</span><span class="w"> </span><span class="kd">class</span> <span class="nc">IndianMobileValidator</span><span class="w"> </span><span class="kd">implements</span><span class="w"> </span><span class="n">ConstraintValidator</span><span class="o">&lt;</span><span class="n">IndianMobile</span><span class="p">,</span><span class="w"> </span><span class="n">String</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">private</span><span class="w"> </span><span class="kd">static</span><span class="w"> </span><span class="kd">final</span><span class="w"> </span><span class="n">Pattern</span><span class="w"> </span><span class="n">P</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Pattern</span><span class="p">.</span><span class="na">compile</span><span class="p">(</span><span class="s">"^(\\+91)?[6-9]\\d{9}$"</span><span class="p">);</span>
+<span class="w">    </span><span class="nd">@Override</span><span class="w"> </span><span class="kd">public</span><span class="w"> </span><span class="kt">boolean</span><span class="w"> </span><span class="nf">isValid</span><span class="p">(</span><span class="n">String</span><span class="w"> </span><span class="n">v</span><span class="p">,</span><span class="w"> </span><span class="n">ConstraintValidatorContext</span><span class="w"> </span><span class="n">ctx</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="k">return</span><span class="w"> </span><span class="n">v</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="kc">null</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="n">P</span><span class="p">.</span><span class="na">matcher</span><span class="p">(</span><span class="n">v</span><span class="p">).</span><span class="na">matches</span><span class="p">();</span><span class="w"> </span><span class="p">}</span>
+<span class="p">}</span>
+<span class="kd">public</span><span class="w"> </span><span class="kd">record</span> <span class="nc">RetailerSignup</span><span class="p">(</span><span class="nd">@NotBlank</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="n">shopName</span><span class="p">,</span><span class="w"> </span><span class="nd">@NotNull</span><span class="w"> </span><span class="nd">@IndianMobile</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="n">mobile</span><span class="p">)</span><span class="w"> </span><span class="p">{}</span>
+</code></pre></div>
+
+<p>To make a custom rule, you need two pieces:</p>
+<ol>
+<li>An annotation (<code>@IndianMobile</code>) marked with <code>@Constraint(validatedBy = …)</code>.</li>
+<li>A validator class that implements <code>isValid</code>.</li>
+</ol>
+<p>Note that <code>isValid</code> returns <code>true</code> for <code>null</code>. This is the usual habit: let <code>@NotNull</code> handle "missing", and let the custom rule handle only "wrong format".</p>
+<p><strong>Validation groups</strong> (<code>@Validated(OnCreate.class)</code>) let one DTO have different rules for create and update. But usually it is clearer to write a separate request record for each operation.</p>
+<h4>When would I use it?</h4>
+<p>On all request DTOs, and on <code>@ConfigurationProperties</code> classes (so bad config fails at startup).</p>
+<p>Keep <strong>business rules that need data</strong> in the service layer, not in annotations. For example, "points ≤ balance" needs the account's balance from the DB, so it belongs in the service.</p>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Forgetting <code>@Valid</code>.</strong> The constraints are then silently ignored — no error, no check.</li>
+<li><strong>Validating only on the client</strong> (the app or web page). Anyone can call the API directly with curl or Postman and skip those checks.</li>
+<li><strong>Putting DB lookups inside validators.</strong> They become slow and hard to test, and they hide business logic in a place nobody looks.</li>
+<li><strong>Sending the raw validation exception text to clients.</strong> Section 7.4 shows how to shape it into a clean response.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. How does <code>@Valid</code> work in Spring MVC?</strong> After Jackson turns the body into an object, Spring calls Bean Validation on it. Any broken rule throws MethodArgumentNotValidException, which you map to a 400 response.</p>
+<p><strong>Q2. How do you write a custom validator?</strong> Create a constraint annotation marked with <code>@Constraint(validatedBy = …)</code>, and write a class that implements <code>ConstraintValidator&lt;A, T&gt;.isValid</code>.</p>
+<p><strong>Q3. Where should business-rule validation live?</strong> In the service or domain layer, because that layer has the data and context to decide. Annotations are only for checking the shape of the input.</p>
+<h2 id="s7-4">7.4 Centralised exception handling</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> Instead of every controller catching and formatting errors in its own way, you write one class that catches all exceptions. It decides the status code, builds a clean error body, and logs real bugs once.</p>
+<p>Without one central handler, three bad things happen:</p>
+<ol>
+<li>Every controller catches and formats errors differently.</li>
+<li>Stack traces leak to clients.</li>
+<li>Unexpected exceptions become plain 500s with no useful information.</li>
+</ol>
+<p>A single <code>@RestControllerAdvice</code> class fixes all of this. It maps each exception type to the right status code and a consistent body. It also logs unexpected errors exactly once.</p>
+<h4>What is happening internally?</h4>
+<p>When a controller method throws an exception, this happens:</p>
+<ol>
+<li><code>DispatcherServlet</code> asks its <code>HandlerExceptionResolver</code>s to deal with it.</li>
+<li>One of them, <code>ExceptionHandlerExceptionResolver</code>, looks for the best matching <code>@ExceptionHandler</code> for that exception type.</li>
+<li>It looks first inside the controller itself. Then it looks in <code>@ControllerAdvice</code> beans, in the order set by <code>@Order</code>. It picks the most specific match.</li>
+<li>It calls that handler method.</li>
+<li>Whatever the handler returns is written out like a normal response.</li>
+</ol>
+<p>Spring 6 gives you <strong><code>ProblemDetail</code></strong>. It is the standard error body format from RFC 9457. It has the fields <code>type</code>, <code>title</code>, <code>status</code>, <code>detail</code> and <code>instance</code>, and you can add your own extra properties.</p>
+<h4>How does it work?</h4>
+<div class="hl"><pre><span></span><code><span class="nd">@RestControllerAdvice</span>
+<span class="kd">class</span> <span class="nc">GlobalExceptionHandler</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">private</span><span class="w"> </span><span class="kd">static</span><span class="w"> </span><span class="kd">final</span><span class="w"> </span><span class="n">Logger</span><span class="w"> </span><span class="n">log</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">LoggerFactory</span><span class="p">.</span><span class="na">getLogger</span><span class="p">(</span><span class="n">GlobalExceptionHandler</span><span class="p">.</span><span class="na">class</span><span class="p">);</span>
+
+<span class="w">    </span><span class="nd">@ExceptionHandler</span><span class="p">(</span><span class="n">MethodArgumentNotValidException</span><span class="p">.</span><span class="na">class</span><span class="p">)</span>
+<span class="w">    </span><span class="n">ProblemDetail</span><span class="w"> </span><span class="nf">validation</span><span class="p">(</span><span class="n">MethodArgumentNotValidException</span><span class="w"> </span><span class="n">ex</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="n">ProblemDetail</span><span class="w"> </span><span class="n">pd</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ProblemDetail</span><span class="p">.</span><span class="na">forStatus</span><span class="p">(</span><span class="n">HttpStatus</span><span class="p">.</span><span class="na">BAD_REQUEST</span><span class="p">);</span>
+<span class="w">        </span><span class="n">pd</span><span class="p">.</span><span class="na">setTitle</span><span class="p">(</span><span class="s">"Validation failed"</span><span class="p">);</span>
+<span class="w">        </span><span class="n">pd</span><span class="p">.</span><span class="na">setProperty</span><span class="p">(</span><span class="s">"errors"</span><span class="p">,</span><span class="w"> </span><span class="n">ex</span><span class="p">.</span><span class="na">getBindingResult</span><span class="p">().</span><span class="na">getFieldErrors</span><span class="p">().</span><span class="na">stream</span><span class="p">()</span>
+<span class="w">                </span><span class="p">.</span><span class="na">map</span><span class="p">(</span><span class="n">f</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">Map</span><span class="p">.</span><span class="na">of</span><span class="p">(</span><span class="s">"field"</span><span class="p">,</span><span class="w"> </span><span class="n">f</span><span class="p">.</span><span class="na">getField</span><span class="p">(),</span><span class="w"> </span><span class="s">"message"</span><span class="p">,</span><span class="w"> </span><span class="n">String</span><span class="p">.</span><span class="na">valueOf</span><span class="p">(</span><span class="n">f</span><span class="p">.</span><span class="na">getDefaultMessage</span><span class="p">()))).</span><span class="na">toList</span><span class="p">());</span>
+<span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="n">pd</span><span class="p">;</span>
+<span class="w">    </span><span class="p">}</span>
+
+<span class="w">    </span><span class="nd">@ExceptionHandler</span><span class="p">(</span><span class="n">InsufficientPointsException</span><span class="p">.</span><span class="na">class</span><span class="p">)</span>
+<span class="w">    </span><span class="n">ProblemDetail</span><span class="w"> </span><span class="nf">insufficient</span><span class="p">(</span><span class="n">InsufficientPointsException</span><span class="w"> </span><span class="n">ex</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="n">ProblemDetail</span><span class="w"> </span><span class="n">pd</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ProblemDetail</span><span class="p">.</span><span class="na">forStatusAndDetail</span><span class="p">(</span><span class="n">HttpStatus</span><span class="p">.</span><span class="na">UNPROCESSABLE_ENTITY</span><span class="p">,</span><span class="w"> </span><span class="n">ex</span><span class="p">.</span><span class="na">getMessage</span><span class="p">());</span>
+<span class="w">        </span><span class="n">pd</span><span class="p">.</span><span class="na">setTitle</span><span class="p">(</span><span class="s">"Insufficient points"</span><span class="p">);</span>
+<span class="w">        </span><span class="n">pd</span><span class="p">.</span><span class="na">setType</span><span class="p">(</span><span class="n">URI</span><span class="p">.</span><span class="na">create</span><span class="p">(</span><span class="s">"https://errors.example.com/insufficient-points"</span><span class="p">));</span>
+<span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="n">pd</span><span class="p">;</span>
+<span class="w">    </span><span class="p">}</span>
+
+<span class="w">    </span><span class="nd">@ExceptionHandler</span><span class="p">({</span><span class="n">ObjectOptimisticLockingFailureException</span><span class="p">.</span><span class="na">class</span><span class="p">,</span><span class="w"> </span><span class="n">DataIntegrityViolationException</span><span class="p">.</span><span class="na">class</span><span class="p">})</span>
+<span class="w">    </span><span class="n">ProblemDetail</span><span class="w"> </span><span class="nf">conflict</span><span class="p">(</span><span class="n">Exception</span><span class="w"> </span><span class="n">ex</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="n">ProblemDetail</span><span class="p">.</span><span class="na">forStatusAndDetail</span><span class="p">(</span><span class="n">HttpStatus</span><span class="p">.</span><span class="na">CONFLICT</span><span class="p">,</span><span class="w"> </span><span class="s">"Concurrent or duplicate update, please retry"</span><span class="p">);</span>
+<span class="w">    </span><span class="p">}</span>
+
+<span class="w">    </span><span class="nd">@ExceptionHandler</span><span class="p">(</span><span class="n">Exception</span><span class="p">.</span><span class="na">class</span><span class="p">)</span>
+<span class="w">    </span><span class="n">ProblemDetail</span><span class="w"> </span><span class="nf">unexpected</span><span class="p">(</span><span class="n">Exception</span><span class="w"> </span><span class="n">ex</span><span class="p">,</span><span class="w"> </span><span class="n">HttpServletRequest</span><span class="w"> </span><span class="n">req</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="n">log</span><span class="p">.</span><span class="na">error</span><span class="p">(</span><span class="s">"Unhandled error on {} {}"</span><span class="p">,</span><span class="w"> </span><span class="n">req</span><span class="p">.</span><span class="na">getMethod</span><span class="p">(),</span><span class="w"> </span><span class="n">req</span><span class="p">.</span><span class="na">getRequestURI</span><span class="p">(),</span><span class="w"> </span><span class="n">ex</span><span class="p">);</span><span class="w">   </span><span class="c1">// log the stack ONCE, here</span>
+<span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="n">ProblemDetail</span><span class="p">.</span><span class="na">forStatusAndDetail</span><span class="p">(</span><span class="n">HttpStatus</span><span class="p">.</span><span class="na">INTERNAL_SERVER_ERROR</span><span class="p">,</span><span class="w"> </span><span class="s">"Unexpected error"</span><span class="p">);</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p>What each handler does:</p>
+<ul>
+<li><strong>Validation failure</strong> → 400, with a list of which field failed and why.</li>
+<li><strong><code>InsufficientPointsException</code></strong> (a business rule) → 422, with a clear title and a <code>type</code> link.</li>
+<li><strong>Optimistic lock or unique-key clash</strong> → 409, "please retry".</li>
+<li><strong>Anything else</strong> → 500 with a generic message. The full stack trace is logged here, once — and never sent to the client.</li>
+</ul>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="err">HTTP/</span><span class="mf">1.1</span><span class="w"> </span><span class="mi">422</span>
+<span class="p">{</span><span class="w"> </span><span class="nt">"type"</span><span class="p">:</span><span class="w"> </span><span class="s2">"https://errors.example.com/insufficient-points"</span><span class="p">,</span><span class="w"> </span><span class="nt">"title"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Insufficient points"</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"status"</span><span class="p">:</span><span class="w"> </span><span class="mi">422</span><span class="p">,</span><span class="w"> </span><span class="nt">"detail"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Account A1 requested 500 but has 120"</span><span class="p">,</span><span class="w"> </span><span class="nt">"instance"</span><span class="p">:</span><span class="w"> </span><span class="s2">"/api/v1/accounts/A1/redemptions"</span><span class="w"> </span><span class="p">}</span>
+</code></pre></div>
+
+<h4>When would I use it?</h4>
+<p>In every service.</p>
+<p>Pair it with domain exceptions — your own unchecked exceptions (1.15) such as <code>InsufficientPointsException</code>. Services throw them, and the advice turns them into responses. So controllers stay free of try/catch.</p>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Wrong order of handlers.</strong> A catch-all handler wins over specific ones because of class order, or you have several advice classes without <code>@Order</code>. Then the same error gets different responses.</li>
+<li><strong>Logging and rethrowing in every layer.</strong> The same stack trace then appears five times in the logs.</li>
+<li><strong>Leaking internals in <code>detail</code></strong> — SQL, class names or stack traces.</li>
+<li><strong>Exceptions thrown inside filters.</strong> Filters run before the DispatcherServlet. So <code>@ControllerAdvice</code> never sees these exceptions. Handle them inside the filter itself, or in Spring Security's entry points.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. How do you handle exceptions globally in Spring?</strong> With a <code>@RestControllerAdvice</code> class that has <code>@ExceptionHandler</code> methods. Each one maps an exception type to a status code and a ProblemDetail body. Unexpected errors are logged once, there.</p>
+<p><strong>Q2. Why doesn't my @ControllerAdvice catch an exception thrown in a filter?</strong> Filters run before the DispatcherServlet, so Spring's exception resolvers are not involved yet. Handle it in the filter itself or in the security entry point.</p>
+<h2 id="s7-5">7.5 Filters vs interceptors</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> Both let you run code for every request. A filter sits at the building's main gate and sees everyone. An interceptor sits at the office door, after Spring already knows which controller method will handle the request.</p>
+<p>Some logic must run for every request. Examples: authentication, finding the tenant, adding correlation IDs, request logging, rate limiting.</p>
+<p>You can put such logic in a Servlet <strong>filter</strong> or a Spring MVC <strong>interceptor</strong>. The right choice depends on two things: what the logic needs to see, and when it must run.</p>
+<h4>What is happening internally?</h4>
+<ul>
+<li>A <strong>Filter</strong> (<code>jakarta.servlet.Filter</code>, usually written by extending Spring's <code>OncePerRequestFilter</code>) runs in the servlet container, <strong>around</strong> the DispatcherServlet.</li>
+<li>It runs for every request — including static files and error pages.</li>
+<li>It can wrap or replace the request and response objects.</li>
+<li>It can stop the chain, so the request goes no further.</li>
+<li>A <strong>HandlerInterceptor</strong> runs <strong>inside</strong> the DispatcherServlet, after the controller method has been chosen.</li>
+<li>It knows which handler method will run, and can read its annotations.</li>
+<li>It has three hooks: <code>preHandle</code> (before the controller), <code>postHandle</code> (after the controller) and <code>afterCompletion</code> (after the response is done).</li>
+</ul>
+<div class="hl"><pre><span></span><code>Filter A → Filter B → DispatcherServlet → [Interceptor.preHandle] → Controller → [postHandle] → view/JSON → [afterCompletion] → Filter B → Filter A
+</code></pre></div>
+
+<h4>How does it work?</h4>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th></th>
+<th>Filter</th>
+<th>Interceptor</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Level</td>
+<td>Servlet container</td>
+<td>Spring MVC</td>
+</tr>
+<tr>
+<td>Sees</td>
+<td>Raw request/response (can wrap them)</td>
+<td>The handler method and its annotations</td>
+</tr>
+<tr>
+<td>Runs for</td>
+<td>Everything</td>
+<td>Only requests that map to a handler</td>
+</tr>
+<tr>
+<td>Typical use</td>
+<td>Security, tenant, correlation ID, CORS, compression, request/response logging</td>
+<td>Auth checks per endpoint based on annotations, metrics per handler, locale</td>
+</tr>
+</tbody>
+</table></div>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="nd">@Component</span>
+<span class="nd">@Order</span><span class="p">(</span><span class="n">Ordered</span><span class="p">.</span><span class="na">HIGHEST_PRECEDENCE</span><span class="p">)</span>
+<span class="kd">class</span> <span class="nc">CorrelationIdFilter</span><span class="w"> </span><span class="kd">extends</span><span class="w"> </span><span class="n">OncePerRequestFilter</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nd">@Override</span><span class="w"> </span><span class="kd">protected</span><span class="w"> </span><span class="kt">void</span><span class="w"> </span><span class="nf">doFilterInternal</span><span class="p">(</span><span class="n">HttpServletRequest</span><span class="w"> </span><span class="n">req</span><span class="p">,</span><span class="w"> </span><span class="n">HttpServletResponse</span><span class="w"> </span><span class="n">res</span><span class="p">,</span><span class="w"> </span><span class="n">FilterChain</span><span class="w"> </span><span class="n">chain</span><span class="p">)</span>
+<span class="w">            </span><span class="kd">throws</span><span class="w"> </span><span class="n">ServletException</span><span class="p">,</span><span class="w"> </span><span class="n">IOException</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="n">String</span><span class="w"> </span><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Optional</span><span class="p">.</span><span class="na">ofNullable</span><span class="p">(</span><span class="n">req</span><span class="p">.</span><span class="na">getHeader</span><span class="p">(</span><span class="s">"X-Request-Id"</span><span class="p">)).</span><span class="na">orElse</span><span class="p">(</span><span class="n">UUID</span><span class="p">.</span><span class="na">randomUUID</span><span class="p">().</span><span class="na">toString</span><span class="p">());</span>
+<span class="w">        </span><span class="n">MDC</span><span class="p">.</span><span class="na">put</span><span class="p">(</span><span class="s">"requestId"</span><span class="p">,</span><span class="w"> </span><span class="n">id</span><span class="p">);</span>
+<span class="w">        </span><span class="n">res</span><span class="p">.</span><span class="na">setHeader</span><span class="p">(</span><span class="s">"X-Request-Id"</span><span class="p">,</span><span class="w"> </span><span class="n">id</span><span class="p">);</span>
+<span class="w">        </span><span class="k">try</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">chain</span><span class="p">.</span><span class="na">doFilter</span><span class="p">(</span><span class="n">req</span><span class="p">,</span><span class="w"> </span><span class="n">res</span><span class="p">);</span><span class="w"> </span><span class="p">}</span>
+<span class="w">        </span><span class="k">finally</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">MDC</span><span class="p">.</span><span class="na">remove</span><span class="p">(</span><span class="s">"requestId"</span><span class="p">);</span><span class="w"> </span><span class="p">}</span><span class="w">                   </span><span class="c1">// pooled threads: always clean up</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+
+<span class="nd">@Retention</span><span class="p">(</span><span class="n">RetentionPolicy</span><span class="p">.</span><span class="na">RUNTIME</span><span class="p">)</span><span class="w"> </span><span class="nd">@Target</span><span class="p">(</span><span class="n">ElementType</span><span class="p">.</span><span class="na">METHOD</span><span class="p">)</span><span class="w"> </span><span class="nd">@interface</span><span class="w"> </span><span class="n">RequiresFeature</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="nf">value</span><span class="p">();</span><span class="w"> </span><span class="p">}</span>
+
+<span class="nd">@Component</span>
+<span class="kd">class</span> <span class="nc">FeatureFlagInterceptor</span><span class="w"> </span><span class="kd">implements</span><span class="w"> </span><span class="n">HandlerInterceptor</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">private</span><span class="w"> </span><span class="kd">final</span><span class="w"> </span><span class="n">FeatureFlags</span><span class="w"> </span><span class="n">flags</span><span class="p">;</span>
+<span class="w">    </span><span class="n">FeatureFlagInterceptor</span><span class="p">(</span><span class="n">FeatureFlags</span><span class="w"> </span><span class="n">flags</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="k">this</span><span class="p">.</span><span class="na">flags</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">flags</span><span class="p">;</span><span class="w"> </span><span class="p">}</span>
+<span class="w">    </span><span class="nd">@Override</span><span class="w"> </span><span class="kd">public</span><span class="w"> </span><span class="kt">boolean</span><span class="w"> </span><span class="nf">preHandle</span><span class="p">(</span><span class="n">HttpServletRequest</span><span class="w"> </span><span class="n">req</span><span class="p">,</span><span class="w"> </span><span class="n">HttpServletResponse</span><span class="w"> </span><span class="n">res</span><span class="p">,</span><span class="w"> </span><span class="n">Object</span><span class="w"> </span><span class="n">handler</span><span class="p">)</span><span class="w"> </span><span class="kd">throws</span><span class="w"> </span><span class="n">IOException</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">handler</span><span class="w"> </span><span class="k">instanceof</span><span class="w"> </span><span class="n">HandlerMethod</span><span class="w"> </span><span class="n">hm</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="n">RequiresFeature</span><span class="w"> </span><span class="n">rf</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">hm</span><span class="p">.</span><span class="na">getMethodAnnotation</span><span class="p">(</span><span class="n">RequiresFeature</span><span class="p">.</span><span class="na">class</span><span class="p">);</span>
+<span class="w">            </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">rf</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="kc">null</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="o">!</span><span class="n">flags</span><span class="p">.</span><span class="na">enabled</span><span class="p">(</span><span class="n">TenantContext</span><span class="p">.</span><span class="na">current</span><span class="p">(),</span><span class="w"> </span><span class="n">rf</span><span class="p">.</span><span class="na">value</span><span class="p">()))</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">res</span><span class="p">.</span><span class="na">sendError</span><span class="p">(</span><span class="mi">404</span><span class="p">);</span><span class="w"> </span><span class="k">return</span><span class="w"> </span><span class="kc">false</span><span class="p">;</span><span class="w"> </span><span class="p">}</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="kc">true</span><span class="p">;</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+<span class="nd">@Configuration</span>
+<span class="kd">class</span> <span class="nc">WebConfig</span><span class="w"> </span><span class="kd">implements</span><span class="w"> </span><span class="n">WebMvcConfigurer</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">private</span><span class="w"> </span><span class="kd">final</span><span class="w"> </span><span class="n">FeatureFlagInterceptor</span><span class="w"> </span><span class="n">ffi</span><span class="p">;</span>
+<span class="w">    </span><span class="n">WebConfig</span><span class="p">(</span><span class="n">FeatureFlagInterceptor</span><span class="w"> </span><span class="n">ffi</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="k">this</span><span class="p">.</span><span class="na">ffi</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ffi</span><span class="p">;</span><span class="w"> </span><span class="p">}</span>
+<span class="w">    </span><span class="nd">@Override</span><span class="w"> </span><span class="kd">public</span><span class="w"> </span><span class="kt">void</span><span class="w"> </span><span class="nf">addInterceptors</span><span class="p">(</span><span class="n">InterceptorRegistry</span><span class="w"> </span><span class="n">r</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">r</span><span class="p">.</span><span class="na">addInterceptor</span><span class="p">(</span><span class="n">ffi</span><span class="p">).</span><span class="na">addPathPatterns</span><span class="p">(</span><span class="s">"/api/**"</span><span class="p">);</span><span class="w"> </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p>What the code does:</p>
+<ul>
+<li><strong><code>CorrelationIdFilter</code></strong> runs first for every request. It takes the <code>X-Request-Id</code> header, or makes a new UUID. It puts the ID in the logging context (MDC) and in the response header. In <code>finally</code>, it removes the ID — because Tomcat threads are reused, and the next request must not see the old ID.</li>
+<li><strong><code>FeatureFlagInterceptor</code></strong> reads the <code>@RequiresFeature</code> annotation on the chosen controller method. If the feature is off for this tenant, it returns 404 and stops. A filter could not do this, because a filter doesn't know which method will run.</li>
+<li><strong><code>WebConfig</code></strong> registers the interceptor for paths under <code>/api/**</code>.</li>
+</ul>
+<h4>When would I use it?</h4>
+<ul>
+<li>Use a <strong>filter</strong> for anything that must happen before Spring MVC, or for all traffic — security, tenancy, tracing.</li>
+<li>Use an <strong>interceptor</strong> for logic that depends on which handler was chosen.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Wrong filter order.</strong> For example, tenant resolution runs before security has checked who the caller is. Or it runs after another filter that already needed the tenant.</li>
+<li><strong>Reading the request body in a filter.</strong> The body is a stream, and reading it uses it up. Then the controller gets an empty body. Wrap the request with <code>ContentCachingRequestWrapper</code> to fix this.</li>
+<li><strong>Expecting interceptors to run for errors or static files.</strong> They don't run for those, though you may expect them to.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. Filter vs interceptor?</strong> A filter works at the servlet level. It runs for every request and can wrap the request and response. An interceptor works at the Spring MVC level. It runs around the chosen handler and can see its method and annotations.</p>
+<p><strong>Q2. Where would you put tenant resolution and why?</strong> In a filter, early in the chain. Then every later component — security rules, controllers, repositories — has the tenant context. Clear it in <code>finally</code> so the next request on that thread starts clean.</p>
+<h2 id="s7-6">7.6 Calling other services: RestClient, timeouts and connection pools</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> Every time your service calls another service, it can get stuck waiting. Set timeouts, reuse connections, and keep one configured client per downstream — otherwise one slow service can bring yours down too.</p>
+<p>Microservices call each other and partners all the time — pricing, inventory, SMS, payment gateways.</p>
+<p>Every outbound call is a risk. Your service can hang there, leak connections, or spread someone else's outage to your own callers. So configuring the HTTP client correctly is basic production hygiene. It also comes up often in SDE2 interviews.</p>
+<h4>What is happening internally?</h4>
+<p><strong>The client options in Spring:</strong></p>
+<ul>
+<li><strong><code>RestClient</code></strong> (Spring 6.1+) — the modern, synchronous client with a fluent (chained-method) style.</li>
+<li><strong><code>WebClient</code></strong> — the reactive, non-blocking client.</li>
+<li><strong><code>RestTemplate</code></strong> — the old client; it is in maintenance mode (only bug fixes).</li>
+<li><strong>HTTP interfaces</strong> (<code>@HttpExchange</code>) — you write an annotated interface, and Spring generates the client for you.</li>
+</ul>
+<p><strong>Connection pools:</strong> Under the hood, an HTTP library does the real work — JDK <code>HttpClient</code>, Apache HttpClient 5 or Reactor Netty. It keeps a <em>connection pool</em> for each host — a set of open connections ready to reuse.</p>
+<ul>
+<li>Reusing a connection skips the TCP and TLS handshakes, which saves time.</li>
+<li>The pool's limit caps how many calls can go to one host at the same time.</li>
+</ul>
+<p><strong>Timeouts — there are three:</strong></p>
+<ol>
+<li><strong>Connect timeout</strong> — how long to wait to open the TCP connection.</li>
+<li><strong>Read/response timeout</strong> — how long to wait for data after connecting.</li>
+<li><strong>Pool-acquire timeout</strong> — how long to wait for a free connection from the pool.</li>
+</ol>
+<p>Without a read timeout, a stuck downstream service holds your thread forever.</p>
+<h4>How does it work?</h4>
+<p>Follow these rules:</p>
+<ol>
+<li>Set timeouts <strong>shorter than your own SLA</strong> (the response time you promise).</li>
+<li>Also keep them shorter than the timeout your caller uses for you. This is called a <em>timeout budget</em> — each hop gets a share of the total time.</li>
+<li>Add retries only for idempotent calls — calls that are safe to repeat.</li>
+<li>Add a circuit breaker for unhealthy dependencies (8.7). A circuit breaker stops calling a service that keeps failing, for a short while, like a fuse in your house.</li>
+</ol>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="nd">@Configuration</span>
+<span class="kd">class</span> <span class="nc">ClientsConfig</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nd">@Bean</span>
+<span class="w">    </span><span class="n">RestClient</span><span class="w"> </span><span class="nf">pricingClient</span><span class="p">(</span><span class="n">RestClient</span><span class="p">.</span><span class="na">Builder</span><span class="w"> </span><span class="n">builder</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="kd">var</span><span class="w"> </span><span class="n">http</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">HttpClient</span><span class="p">.</span><span class="na">newBuilder</span><span class="p">().</span><span class="na">connectTimeout</span><span class="p">(</span><span class="n">Duration</span><span class="p">.</span><span class="na">ofMillis</span><span class="p">(</span><span class="mi">500</span><span class="p">)).</span><span class="na">build</span><span class="p">();</span><span class="w">   </span><span class="c1">// JDK client</span>
+<span class="w">        </span><span class="kd">var</span><span class="w"> </span><span class="n">factory</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">JdkClientHttpRequestFactory</span><span class="p">(</span><span class="n">http</span><span class="p">);</span>
+<span class="w">        </span><span class="n">factory</span><span class="p">.</span><span class="na">setReadTimeout</span><span class="p">(</span><span class="n">Duration</span><span class="p">.</span><span class="na">ofSeconds</span><span class="p">(</span><span class="mi">2</span><span class="p">));</span>
+<span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="n">builder</span><span class="p">.</span><span class="na">baseUrl</span><span class="p">(</span><span class="s">"http://pricing-service"</span><span class="p">)</span>
+<span class="w">                      </span><span class="p">.</span><span class="na">requestFactory</span><span class="p">(</span><span class="n">factory</span><span class="p">)</span>
+<span class="w">                      </span><span class="p">.</span><span class="na">defaultHeader</span><span class="p">(</span><span class="s">"X-Caller"</span><span class="p">,</span><span class="w"> </span><span class="s">"loyalty-service"</span><span class="p">)</span>
+<span class="w">                      </span><span class="p">.</span><span class="na">build</span><span class="p">();</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+
+<span class="nd">@Component</span>
+<span class="kd">class</span> <span class="nc">PricingClient</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">private</span><span class="w"> </span><span class="kd">final</span><span class="w"> </span><span class="n">RestClient</span><span class="w"> </span><span class="n">client</span><span class="p">;</span>
+<span class="w">    </span><span class="n">PricingClient</span><span class="p">(</span><span class="n">RestClient</span><span class="w"> </span><span class="n">pricingClient</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="k">this</span><span class="p">.</span><span class="na">client</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">pricingClient</span><span class="p">;</span><span class="w"> </span><span class="p">}</span>
+
+<span class="w">    </span><span class="n">Price</span><span class="w"> </span><span class="nf">price</span><span class="p">(</span><span class="n">String</span><span class="w"> </span><span class="n">tenant</span><span class="p">,</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="n">sku</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="n">client</span><span class="p">.</span><span class="na">get</span><span class="p">().</span><span class="na">uri</span><span class="p">(</span><span class="s">"/v1/prices/{sku}"</span><span class="p">,</span><span class="w"> </span><span class="n">sku</span><span class="p">)</span>
+<span class="w">                </span><span class="p">.</span><span class="na">header</span><span class="p">(</span><span class="s">"X-Tenant-Id"</span><span class="p">,</span><span class="w"> </span><span class="n">tenant</span><span class="p">)</span>
+<span class="w">                </span><span class="p">.</span><span class="na">retrieve</span><span class="p">()</span>
+<span class="w">                </span><span class="p">.</span><span class="na">onStatus</span><span class="p">(</span><span class="n">HttpStatusCode</span><span class="p">::</span><span class="n">is4xxClientError</span><span class="p">,</span><span class="w"> </span><span class="p">(</span><span class="n">req</span><span class="p">,</span><span class="w"> </span><span class="n">res</span><span class="p">)</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="k">throw</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">PriceNotFoundException</span><span class="p">(</span><span class="n">sku</span><span class="p">);</span><span class="w"> </span><span class="p">})</span>
+<span class="w">                </span><span class="p">.</span><span class="na">body</span><span class="p">(</span><span class="n">Price</span><span class="p">.</span><span class="na">class</span><span class="p">);</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+
+<span class="c1">// Declarative HTTP interface (Spring 6)</span>
+<span class="kd">interface</span> <span class="nc">InventoryApi</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nd">@GetExchange</span><span class="p">(</span><span class="s">"/v1/stock/{sku}"</span><span class="p">)</span><span class="w"> </span><span class="n">Stock</span><span class="w"> </span><span class="nf">stock</span><span class="p">(</span><span class="nd">@PathVariable</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="n">sku</span><span class="p">);</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p>What the code does:</p>
+<ul>
+<li>One <code>RestClient</code> bean for the pricing service, with a 500 ms connect timeout and a 2 s read timeout.</li>
+<li><code>PricingClient</code> wraps it. A 4xx response from pricing becomes your own <code>PriceNotFoundException</code>.</li>
+<li><code>InventoryApi</code> shows the declarative style: Spring generates the client from the interface.</li>
+</ul>
+<h4>When would I use it?</h4>
+<p>For every outbound HTTP call.</p>
+<p>Make one client bean per downstream service. Each one gets:</p>
+<ul>
+<li>its own timeouts and pool limits — this is a <em>bulkhead</em>, so one slow service can't use up the connections meant for others;</li>
+<li>observability — metrics, and tracing headers that pass along automatically when you build from the injected <code>RestClient.Builder</code>;</li>
+<li>resilience policies such as retries and circuit breakers.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>No timeouts.</strong> Your threads fill up with requests stuck on a slow dependency. Then the outage spreads to everyone who calls you.</li>
+<li><strong>Creating a new client for every request.</strong> There is no connection reuse. You pay for a TLS handshake on every call, and you can run out of ports (sockets stuck in TIME_WAIT).</li>
+<li><strong>Retrying non-idempotent POSTs.</strong> This causes duplicate payments or orders.</li>
+<li><strong>Not reading or closing response bodies.</strong> The connection never goes back to the pool, so the pool slowly leaks.</li>
+<li><strong>Calling remote services inside a DB transaction.</strong> The DB connection and its locks stay held while you wait on the network (7.12).</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. What timeouts do you configure on an HTTP client?</strong> Connect timeout, read/response timeout, and pool-acquisition timeout. All of them must fit inside the caller's latency budget.</p>
+<p><strong>Q2. RestTemplate vs RestClient vs WebClient?</strong> RestTemplate is the old synchronous client. RestClient is the modern synchronous client with a fluent style. WebClient is reactive and non-blocking, used with WebFlux or for high-concurrency async calls.</p>
+<p><strong>Q3. Why reuse HTTP clients?</strong> To reuse pooled TCP/TLS connections, avoid handshake costs and port exhaustion, and keep timeouts and limits in one central place.</p>
+<h2 id="s7-7">7.7 JPA, Hibernate and Spring Data repositories</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> You write Java classes, and the library turns them into database tables and SQL for you. With Spring Data, you only write an interface; Spring writes the code behind it.</p>
+<p>With plain JDBC (Java's low-level database API), you do everything by hand:</p>
+<ul>
+<li>You copy every column into every field, one by one.</li>
+<li>You open and close connections and statements yourself.</li>
+<li>You write the same insert, select, update and delete SQL for every table. This basic set is called <em>CRUD</em> (Create, Read, Update, Delete).</li>
+</ul>
+<p>This is boring and easy to get wrong.</p>
+<p>A tool that maps Java objects to database tables is called an <em>ORM</em> (Object-Relational Mapper). In Java:</p>
+<ul>
+<li><strong>JPA</strong> is the specification — a set of rules and annotations. It is like an interface.</li>
+<li><strong>Hibernate</strong> is the implementation of JPA — the real engine. It is like EF Core in .NET.</li>
+</ul>
+<p>Hibernate maps Java objects to tables, generates the SQL, tracks what you changed and manages links between objects.</p>
+<p><strong>Spring Data JPA</strong> goes one step further. You only declare a repository <em>interface</em>. Spring writes the class that implements it for you.</p>
+<p>Think of a tiffin service. You just say "veg thali, no onion" on the order slip. The kitchen knows how to cook it. You never enter the kitchen.</p>
+<h4>What is happening internally?</h4>
+<ul>
+<li><strong>Entity</strong>: a class marked with <code>@Entity</code>. It maps to one table.</li>
+<li>Hibernate needs a constructor with no arguments, so it can create the object itself.</li>
+<li>The class and its methods must not be <code>final</code>. Why? Hibernate creates a subclass at runtime (a <em>proxy</em>) to support lazy loading. A final class cannot be subclassed.</li>
+<li><strong>EntityManager</strong> (called <code>Session</code> in Hibernate): the object that does the actual work with the database.</li>
+<li>It holds the <strong>persistence context</strong> (7.9) — a list of the objects loaded in this transaction.</li>
+<li>This pattern is called a <em>unit of work</em>: collect all changes, then write them together.</li>
+<li>Spring does not give you a raw EntityManager. It injects a shared proxy that finds the EntityManager of the current transaction.</li>
+<li><strong>Spring Data repositories</strong>: at startup, Spring does these steps:
+  1. It scans for interfaces that extend <code>Repository</code>.
+  2. For each one, it creates a <strong>JDK proxy</strong> — a fake object generated at runtime that implements your interface.
+  3. Basic CRUD calls go to a ready-made class, <code>SimpleJpaRepository</code>.
+  4. Your own query methods get generated code. They come in a few kinds:</li>
+<li><strong>Derived queries</strong>: Spring reads the method name and builds the query. For example, <code>findByTenantIdAndStatusOrderByCreatedAtDesc</code> is parsed into JPQL at startup. (JPQL is SQL-like, but written against classes and fields, not tables and columns.) If you make a typo in the name, the app fails at startup. This is good — you find the bug early, not in production.</li>
+<li><strong><code>@Query</code></strong>: you write the JPQL or native SQL yourself.</li>
+<li><strong>Projections</strong>: an interface or record that selects only some columns, not the full entity.</li>
+<li><strong>Specifications</strong>: build filters at runtime, for search screens where the user picks the filters.</li>
+<li><strong>ID generation</strong> — how a new row gets its primary key:</li>
+<li><code>IDENTITY</code>: the database auto-increments the ID. Hibernate does not know the ID until the row is inserted. So it must insert each row immediately. Because of this, <strong>JDBC batch inserts are disabled</strong> (no sending 50 inserts in one go).</li>
+<li><code>SEQUENCE</code>: Hibernate fetches a block of IDs from a database sequence in advance. The block size is <code>allocationSize</code>. Since Hibernate already knows the IDs, it can batch inserts. This is the preferred choice on Postgres.</li>
+<li><code>UUID</code>: the app makes the ID itself, with no need to ask the database. Use time-ordered UUIDv7. Its values grow over time, so new rows land next to each other in the index. This is called better index locality, and it makes inserts faster.</li>
+</ul>
+<h4>How does it work?</h4>
+<div class="hl"><pre><span></span><code><span class="nd">@Entity</span>
+<span class="nd">@Table</span><span class="p">(</span><span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"ledger_entry"</span><span class="p">,</span>
+<span class="w">       </span><span class="n">indexes</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nd">@Index</span><span class="p">(</span><span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"ix_ledger_account_created"</span><span class="p">,</span><span class="w"> </span><span class="n">columnList</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"account_id, created_at"</span><span class="p">),</span>
+<span class="w">       </span><span class="n">uniqueConstraints</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nd">@UniqueConstraint</span><span class="p">(</span><span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"uq_ledger_idem"</span><span class="p">,</span><span class="w"> </span><span class="n">columnNames</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="s">"tenant_id"</span><span class="p">,</span><span class="w"> </span><span class="s">"idempotency_key"</span><span class="p">}))</span>
+<span class="kd">public</span><span class="w"> </span><span class="kd">class</span> <span class="nc">LedgerEntry</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nd">@Id</span>
+<span class="w">    </span><span class="nd">@GeneratedValue</span><span class="p">(</span><span class="n">strategy</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">GenerationType</span><span class="p">.</span><span class="na">SEQUENCE</span><span class="p">,</span><span class="w"> </span><span class="n">generator</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"ledger_seq"</span><span class="p">)</span>
+<span class="w">    </span><span class="nd">@SequenceGenerator</span><span class="p">(</span><span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"ledger_seq"</span><span class="p">,</span><span class="w"> </span><span class="n">sequenceName</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"ledger_seq"</span><span class="p">,</span><span class="w"> </span><span class="n">allocationSize</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">50</span><span class="p">)</span>
+<span class="w">    </span><span class="kd">private</span><span class="w"> </span><span class="n">Long</span><span class="w"> </span><span class="n">id</span><span class="p">;</span>
+
+<span class="w">    </span><span class="nd">@Column</span><span class="p">(</span><span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"tenant_id"</span><span class="p">,</span><span class="w"> </span><span class="n">nullable</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">false</span><span class="p">)</span><span class="w">  </span><span class="kd">private</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="n">tenantId</span><span class="p">;</span>
+<span class="w">    </span><span class="nd">@Column</span><span class="p">(</span><span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"account_id"</span><span class="p">,</span><span class="w"> </span><span class="n">nullable</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">false</span><span class="p">)</span><span class="w"> </span><span class="kd">private</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="n">accountId</span><span class="p">;</span>
+<span class="w">    </span><span class="nd">@Enumerated</span><span class="p">(</span><span class="n">EnumType</span><span class="p">.</span><span class="na">STRING</span><span class="p">)</span><span class="w"> </span><span class="nd">@Column</span><span class="p">(</span><span class="n">nullable</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">false</span><span class="p">)</span><span class="w"> </span><span class="kd">private</span><span class="w"> </span><span class="n">EntryType</span><span class="w"> </span><span class="n">type</span><span class="p">;</span><span class="w">   </span><span class="c1">// STRING, never ORDINAL</span>
+<span class="w">    </span><span class="nd">@Column</span><span class="p">(</span><span class="n">nullable</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">false</span><span class="p">)</span><span class="w"> </span><span class="kd">private</span><span class="w"> </span><span class="kt">long</span><span class="w"> </span><span class="n">points</span><span class="p">;</span>
+<span class="w">    </span><span class="nd">@Column</span><span class="p">(</span><span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"idempotency_key"</span><span class="p">,</span><span class="w"> </span><span class="n">nullable</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">false</span><span class="p">)</span><span class="w"> </span><span class="kd">private</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="n">idempotencyKey</span><span class="p">;</span>
+<span class="w">    </span><span class="nd">@Column</span><span class="p">(</span><span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"created_at"</span><span class="p">,</span><span class="w"> </span><span class="n">nullable</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">false</span><span class="p">)</span><span class="w"> </span><span class="kd">private</span><span class="w"> </span><span class="n">Instant</span><span class="w"> </span><span class="n">createdAt</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kd">protected</span><span class="w"> </span><span class="nf">LedgerEntry</span><span class="p">()</span><span class="w"> </span><span class="p">{}</span><span class="w">                       </span><span class="c1">// for JPA</span>
+<span class="w">    </span><span class="kd">public</span><span class="w"> </span><span class="nf">LedgerEntry</span><span class="p">(</span><span class="n">String</span><span class="w"> </span><span class="n">tenantId</span><span class="p">,</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="n">accountId</span><span class="p">,</span><span class="w"> </span><span class="n">EntryType</span><span class="w"> </span><span class="n">type</span><span class="p">,</span><span class="w"> </span><span class="kt">long</span><span class="w"> </span><span class="n">points</span><span class="p">,</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="n">key</span><span class="p">,</span><span class="w"> </span><span class="n">Instant</span><span class="w"> </span><span class="n">at</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="k">this</span><span class="p">.</span><span class="na">tenantId</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">tenantId</span><span class="p">;</span><span class="w"> </span><span class="k">this</span><span class="p">.</span><span class="na">accountId</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">accountId</span><span class="p">;</span><span class="w"> </span><span class="k">this</span><span class="p">.</span><span class="na">type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">type</span><span class="p">;</span>
+<span class="w">        </span><span class="k">this</span><span class="p">.</span><span class="na">points</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">points</span><span class="p">;</span><span class="w"> </span><span class="k">this</span><span class="p">.</span><span class="na">idempotencyKey</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">key</span><span class="p">;</span><span class="w"> </span><span class="k">this</span><span class="p">.</span><span class="na">createdAt</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">at</span><span class="p">;</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">    </span><span class="c1">// getters only: ledger rows are append-only</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="kd">public</span><span class="w"> </span><span class="kd">interface</span> <span class="nc">LedgerRepository</span><span class="w"> </span><span class="kd">extends</span><span class="w"> </span><span class="n">JpaRepository</span><span class="o">&lt;</span><span class="n">LedgerEntry</span><span class="p">,</span><span class="w"> </span><span class="n">Long</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">Optional</span><span class="o">&lt;</span><span class="n">LedgerEntry</span><span class="o">&gt;</span><span class="w"> </span><span class="nf">findByTenantIdAndIdempotencyKey</span><span class="p">(</span><span class="n">String</span><span class="w"> </span><span class="n">tenantId</span><span class="p">,</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="n">key</span><span class="p">);</span><span class="w">           </span><span class="c1">// derived</span>
+
+<span class="w">    </span><span class="nd">@Query</span><span class="p">(</span><span class="s">"select coalesce(sum(e.points), 0) from LedgerEntry e where e.accountId = :acc"</span><span class="p">)</span>
+<span class="w">    </span><span class="kt">long</span><span class="w"> </span><span class="nf">balance</span><span class="p">(</span><span class="nd">@Param</span><span class="p">(</span><span class="s">"acc"</span><span class="p">)</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="n">accountId</span><span class="p">);</span><span class="w">                                                 </span><span class="c1">// JPQL</span>
+
+<span class="w">    </span><span class="n">List</span><span class="o">&lt;</span><span class="n">LedgerEntry</span><span class="o">&gt;</span><span class="w"> </span><span class="nf">findTop20ByAccountIdAndIdLessThanOrderByIdDesc</span><span class="p">(</span><span class="n">String</span><span class="w"> </span><span class="n">accountId</span><span class="p">,</span><span class="w"> </span><span class="kt">long</span><span class="w"> </span><span class="n">afterId</span><span class="p">);</span><span class="w">  </span><span class="c1">// keyset page</span>
+
+<span class="w">    </span><span class="nd">@Query</span><span class="p">(</span><span class="n">value</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"""</span>
+<span class="s">        SELECT account_id AS accountId, SUM(points) AS total FROM ledger_entry</span>
+<span class="s">        WHERE tenant_id = :tenant AND created_at &gt;= :since</span>
+<span class="s">        GROUP BY account_id ORDER BY total DESC LIMIT 10</span>
+<span class="s">        """</span><span class="p">,</span><span class="w"> </span><span class="n">nativeQuery</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span><span class="p">)</span>
+<span class="w">    </span><span class="n">List</span><span class="o">&lt;</span><span class="n">TopAccount</span><span class="o">&gt;</span><span class="w"> </span><span class="nf">top10</span><span class="p">(</span><span class="nd">@Param</span><span class="p">(</span><span class="s">"tenant"</span><span class="p">)</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="n">tenant</span><span class="p">,</span><span class="w"> </span><span class="nd">@Param</span><span class="p">(</span><span class="s">"since"</span><span class="p">)</span><span class="w"> </span><span class="n">Instant</span><span class="w"> </span><span class="n">since</span><span class="p">);</span><span class="w">       </span><span class="c1">// native + projection</span>
+
+<span class="w">    </span><span class="nd">@Modifying</span>
+<span class="w">    </span><span class="nd">@Query</span><span class="p">(</span><span class="s">"update Account a set a.status = 'DORMANT' where a.lastActivity &lt; :cutoff"</span><span class="p">)</span>
+<span class="w">    </span><span class="kt">int</span><span class="w"> </span><span class="nf">markDormant</span><span class="p">(</span><span class="nd">@Param</span><span class="p">(</span><span class="s">"cutoff"</span><span class="p">)</span><span class="w"> </span><span class="n">Instant</span><span class="w"> </span><span class="n">cutoff</span><span class="p">);</span><span class="w">                                             </span><span class="c1">// bulk update</span>
+<span class="p">}</span>
+<span class="kd">interface</span> <span class="nc">TopAccount</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="nf">getAccountId</span><span class="p">();</span><span class="w"> </span><span class="kt">long</span><span class="w"> </span><span class="nf">getTotal</span><span class="p">();</span><span class="w"> </span><span class="p">}</span>
+</code></pre></div>
+
+<p>The repository interfaces build on each other. Each level adds more methods:</p>
+<p><code>Repository</code> → <code>CrudRepository</code>/<code>ListCrudRepository</code> → <code>PagingAndSortingRepository</code> → <code>JpaRepository</code>.</p>
+<p><code>JpaRepository</code> is the top level. It adds flush, batch delete and <code>getReferenceById</code>.</p>
+<h4>When would I use it?</h4>
+<p>Use it for domain services that do a lot of CRUD and have clear <em>aggregates</em> — a main object with its child objects, saved and loaded together. Examples: accounts, orders, campaigns.</p>
+<p>Use something else for:</p>
+<ul>
+<li>complex reporting queries,</li>
+<li>bulk operations,</li>
+<li>anything where performance is critical.</li>
+</ul>
+<p>For these, use native SQL, <code>JdbcTemplate</code> (Spring's thin JDBC helper) or jOOQ (a type-safe SQL builder). Mixing both approaches in one service is normal.</p>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong><code>ORDINAL</code> enums</strong>: the enum is saved as its position number (0, 1, 2). If someone reorders the enum values later, old rows now point to the wrong value. Your data is silently corrupted. Always use <code>STRING</code>.</li>
+<li><strong><code>IDENTITY</code> IDs</strong>: they disable batch inserts, so bulk inserts become slow.</li>
+<li><strong><code>ddl-auto=update</code> in production</strong>: Hibernate changes the schema on its own at startup. Schema changes must go through versioned migrations instead (7.16).</li>
+<li><strong>Bulk <code>@Modifying</code> updates</strong>: they run directly in the database and skip the persistence context. So entities you already loaded in memory now hold old values (they are <em>stale</em>). Fix: use <code>clearAutomatically = true</code>, or reload the entities.</li>
+<li><strong>Derived query names that grow silly</strong>, like <code>findByAAndBOrCAndDOrderBy…</code>. Nobody can read them. Switch to <code>@Query</code>.</li>
+<li><strong><code>findAll()</code> on a big table</strong>: it loads every row into memory.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. JPA vs Hibernate vs Spring Data JPA?</strong> JPA is the ORM specification — the rules and annotations. Hibernate is the implementation that actually does the work. Spring Data JPA sits on top of JPA and generates repository implementations from your interfaces.</p>
+<p><strong>Q2. How does Spring Data create a repository implementation from an interface?</strong> At startup, it creates a proxy for the interface, backed by SimpleJpaRepository for CRUD. It parses method names, or reads @Query annotations, and turns them into queries.</p>
+<p><strong>Q3. IDENTITY vs SEQUENCE generation?</strong> IDENTITY uses the database's auto-increment. Hibernate must insert each row immediately to learn its ID, so batching is disabled. SEQUENCE fetches IDs in advance in blocks, so Hibernate can batch the inserts.</p>
+<h2 id="s7-8">7.8 Relationships and fetch types</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> You tell JPA how your objects are linked — an order has lines, a line belongs to an order. Then you can just call <code>order.getLines()</code>. But each link can secretly fire extra queries, so you must control how and when it loads.</p>
+<p>Domain objects point to each other. For example:</p>
+<ul>
+<li>An order has many lines.</li>
+<li>An order belongs to an outlet.</li>
+<li>A scheme has many rules.</li>
+</ul>
+<p>If you map these links, you can move from one object to another in plain Java code. This web of linked objects is called the <em>object graph</em>.</p>
+<p>But every link has a cost. It can:</p>
+<ul>
+<li>fire a hidden query,</li>
+<li>cause a surprise <em>cascade</em> (an action on the parent spreading to children),</li>
+<li>or become a performance trap.</li>
+</ul>
+<h4>What is happening internally?</h4>
+<ul>
+<li><strong>Owning side vs inverse side</strong>:</li>
+<li>The <strong>owning side</strong> is the side that holds the foreign key. It uses <code>@ManyToOne</code> with <code>@JoinColumn</code>. Only this side decides what gets written to the database.</li>
+<li>The <strong>inverse side</strong> uses <code>@OneToMany(mappedBy = …)</code>. It is only a mirror, so you can navigate in the other direction. Changes made only here are not saved.</li>
+<li><strong>Fetch types</strong> — when the linked data is loaded:</li>
+<li><code>EAGER</code>: load the link immediately, together with the parent. Hibernate uses a join or an extra query.</li>
+<li><code>LAZY</code>: do not load it yet. Hibernate puts a placeholder in the field instead. For a single object, the placeholder is a <strong>proxy</strong>. For a collection, it is a <code>PersistentCollection</code> wrapper. The data is loaded the first time you touch it.</li>
+<li><strong>Defaults</strong>: <code>@ManyToOne</code> and <code>@OneToOne</code> are <strong>EAGER</strong>. <code>@OneToMany</code> and <code>@ManyToMany</code> are <strong>LAZY</strong>.</li>
+<li><strong>Cascade</strong>: an operation on the parent (persist, merge, remove) is passed on to its children automatically.</li>
+<li><strong><code>orphanRemoval = true</code></strong>: if you remove a child from the parent's collection, Hibernate deletes that child row.</li>
+</ul>
+<p>Think of a lazy proxy like a restaurant token. You get the token now. The food (the data) comes only when you go to the counter and ask for it.</p>
+<h4>How does it work?</h4>
+<div class="hl"><pre><span></span><code><span class="nd">@Entity</span>
+<span class="kd">public</span><span class="w"> </span><span class="kd">class</span> <span class="nc">Order</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nd">@Id</span><span class="w"> </span><span class="nd">@GeneratedValue</span><span class="w"> </span><span class="n">Long</span><span class="w"> </span><span class="n">id</span><span class="p">;</span>
+
+<span class="w">    </span><span class="nd">@ManyToOne</span><span class="p">(</span><span class="n">fetch</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">FetchType</span><span class="p">.</span><span class="na">LAZY</span><span class="p">,</span><span class="w"> </span><span class="n">optional</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">false</span><span class="p">)</span><span class="w">       </span><span class="c1">// override the EAGER default</span>
+<span class="w">    </span><span class="nd">@JoinColumn</span><span class="p">(</span><span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"outlet_id"</span><span class="p">)</span>
+<span class="w">    </span><span class="kd">private</span><span class="w"> </span><span class="n">Outlet</span><span class="w"> </span><span class="n">outlet</span><span class="p">;</span>
+
+<span class="w">    </span><span class="nd">@OneToMany</span><span class="p">(</span><span class="n">mappedBy</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"order"</span><span class="p">,</span><span class="w"> </span><span class="n">cascade</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">CascadeType</span><span class="p">.</span><span class="na">ALL</span><span class="p">,</span><span class="w"> </span><span class="n">orphanRemoval</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span><span class="p">)</span>
+<span class="w">    </span><span class="kd">private</span><span class="w"> </span><span class="n">List</span><span class="o">&lt;</span><span class="n">OrderLine</span><span class="o">&gt;</span><span class="w"> </span><span class="n">lines</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">ArrayList</span><span class="o">&lt;&gt;</span><span class="p">();</span>
+
+<span class="w">    </span><span class="kd">public</span><span class="w"> </span><span class="kt">void</span><span class="w"> </span><span class="nf">addLine</span><span class="p">(</span><span class="n">OrderLine</span><span class="w"> </span><span class="n">l</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">lines</span><span class="p">.</span><span class="na">add</span><span class="p">(</span><span class="n">l</span><span class="p">);</span><span class="w"> </span><span class="n">l</span><span class="p">.</span><span class="na">setOrder</span><span class="p">(</span><span class="k">this</span><span class="p">);</span><span class="w"> </span><span class="p">}</span><span class="w">      </span><span class="c1">// keep both sides in sync</span>
+<span class="w">    </span><span class="kd">public</span><span class="w"> </span><span class="kt">void</span><span class="w"> </span><span class="nf">removeLine</span><span class="p">(</span><span class="n">OrderLine</span><span class="w"> </span><span class="n">l</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">lines</span><span class="p">.</span><span class="na">remove</span><span class="p">(</span><span class="n">l</span><span class="p">);</span><span class="w"> </span><span class="n">l</span><span class="p">.</span><span class="na">setOrder</span><span class="p">(</span><span class="kc">null</span><span class="p">);</span><span class="w"> </span><span class="p">}</span>
+<span class="p">}</span>
+
+<span class="nd">@Entity</span>
+<span class="kd">public</span><span class="w"> </span><span class="kd">class</span> <span class="nc">OrderLine</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nd">@Id</span><span class="w"> </span><span class="nd">@GeneratedValue</span><span class="w"> </span><span class="n">Long</span><span class="w"> </span><span class="n">id</span><span class="p">;</span>
+<span class="w">    </span><span class="nd">@ManyToOne</span><span class="p">(</span><span class="n">fetch</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">FetchType</span><span class="p">.</span><span class="na">LAZY</span><span class="p">)</span><span class="w"> </span><span class="nd">@JoinColumn</span><span class="p">(</span><span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"order_id"</span><span class="p">)</span><span class="w"> </span><span class="kd">private</span><span class="w"> </span><span class="n">Order</span><span class="w"> </span><span class="n">order</span><span class="p">;</span><span class="w">   </span><span class="c1">// owning side</span>
+<span class="w">    </span><span class="kd">private</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="n">sku</span><span class="p">;</span><span class="w"> </span><span class="kd">private</span><span class="w"> </span><span class="kt">int</span><span class="w"> </span><span class="n">qty</span><span class="p">;</span>
+<span class="w">    </span><span class="kt">void</span><span class="w"> </span><span class="nf">setOrder</span><span class="p">(</span><span class="n">Order</span><span class="w"> </span><span class="n">o</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="k">this</span><span class="p">.</span><span class="na">order</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">o</span><span class="p">;</span><span class="w"> </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="n">Order</span><span class="w"> </span><span class="n">o</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">orderRepo</span><span class="p">.</span><span class="na">findById</span><span class="p">(</span><span class="mi">7L</span><span class="p">).</span><span class="na">orElseThrow</span><span class="p">();</span><span class="w">   </span><span class="c1">// SELECT order only</span>
+<span class="n">o</span><span class="p">.</span><span class="na">getOutlet</span><span class="p">().</span><span class="na">getId</span><span class="p">();</span><span class="w">                              </span><span class="c1">// no query: the proxy already knows the FK id</span>
+<span class="n">o</span><span class="p">.</span><span class="na">getOutlet</span><span class="p">().</span><span class="na">getName</span><span class="p">();</span><span class="w">                            </span><span class="c1">// SELECT outlet (proxy initialised)</span>
+<span class="n">o</span><span class="p">.</span><span class="na">getLines</span><span class="p">().</span><span class="na">size</span><span class="p">();</span><span class="w">                                </span><span class="c1">// SELECT order_line WHERE order_id = 7</span>
+</code></pre></div>
+
+<p>Sometimes a many-to-many link has its own data. For example, an outlet joins a scheme on a certain date. That joining date belongs to the link itself. In this case, do not use <code>@ManyToMany</code>. Make the join table its own entity instead.</p>
+<h4>When would I use it?</h4>
+<p>Map relationships <strong>inside an aggregate</strong> — for example, order → lines.</p>
+<p>Across aggregates or across services, store only the ID (like <code>outletId</code>), not the object. Because of this:</p>
+<ul>
+<li>loading stays predictable (no surprise queries), and</li>
+<li>the boundaries between services stay clean.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>EAGER <code>@ManyToOne</code> everywhere</strong>: every query drags in a chain of joined entities.</li>
+<li><strong>Updating only one side of a two-way link</strong>: the objects in memory disagree with each other until you reload them.</li>
+<li><strong><code>CascadeType.REMOVE</code> on <code>@ManyToMany</code></strong>: deleting one parent deletes children that other parents still share.</li>
+<li><strong><code>toString</code>, <code>equals</code>, <code>hashCode</code> or JSON serialisation touching lazy collections</strong>: this causes extra queries, endless recursion (A prints B, B prints A …), or <code>LazyInitializationException</code>.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. What are the default fetch types?</strong> ToOne links (<code>@ManyToOne</code>, <code>@OneToOne</code>) are EAGER. ToMany links are LAZY. You should set ToOne links to LAZY explicitly.</p>
+<p><strong>Q2. What is the owning side of a relationship?</strong> It is the side that holds the foreign key (<code>@JoinColumn</code>). JPA writes the relationship to the database from this side. <code>mappedBy</code> marks the other side, the inverse side.</p>
+<p><strong>Q3. When would you avoid <code>@ManyToMany</code>?</strong> When the link has its own data or its own lifecycle. Then model the join table as an entity, with two ManyToOne relations.</p>
+<h2 id="s7-9">7.9 The persistence context, entity states and dirty checking</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> Inside a transaction, Hibernate keeps a notebook of every object it loaded and what it looked like at load time. At the end, it compares, finds what you changed, and writes the UPDATE for you — even if you never call <code>save()</code>.</p>
+<p>Hibernate does more than run SQL. It keeps a <strong>unit of work</strong> — it collects changes and writes them together. In detail, it:</p>
+<ul>
+<li>tracks every entity it loaded,</li>
+<li>makes sure one database row = one Java object within a transaction,</li>
+<li>groups writes into batches,</li>
+<li>writes your changes to the database automatically. Sending pending changes to the database is called <em>flushing</em>.</li>
+</ul>
+<p>If you do not understand this, you will see puzzles like:</p>
+<ul>
+<li>"Why did this UPDATE happen? I never called save."</li>
+<li>"Why is my change not saved?"</li>
+<li>"Why does my batch job run out of memory?"</li>
+</ul>
+<h4>What is happening internally?</h4>
+<p>The <strong>persistence context</strong> is also called the <em>first-level cache</em>. It holds two things:</p>
+<ol>
+<li>A map: <code>(EntityClass, id) → entity instance</code>.</li>
+<li>A <strong>snapshot</strong> of each entity — a copy of its values as they were when loaded.</li>
+</ol>
+<p>In Spring, the persistence context lives as long as the transaction.</p>
+<p>Think of a library register. Every book issued is written down with its condition. When it comes back, the clerk compares it with the register and notes any damage.</p>
+<p>An entity moves through these states:</p>
+<div class="hl"><pre><span></span><code>transient (new) ──persist()──► MANAGED ──(commit / clear / close)──► DETACHED
+                                  │                                       │
+                               remove()                               merge() (copies state onto a managed instance)
+                                  ▼
+                               REMOVED ──(flush)──► DELETE
+</code></pre></div>
+
+<ul>
+<li><strong>Transient</strong>: a new object that Hibernate does not know about yet.</li>
+<li><strong>Managed</strong>: Hibernate is tracking it.</li>
+<li><strong>Detached</strong>: Hibernate tracked it earlier, but the context is closed or cleared now.</li>
+<li><strong>Removed</strong>: marked for delete; the DELETE runs at flush.</li>
+</ul>
+<p>Key behaviour:</p>
+<ul>
+<li><code>find</code> / <code>findById</code> first checks the persistence context. Within one transaction, the same ID always gives you the <strong>same Java object</strong>.</li>
+<li><strong>Dirty checking</strong>: an entity is <em>dirty</em> when its values differ from its snapshot. At <strong>flush</strong>, Hibernate compares each managed entity with its snapshot. It issues <code>UPDATE</code>s for the changed ones. So you do not call <code>save()</code> to update a managed entity.</li>
+<li>When does flush happen? Before commit. Also, in the default AUTO mode, before a query that touches the affected tables — so the query sees your changes.</li>
+<li>Writes wait in a queue (the <em>action queue</em>). At flush they run in a fixed order: inserts, then updates, then collection changes, then deletes.</li>
+</ul>
+<h4>How does it work?</h4>
+<div class="hl"><pre><span></span><code><span class="nd">@Transactional</span>
+<span class="kd">public</span><span class="w"> </span><span class="kt">void</span><span class="w"> </span><span class="nf">rename</span><span class="p">(</span><span class="n">Long</span><span class="w"> </span><span class="n">outletId</span><span class="p">,</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="n">newName</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">Outlet</span><span class="w"> </span><span class="n">o</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">outletRepo</span><span class="p">.</span><span class="na">findById</span><span class="p">(</span><span class="n">outletId</span><span class="p">).</span><span class="na">orElseThrow</span><span class="p">();</span><span class="w">   </span><span class="c1">// SELECT; entity MANAGED, snapshot taken</span>
+<span class="w">    </span><span class="n">o</span><span class="p">.</span><span class="na">setName</span><span class="p">(</span><span class="n">newName</span><span class="p">);</span><span class="w">                                       </span><span class="c1">// only changes the Java object</span>
+<span class="p">}</span><span class="w">                                                             </span><span class="c1">// commit → flush → dirty check → UPDATE outlet SET name=? …</span>
+</code></pre></div>
+
+<p>What <code>save()</code> does in Spring Data:</p>
+<ul>
+<li>For a <strong>new</strong> entity, it calls <code>persist</code>.</li>
+<li>For an entity with an existing ID, it calls <code>merge</code>. <code>merge</code> first runs a <code>SELECT</code> for that row, then copies your values onto it. That is an extra query you often do not need.</li>
+</ul>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="c1">// Batch job that runs out of memory: 1M entities accumulate in the persistence context</span>
+<span class="nd">@Transactional</span>
+<span class="kd">public</span><span class="w"> </span><span class="kt">void</span><span class="w"> </span><span class="nf">importOutlets</span><span class="p">(</span><span class="n">Stream</span><span class="o">&lt;</span><span class="n">OutletRow</span><span class="o">&gt;</span><span class="w"> </span><span class="n">rows</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kt">int</span><span class="w"> </span><span class="n">i</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="p">;</span>
+<span class="w">    </span><span class="k">for</span><span class="w"> </span><span class="p">(</span><span class="n">OutletRow</span><span class="w"> </span><span class="n">r</span><span class="w"> </span><span class="p">:</span><span class="w"> </span><span class="p">(</span><span class="n">Iterable</span><span class="o">&lt;</span><span class="n">OutletRow</span><span class="o">&gt;</span><span class="p">)</span><span class="w"> </span><span class="n">rows</span><span class="p">::</span><span class="n">iterator</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="n">em</span><span class="p">.</span><span class="na">persist</span><span class="p">(</span><span class="k">new</span><span class="w"> </span><span class="n">Outlet</span><span class="p">(</span><span class="n">r</span><span class="p">));</span>
+<span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="o">++</span><span class="n">i</span><span class="w"> </span><span class="o">%</span><span class="w"> </span><span class="mi">500</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="mi">0</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">em</span><span class="p">.</span><span class="na">flush</span><span class="p">();</span><span class="w"> </span><span class="n">em</span><span class="p">.</span><span class="na">clear</span><span class="p">();</span><span class="w"> </span><span class="p">}</span><span class="w">     </span><span class="c1">// write the batch, then forget it</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+<span class="c1">// + spring.jpa.properties.hibernate.jdbc.batch_size=500, order_inserts=true, SEQUENCE ids</span>
+</code></pre></div>
+
+<p>Without the <code>flush</code> + <code>clear</code>, all 1 million objects (and their snapshots) stay in memory. With it, every 500 rows are written and then dropped from the context.</p>
+<h4>When would I use it?</h4>
+<ul>
+<li><strong>Everyday updates</strong>: load the entity, change it, and let the commit flush it.</li>
+<li><strong>Read-only queries</strong>: use <code>@Transactional(readOnly = true)</code>. Hibernate then skips the snapshots and the dirty checking, which saves memory and CPU.</li>
+<li><strong>Bulk jobs</strong>: flush and clear every few hundred rows. Or use JDBC batching or plain SQL directly.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Unexpected UPDATEs</strong>: some code changed a managed entity — even a setter called only "for display". Hibernate sees the change and saves it.</li>
+<li><strong>Running out of memory</strong>: a long transaction loads too many entities, and they all stay in the context.</li>
+<li><strong>Stale state</strong>: a bulk JPQL or SQL update skips the context. Entities already in memory now hold old values.</li>
+<li><strong>Detached entity confusion</strong>:</li>
+<li>Changing an entity after the transaction has ended changes nothing in the database.</li>
+<li><code>merge</code> returns a <em>different</em> managed object. Keep using the returned one, not the one you passed in.</li>
+<li><strong>Flush order surprises</strong>: an error such as a unique-constraint violation may appear later, on some other query (when AUTO flush runs). It does not appear on the line where you called <code>save</code>.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. What is the persistence context?</strong> It is Hibernate's first-level cache and unit of work, one per transaction. It maps IDs to managed entity objects, keeps a snapshot of each, and flushes changes at commit.</p>
+<p><strong>Q2. What is dirty checking?</strong> At flush, Hibernate compares each managed entity with its snapshot. For every changed entity, it generates an UPDATE automatically.</p>
+<p><strong>Q3. Do you need to call <code>save()</code> after modifying an entity?</strong> Not for a managed entity inside a transaction — the change is flushed at commit. <code>save</code> matters only for new or detached entities.</p>
+<p><strong>Q4. persist vs merge?</strong> persist makes a new object managed. merge copies a detached object's values onto a managed object (loading it first if needed) and returns that managed object.</p>
+<h2 id="s7-10">7.10 The N+1 query problem and fetching strategies</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> You load 500 orders with one query. Then, for each order, you read its outlet name — and Hibernate quietly fires one more query each time. So 1 query becomes 501.</p>
+<p>This is the most common ORM performance bug. The code looks like one query, but it runs hundreds.</p>
+<p>A typical story:</p>
+<ul>
+<li>A list endpoint is fast in dev, with 10 rows.</li>
+<li>In production, with 500 rows, it takes 8 seconds.</li>
+<li>Why? Each row triggers more queries.</li>
+</ul>
+<h4>What is happening internally?</h4>
+<p>Step by step:</p>
+<ol>
+<li>Loading N parent rows runs <strong>1 query</strong>.</li>
+<li>Your code touches a lazy link on each parent (for example, <code>order.getOutlet().getName()</code>).</li>
+<li>Each touch loads that proxy or collection with <strong>1 more query</strong>.</li>
+<li>Total: <strong>N+1 round trips</strong> to the database.</li>
+</ol>
+<p>Each query alone is cheap. But the network delay adds up: 500 × 2 ms = 1 second. And the whole time, the request holds a connection from the pool, so other requests may have to wait.</p>
+<p>Think of a shopkeeper who walks to the godown separately for each item on your list, instead of picking all items in one trip.</p>
+<div class="hl"><pre><span></span><code>SELECT * FROM orders WHERE status='OPEN'          -- 1 query, returns 500 orders
+SELECT * FROM outlet WHERE id=?   (×500)           -- one per order when the DTO mapper reads order.getOutlet().getName()
+</code></pre></div>
+
+<h4>How does it work?</h4>
+<p>Fixes, from most targeted to least targeted:</p>
+<ol>
+<li><strong>Fetch join</strong> (JPQL): load the linked data in the same query, using <code>join fetch</code>.</li>
+<li><strong><code>@EntityGraph</code></strong>: on a repository method, list which links should be loaded together with the parent.</li>
+<li><strong>Batch fetching</strong>: set <code>hibernate.default_batch_fetch_size=50</code>. Hibernate then loads lazy links for many parents at once, using <code>IN (?, ?, …)</code>. So N+1 queries become 1 + N/50.</li>
+<li><strong>DTO projection</strong>: select exactly the columns the response needs, straight into a DTO (a plain data object). This is often the best choice for read endpoints.</li>
+</ol>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="kd">public</span><span class="w"> </span><span class="kd">interface</span> <span class="nc">OrderRepository</span><span class="w"> </span><span class="kd">extends</span><span class="w"> </span><span class="n">JpaRepository</span><span class="o">&lt;</span><span class="n">Order</span><span class="p">,</span><span class="w"> </span><span class="n">Long</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nd">@Query</span><span class="p">(</span><span class="s">"select o from Order o join fetch o.outlet where o.status = :s"</span><span class="p">)</span><span class="w">               </span><span class="c1">// 1. fetch join</span>
+<span class="w">    </span><span class="n">List</span><span class="o">&lt;</span><span class="n">Order</span><span class="o">&gt;</span><span class="w"> </span><span class="nf">findOpenWithOutlet</span><span class="p">(</span><span class="nd">@Param</span><span class="p">(</span><span class="s">"s"</span><span class="p">)</span><span class="w"> </span><span class="n">OrderStatus</span><span class="w"> </span><span class="n">s</span><span class="p">);</span>
+
+<span class="w">    </span><span class="nd">@EntityGraph</span><span class="p">(</span><span class="n">attributePaths</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="s">"outlet"</span><span class="p">,</span><span class="w"> </span><span class="s">"lines"</span><span class="p">})</span><span class="w">                                     </span><span class="c1">// 2. entity graph</span>
+<span class="w">    </span><span class="n">List</span><span class="o">&lt;</span><span class="n">Order</span><span class="o">&gt;</span><span class="w"> </span><span class="nf">findByStatus</span><span class="p">(</span><span class="n">OrderStatus</span><span class="w"> </span><span class="n">status</span><span class="p">);</span>
+
+<span class="w">    </span><span class="nd">@Query</span><span class="p">(</span><span class="s">"""</span>
+<span class="s">        select new com.fa.order.OrderSummary(o.id, ou.name, o.totalPaise, o.createdAt)</span>
+<span class="s">        from Order o join o.outlet ou where o.tenantId = :t and o.createdAt &gt;= :since</span>
+<span class="s">        """</span><span class="p">)</span>
+<span class="w">    </span><span class="n">List</span><span class="o">&lt;</span><span class="n">OrderSummary</span><span class="o">&gt;</span><span class="w"> </span><span class="nf">summaries</span><span class="p">(</span><span class="nd">@Param</span><span class="p">(</span><span class="s">"t"</span><span class="p">)</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="n">tenant</span><span class="p">,</span><span class="w"> </span><span class="nd">@Param</span><span class="p">(</span><span class="s">"since"</span><span class="p">)</span><span class="w"> </span><span class="n">Instant</span><span class="w"> </span><span class="n">since</span><span class="p">);</span><span class="w">   </span><span class="c1">// 4. DTO projection</span>
+<span class="p">}</span>
+<span class="kd">public</span><span class="w"> </span><span class="kd">record</span> <span class="nc">OrderSummary</span><span class="p">(</span><span class="n">Long</span><span class="w"> </span><span class="n">id</span><span class="p">,</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="n">outletName</span><span class="p">,</span><span class="w"> </span><span class="kt">long</span><span class="w"> </span><span class="n">totalPaise</span><span class="p">,</span><span class="w"> </span><span class="n">Instant</span><span class="w"> </span><span class="n">createdAt</span><span class="p">)</span><span class="w"> </span><span class="p">{}</span>
+</code></pre></div>
+
+<p><strong>How to detect it:</strong></p>
+<ul>
+<li>In dev and tests, log the SQL: <code>logging.level.org.hibernate.SQL=DEBUG</code>.</li>
+<li>Turn on <code>hibernate.generate_statistics</code> to see query counts.</li>
+<li>In integration tests, assert the number of queries (for example, with datasource-proxy).</li>
+<li>In production, look at APM traces (application performance monitoring). Hundreds of identical SELECTs in one request is the sign.</li>
+</ul>
+<h4>When would I use it?</h4>
+<p>On every list or report endpoint.</p>
+<p>Decide what to load <strong>for each use case</strong> — a list view needs less than a detail view. Do not decide it once for the whole app by making links EAGER.</p>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Fetch-joining a collection while paginating</strong>: Hibernate cannot apply the page limit in SQL. So it loads <strong>all</strong> rows and pages them <strong>in memory</strong>. You will see warning HHH90003004. Fix: first fetch only the parent IDs for the page, then fetch the links for those IDs. Or use batch fetching.</li>
+<li><strong>Fetch-joining two collections</strong> (Hibernate calls a <code>List</code> mapping a "bag"): you get <code>MultipleBagFetchException</code>, or a Cartesian product — every line row multiplied by every other row. Fix: fetch one collection per query, or use <code>Set</code>s, or batch fetching.</li>
+<li><strong>Making links EAGER to "fix" N+1</strong>: this does not fix it. It just moves the problem to every other place that loads the entity.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. What is the N+1 problem?</strong> One query loads N parent rows. Then reading a lazy link on each parent fires one more query per parent. That is N+1 queries in total.</p>
+<p><strong>Q2. How do you fix it?</strong> Use fetch joins, @EntityGraph, batch fetching (<code>default_batch_fetch_size</code>), or DTO projections that select exactly what is needed. Detect it by logging and counting the SQL.</p>
+<p><strong>Q3. Why is <code>join fetch</code> with pagination dangerous?</strong> When you fetch a collection, Hibernate cannot apply LIMIT in SQL. So it loads all the rows and does the paging in memory.</p>
+<h2 id="s7-11">7.11 Lazy loading, LazyInitializationException and Open-Session-in-View</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> A lazy link can load its data only while the database session is open. If you touch it after the transaction has ended, it crashes. Spring Boot's default "fix" keeps the session open for the whole web request — which creates bigger problems.</p>
+<p>Lazy loading is good: you do not load data you do not need. But there is a catch:</p>
+<ul>
+<li>A lazy proxy can load only while its session (the persistence context) is still open.</li>
+<li>If you touch it after the transaction ends, you get <code>LazyInitializationException</code>.</li>
+<li>This usually happens in the controller, or while converting the object to JSON (<em>serialisation</em>).</li>
+</ul>
+<p>By default, Spring Boot "solves" this with <strong>Open-Session-in-View (OSIV)</strong>. But OSIV causes worse problems, as you will see below.</p>
+<h4>What is happening internally?</h4>
+<ul>
+<li>A lazy link is a Hibernate proxy or <code>PersistentCollection</code>. It keeps a reference to the session that created it.</li>
+<li>On first access, it asks that session to load the data.</li>
+<li>If the session is already closed, it throws <code>LazyInitializationException: could not initialize proxy - no Session</code>.</li>
+</ul>
+<p>Think of a railway counter that closes at 5 pm. Your token is valid, but if you come at 6 pm, nobody is there to serve you.</p>
+<p><strong>OSIV</strong> is controlled by <code>spring.jpa.open-in-view=true</code>. It is on by default, and Spring prints a warning about it at startup. Here is what it does:</p>
+<ol>
+<li>An interceptor opens an <code>EntityManager</code> at the <strong>start of the web request</strong>.</li>
+<li>It closes it only after the response has been written.</li>
+</ol>
+<p>So lazy loading now works in controllers and in JSON serialisers. But:</p>
+<ul>
+<li>Queries now run in the web layer, <strong>outside your service transaction</strong>. N+1 queries can hide inside the JSON writing, where nobody looks.</li>
+<li><strong>A database connection is held for the whole request.</strong> That includes slow calls to other services and the serialisation time. Under load, this uses up the whole connection pool.</li>
+</ul>
+<h4>How does it work?</h4>
+<p>The correct approach has two parts:</p>
+<ol>
+<li><strong>Turn OSIV off.</strong></li>
+<li>Load everything the response needs <strong>inside the service transaction</strong>. Then convert it to DTOs before you return.</li>
+</ol>
+<div class="hl"><pre><span></span><code><span class="nt">spring.jpa.open-in-view</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span>
+</code></pre></div>
+
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="nd">@Service</span>
+<span class="kd">public</span><span class="w"> </span><span class="kd">class</span> <span class="nc">OrderQueryService</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">private</span><span class="w"> </span><span class="kd">final</span><span class="w"> </span><span class="n">OrderRepository</span><span class="w"> </span><span class="n">repo</span><span class="p">;</span>
+<span class="w">    </span><span class="n">OrderQueryService</span><span class="p">(</span><span class="n">OrderRepository</span><span class="w"> </span><span class="n">repo</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="k">this</span><span class="p">.</span><span class="na">repo</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">repo</span><span class="p">;</span><span class="w"> </span><span class="p">}</span>
+
+<span class="w">    </span><span class="nd">@Transactional</span><span class="p">(</span><span class="n">readOnly</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span><span class="p">)</span>
+<span class="w">    </span><span class="kd">public</span><span class="w"> </span><span class="n">OrderDetailDto</span><span class="w"> </span><span class="nf">detail</span><span class="p">(</span><span class="n">Long</span><span class="w"> </span><span class="n">id</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="n">Order</span><span class="w"> </span><span class="n">o</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">repo</span><span class="p">.</span><span class="na">findWithLinesAndOutletById</span><span class="p">(</span><span class="n">id</span><span class="p">).</span><span class="na">orElseThrow</span><span class="p">();</span><span class="w">   </span><span class="c1">// @EntityGraph loads what we need</span>
+<span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="n">OrderDetailDto</span><span class="p">.</span><span class="na">from</span><span class="p">(</span><span class="n">o</span><span class="p">);</span><span class="w">                                  </span><span class="c1">// mapping happens INSIDE the transaction</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+<span class="c1">// Controller returns OrderDetailDto (a record) — no entities, no lazy proxies cross the boundary.</span>
+</code></pre></div>
+
+<h4>When would I use it?</h4>
+<p>Always, in services that give data to controllers. Use clear fetch plans (what to load, decided per use case), and map to DTOs inside the transactional service.</p>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Leaving OSIV on</strong>: the pool runs out under load, and queries hide in the web layer.</li>
+<li><strong>"Fixing" LazyInitializationException the wrong way</strong>: making links EAGER, or calling <code>Hibernate.initialize</code> everywhere.</li>
+<li><strong>Serialising entities directly with Jackson</strong>: lazy proxies fire queries or throw errors. Return DTOs instead.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. What causes LazyInitializationException?</strong> Touching a lazy link that is not loaded yet, after its persistence context (session) has closed. This usually happens outside the transaction.</p>
+<p><strong>Q2. What is Open-Session-in-View and why disable it?</strong> It keeps the persistence context open for the whole web request, so lazy loading works in the view layer. But it hides queries outside transactions and holds a DB connection for the full request. Disable it and load data explicitly in services.</p>
+<h2 id="s7-12">7.12 <code>@Transactional</code>: how it works and its rollback rules</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> You put <code>@Transactional</code> on a method. Spring then starts a transaction before the method, and commits it after — or rolls everything back if a runtime exception escapes. You write the boundary once, not in every method.</p>
+<p>A business operation must be <strong>atomic</strong> — all steps happen, or none do. For example:</p>
+<ul>
+<li>debit the account,</li>
+<li><em>and</em> write the ledger entry,</li>
+<li><em>and</em> write the outbox event.</li>
+</ul>
+<p>Either all three are saved, or none are.</p>
+<p>Think of an ATM. Either the cash comes out <em>and</em> your account is debited, or neither happens.</p>
+<p>Doing this by hand in every method is repetitive and easy to get wrong. You would call <code>connection.setAutoCommit(false)</code>, then commit, then roll back on errors — every single time. <code>@Transactional</code> lets you declare the boundary once.</p>
+<h4>What is happening internally?</h4>
+<ol>
+<li>Spring wraps your bean in a <strong>proxy</strong> (6.7) — a wrapper object that sits in front of it. The proxy has a <code>TransactionInterceptor</code>.</li>
+<li>When a call comes through the proxy, the interceptor asks the <code>PlatformTransactionManager</code> to begin a transaction. For JPA, this is the <code>JpaTransactionManager</code>. It uses the settings you gave: propagation, isolation, timeout and readOnly.</li>
+<li>The manager gets a DB connection and turns autocommit off. Then it <strong>binds</strong> the connection and the EntityManager to the current thread. It does this through <code>TransactionSynchronizationManager</code>, which uses a ThreadLocal (4.15) — a variable that each thread has its own copy of. Any repository called in the same thread finds this connection and reuses it.</li>
+<li>Your method runs.</li>
+<li>If the method returns normally → flush + <strong>commit</strong>. If it throws an exception → <strong>rollback</strong>, but only if the rollback rules match. Otherwise, it still commits.</li>
+<li>The connection is unbound and returned to the pool. Then after-commit callbacks (<code>@TransactionalEventListener</code>) run.</li>
+</ol>
+<p><strong>Default rollback rules:</strong></p>
+<ul>
+<li><strong>Roll back</strong> on <strong>unchecked exceptions (RuntimeException) and Errors</strong>.</li>
+<li><strong>Commit</strong> on checked exceptions (like <code>IOException</code>).</li>
+<li>You can change this with <code>rollbackFor</code> / <code>noRollbackFor</code>.</li>
+</ul>
+<h4>How does it work?</h4>
+<div class="hl"><pre><span></span><code><span class="nd">@Service</span>
+<span class="kd">public</span><span class="w"> </span><span class="kd">class</span> <span class="nc">RedemptionService</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">private</span><span class="w"> </span><span class="kd">final</span><span class="w"> </span><span class="n">AccountRepository</span><span class="w"> </span><span class="n">accounts</span><span class="p">;</span>
+<span class="w">    </span><span class="kd">private</span><span class="w"> </span><span class="kd">final</span><span class="w"> </span><span class="n">LedgerRepository</span><span class="w"> </span><span class="n">ledger</span><span class="p">;</span>
+<span class="w">    </span><span class="kd">private</span><span class="w"> </span><span class="kd">final</span><span class="w"> </span><span class="n">OutboxRepository</span><span class="w"> </span><span class="n">outbox</span><span class="p">;</span>
+<span class="w">    </span><span class="c1">// constructor omitted</span>
+
+<span class="w">    </span><span class="nd">@Transactional</span><span class="p">(</span><span class="n">timeout</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">5</span><span class="p">)</span>
+<span class="w">    </span><span class="kd">public</span><span class="w"> </span><span class="n">RedemptionResponse</span><span class="w"> </span><span class="nf">redeem</span><span class="p">(</span><span class="n">String</span><span class="w"> </span><span class="n">tenant</span><span class="p">,</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="n">accountId</span><span class="p">,</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="n">idemKey</span><span class="p">,</span><span class="w"> </span><span class="kt">long</span><span class="w"> </span><span class="n">points</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="kd">var</span><span class="w"> </span><span class="n">prior</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ledger</span><span class="p">.</span><span class="na">findByTenantIdAndIdempotencyKey</span><span class="p">(</span><span class="n">tenant</span><span class="p">,</span><span class="w"> </span><span class="n">idemKey</span><span class="p">);</span>
+<span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">prior</span><span class="p">.</span><span class="na">isPresent</span><span class="p">())</span><span class="w"> </span><span class="k">return</span><span class="w"> </span><span class="n">RedemptionResponse</span><span class="p">.</span><span class="na">from</span><span class="p">(</span><span class="n">prior</span><span class="p">.</span><span class="na">get</span><span class="p">());</span><span class="w">           </span><span class="c1">// idempotent replay</span>
+
+<span class="w">        </span><span class="kt">int</span><span class="w"> </span><span class="n">updated</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">accounts</span><span class="p">.</span><span class="na">debitIfSufficient</span><span class="p">(</span><span class="n">accountId</span><span class="p">,</span><span class="w"> </span><span class="n">points</span><span class="p">);</span><span class="w">                   </span><span class="c1">// atomic conditional UPDATE (7.15)</span>
+<span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">updated</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="mi">0</span><span class="p">)</span><span class="w"> </span><span class="k">throw</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">InsufficientPointsException</span><span class="p">(</span><span class="n">accountId</span><span class="p">,</span><span class="w"> </span><span class="n">points</span><span class="p">,</span><span class="w"> </span><span class="n">accounts</span><span class="p">.</span><span class="na">balance</span><span class="p">(</span><span class="n">accountId</span><span class="p">));</span>
+
+<span class="w">        </span><span class="n">LedgerEntry</span><span class="w"> </span><span class="n">e</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ledger</span><span class="p">.</span><span class="na">save</span><span class="p">(</span><span class="k">new</span><span class="w"> </span><span class="n">LedgerEntry</span><span class="p">(</span><span class="n">tenant</span><span class="p">,</span><span class="w"> </span><span class="n">accountId</span><span class="p">,</span><span class="w"> </span><span class="n">EntryType</span><span class="p">.</span><span class="na">REDEMPTION</span><span class="p">,</span><span class="w"> </span><span class="o">-</span><span class="n">points</span><span class="p">,</span><span class="w"> </span><span class="n">idemKey</span><span class="p">,</span><span class="w"> </span><span class="n">Instant</span><span class="p">.</span><span class="na">now</span><span class="p">()));</span>
+<span class="w">        </span><span class="n">outbox</span><span class="p">.</span><span class="na">save</span><span class="p">(</span><span class="n">OutboxEvent</span><span class="p">.</span><span class="na">pointsRedeemed</span><span class="p">(</span><span class="n">e</span><span class="p">));</span><span class="w">                                     </span><span class="c1">// same transaction (11.15)</span>
+<span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="n">RedemptionResponse</span><span class="p">.</span><span class="na">from</span><span class="p">(</span><span class="n">e</span><span class="p">);</span>
+<span class="w">    </span><span class="p">}</span><span class="w">                                                                                    </span><span class="c1">// commit: all three rows or none</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p>A note on the "idempotent replay" line: <em>idempotent</em> means doing the same request twice gives the same result as doing it once. If the same idempotency key comes again, we return the old result instead of debiting again.</p>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="c1">// Checked exception → COMMITS by default (surprise!)</span>
+<span class="nd">@Transactional</span>
+<span class="kd">public</span><span class="w"> </span><span class="kt">void</span><span class="w"> </span><span class="nf">importFile</span><span class="p">(</span><span class="n">Path</span><span class="w"> </span><span class="n">p</span><span class="p">)</span><span class="w"> </span><span class="kd">throws</span><span class="w"> </span><span class="n">IOException</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">repo</span><span class="p">.</span><span class="na">save</span><span class="p">(</span><span class="k">new</span><span class="w"> </span><span class="n">Batch</span><span class="p">(</span><span class="n">p</span><span class="p">));</span>
+<span class="w">    </span><span class="n">parse</span><span class="p">(</span><span class="n">p</span><span class="p">);</span><span class="w">                      </span><span class="c1">// throws IOException → the Batch row is still committed</span>
+<span class="p">}</span>
+<span class="nd">@Transactional</span><span class="p">(</span><span class="n">rollbackFor</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Exception</span><span class="p">.</span><span class="na">class</span><span class="p">)</span><span class="w">     </span><span class="c1">// roll back for checked exceptions too</span>
+<span class="kd">public</span><span class="w"> </span><span class="kt">void</span><span class="w"> </span><span class="nf">importFileSafely</span><span class="p">(</span><span class="n">Path</span><span class="w"> </span><span class="n">p</span><span class="p">)</span><span class="w"> </span><span class="kd">throws</span><span class="w"> </span><span class="n">IOException</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="cm">/* ... */</span><span class="w"> </span><span class="p">}</span>
+
+<span class="c1">// Swallowed exception → COMMITS</span>
+<span class="nd">@Transactional</span>
+<span class="kd">public</span><span class="w"> </span><span class="kt">void</span><span class="w"> </span><span class="nf">bad</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">try</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">repo</span><span class="p">.</span><span class="na">save</span><span class="p">(</span><span class="n">x</span><span class="p">);</span><span class="w"> </span><span class="n">risky</span><span class="p">();</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="k">catch</span><span class="w"> </span><span class="p">(</span><span class="n">RuntimeException</span><span class="w"> </span><span class="n">e</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">log</span><span class="p">.</span><span class="na">warn</span><span class="p">(</span><span class="s">"ignored"</span><span class="p">,</span><span class="w"> </span><span class="n">e</span><span class="p">);</span><span class="w"> </span><span class="p">}</span><span class="w">   </span><span class="c1">// no rollback</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h4>When would I use it?</h4>
+<ul>
+<li>Put it on <strong>service-layer</strong> methods. Each such method should be one business operation.</li>
+<li>Use <code>@Transactional(readOnly = true)</code> on query services. It turns on read optimisations, and it can send the reads to a replica database.</li>
+<li>Keep transaction boundaries out of controllers and repositories.</li>
+</ul>
+<h4>What can go wrong? (where <code>@Transactional</code> silently doesn't work)</h4>
+<ul>
+<li><strong>Self-invocation</strong> (6.7): a method calls another method in the same class. The call does not go through the proxy, so the annotation is ignored. The same is true for <strong>private or final methods</strong>, and for objects you create with <code>new</code>.</li>
+<li><strong>Checked exceptions</strong> commit by default. <strong>Swallowed exceptions</strong> (caught and not rethrown) also commit.</li>
+<li><strong>Work on another thread</strong> (<code>@Async</code>, executors, <code>CompletableFuture</code>) runs outside the transaction. Why? The transaction is bound to the original thread only.</li>
+<li><strong>Multiple data sources</strong> without saying which <code>transactionManager</code> to use.</li>
+<li><strong>Long transactions with remote calls inside</strong>: they hold a connection and row locks while waiting on the network. Also, the remote side effect cannot be rolled back. Better: do the DB work, commit, then call out. Or use the outbox pattern.</li>
+<li><strong><code>UnexpectedRollbackException</code></strong>: this happens in three steps:
+  1. An inner <code>REQUIRED</code> method throws. This marks the shared transaction as <em>rollback-only</em>.
+  2. The outer method catches the exception.
+  3. The outer method tries to commit — and Spring throws this exception, because the transaction can only roll back.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. How does @Transactional work?</strong> A proxy's TransactionInterceptor begins a transaction through the PlatformTransactionManager and binds the connection to the current thread. Then it calls the method. At the end, it commits, or rolls back according to the rollback rules.</p>
+<p><strong>Q2. What are the default rollback rules?</strong> Roll back on RuntimeException and Error. Commit on checked exceptions, unless <code>rollbackFor</code> says otherwise.</p>
+<p><strong>Q3. List cases where @Transactional is silently ignored.</strong> Self-invocation, private or final methods, objects not managed by Spring, work on other threads, and the wrong transaction manager. Also, it still commits when a checked exception is thrown or an exception is swallowed.</p>
+<p><strong>Q4. Why shouldn't you call external APIs inside a transaction?</strong> The DB connection and locks stay held while you wait on the network. This hurts throughput and risks pool exhaustion and deadlocks. Also, if the DB transaction fails, you cannot roll back the external effect.</p>
+<h2 id="s7-13">7.13 Transaction propagation</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> When one transactional method calls another, propagation decides: does the inner one join the outer transaction, start its own separate one, or insist that one already exists?</p>
+<p>Transactional methods often call other transactional methods. So a question comes up. Should the inner method:</p>
+<ul>
+<li>join the caller's transaction,</li>
+<li>start its own transaction, or</li>
+<li>require that a transaction already exists?</li>
+</ul>
+<p>The <em>propagation</em> setting decides this. A wrong choice causes one of two problems:</p>
+<ul>
+<li>You lose data you wanted to keep. For example, an audit record is rolled back together with the failed operation.</li>
+<li>You commit half-done work that you wanted to undo.</li>
+</ul>
+<h4>What is happening internally?</h4>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>Propagation</th>
+<th>If a transaction exists</th>
+<th>If none exists</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>REQUIRED</code> (default)</td>
+<td>Join it</td>
+<td>Start a new one</td>
+</tr>
+<tr>
+<td><code>REQUIRES_NEW</code></td>
+<td><strong>Pause</strong> it; start a separate one (on a separate connection)</td>
+<td>Start a new one</td>
+</tr>
+<tr>
+<td><code>NESTED</code></td>
+<td>Create a <strong>savepoint</strong> inside it; if the inner part fails, roll back only to the savepoint</td>
+<td>Start a new one</td>
+</tr>
+<tr>
+<td><code>SUPPORTS</code></td>
+<td>Join</td>
+<td>Run without a transaction</td>
+</tr>
+<tr>
+<td><code>NOT_SUPPORTED</code></td>
+<td>Pause it; run without a transaction</td>
+<td>Run without a transaction</td>
+</tr>
+<tr>
+<td><code>MANDATORY</code></td>
+<td>Join</td>
+<td>Throw an error</td>
+</tr>
+<tr>
+<td><code>NEVER</code></td>
+<td>Throw an error</td>
+<td>Run without a transaction</td>
+</tr>
+</tbody>
+</table></div>
+<p>(Pausing a transaction is officially called <em>suspending</em> it. A <em>savepoint</em> is a bookmark inside a transaction that you can roll back to.)</p>
+<p>With <code>REQUIRED</code>, the inner and outer methods share <strong>one physical transaction</strong>. So if the inner method throws an unchecked exception, the whole transaction is marked rollback-only. This happens even if the outer method catches the exception.</p>
+<h4>How does it work?</h4>
+<div class="hl"><pre><span></span><code>outer() @Transactional(REQUIRED)           tx#1 begins
+   ├─ ledger.save(...)                     tx#1
+   ├─ audit.record(...) @REQUIRES_NEW      tx#1 suspended → tx#2 begins … commits → tx#1 resumes
+   └─ throws RuntimeException              tx#1 rolls back — the audit row (tx#2) STAYS committed
+</code></pre></div>
+
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="nd">@Service</span>
+<span class="kd">class</span> <span class="nc">AuditService</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nd">@Transactional</span><span class="p">(</span><span class="n">propagation</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Propagation</span><span class="p">.</span><span class="na">REQUIRES_NEW</span><span class="p">)</span><span class="w">     </span><span class="c1">// survives the caller's rollback</span>
+<span class="w">    </span><span class="kd">public</span><span class="w"> </span><span class="kt">void</span><span class="w"> </span><span class="nf">recordAttempt</span><span class="p">(</span><span class="n">String</span><span class="w"> </span><span class="n">accountId</span><span class="p">,</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="n">action</span><span class="p">,</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="n">outcome</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="n">auditRepo</span><span class="p">.</span><span class="na">save</span><span class="p">(</span><span class="k">new</span><span class="w"> </span><span class="n">AuditEntry</span><span class="p">(</span><span class="n">accountId</span><span class="p">,</span><span class="w"> </span><span class="n">action</span><span class="p">,</span><span class="w"> </span><span class="n">outcome</span><span class="p">,</span><span class="w"> </span><span class="n">Instant</span><span class="p">.</span><span class="na">now</span><span class="p">()));</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+
+<span class="nd">@Service</span>
+<span class="kd">class</span> <span class="nc">RedemptionFacade</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">private</span><span class="w"> </span><span class="kd">final</span><span class="w"> </span><span class="n">RedemptionService</span><span class="w"> </span><span class="n">redemption</span><span class="p">;</span><span class="w"> </span><span class="kd">private</span><span class="w"> </span><span class="kd">final</span><span class="w"> </span><span class="n">AuditService</span><span class="w"> </span><span class="n">audit</span><span class="p">;</span>
+<span class="w">    </span><span class="c1">// constructor omitted</span>
+<span class="w">    </span><span class="nd">@Transactional</span>
+<span class="w">    </span><span class="kd">public</span><span class="w"> </span><span class="kt">void</span><span class="w"> </span><span class="nf">redeemWithAudit</span><span class="p">(</span><span class="n">String</span><span class="w"> </span><span class="n">acc</span><span class="p">,</span><span class="w"> </span><span class="kt">long</span><span class="w"> </span><span class="n">pts</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="k">try</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="n">redemption</span><span class="p">.</span><span class="na">redeem</span><span class="p">(</span><span class="n">acc</span><span class="p">,</span><span class="w"> </span><span class="n">pts</span><span class="p">);</span>
+<span class="w">            </span><span class="n">audit</span><span class="p">.</span><span class="na">recordAttempt</span><span class="p">(</span><span class="n">acc</span><span class="p">,</span><span class="w"> </span><span class="s">"REDEEM"</span><span class="p">,</span><span class="w"> </span><span class="s">"OK"</span><span class="p">);</span>
+<span class="w">        </span><span class="p">}</span><span class="w"> </span><span class="k">catch</span><span class="w"> </span><span class="p">(</span><span class="n">InsufficientPointsException</span><span class="w"> </span><span class="n">e</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="n">audit</span><span class="p">.</span><span class="na">recordAttempt</span><span class="p">(</span><span class="n">acc</span><span class="p">,</span><span class="w"> </span><span class="s">"REDEEM"</span><span class="p">,</span><span class="w"> </span><span class="s">"INSUFFICIENT"</span><span class="p">);</span><span class="w">  </span><span class="c1">// committed independently</span>
+<span class="w">            </span><span class="k">throw</span><span class="w"> </span><span class="n">e</span><span class="p">;</span><span class="w">                                              </span><span class="c1">// outer transaction rolls back</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p><code>NESTED</code> uses JDBC savepoints. <code>DataSourceTransactionManager</code> supports it. With JPA's transaction manager, it works only in limited setups. It is useful for "try this sub-step; if it fails, undo only that step and carry on".</p>
+<h4>When would I use it?</h4>
+<ul>
+<li><strong><code>REQUIRED</code></strong>: for almost everything.</li>
+<li><strong><code>REQUIRES_NEW</code></strong>: for work that must be saved whatever happens to the outer transaction. Examples: audit logs, failure records, idempotency-key reservations, or sequence allocation.</li>
+<li><strong><code>MANDATORY</code></strong>: on repository-like methods that must never run outside a transaction.</li>
+<li><strong><code>SUPPORTS</code></strong>: for <code>readOnly</code> queries that work fine with or without a transaction.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Pool deadlock with <code>REQUIRES_NEW</code></strong>: it needs a <strong>second connection</strong> while the first one is still held. Under load, with a small pool, every thread holds one connection and waits for another. Nobody can move forward.</li>
+<li><strong><code>REQUIRES_NEW</code> cannot see the outer transaction's writes</strong>: the paused outer transaction has written rows but not committed them. The new transaction <strong>won't see them</strong>. It may even block, waiting on their locks.</li>
+<li><strong>Expecting a caught inner exception to be harmless</strong>: with <code>REQUIRED</code>, the outer transaction is already marked rollback-only. You get <code>UnexpectedRollbackException</code> at commit.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. REQUIRED vs REQUIRES_NEW vs NESTED?</strong> REQUIRED joins the current transaction, or creates one; everything shares it. REQUIRES_NEW pauses the current one and runs a separate transaction that commits or rolls back on its own. NESTED creates a savepoint inside the current transaction.</p>
+<p><strong>Q2. When would you use REQUIRES_NEW?</strong> For work that must be saved no matter what happens to the caller, such as audit or failure logs. But remember it needs an extra connection.</p>
+<p><strong>Q3. Why might REQUIRES_NEW cause a deadlock?</strong> Each request holds one connection and needs a second. If such requests fill the whole pool, they all wait for each other forever.</p>
+<h2 id="s7-14">7.14 Isolation levels and concurrency anomalies</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> Many transactions touch the same rows at the same time. The isolation level decides how much one transaction can see of another's unfinished work. Too loose gives wrong data; too strict makes everything slow.</p>
+<p>Many transactions run at the same time on the same rows. <em>Isolation</em> decides how much they see of each other's changes — changes that are not committed yet, or that happen in parallel.</p>
+<ul>
+<li><strong>Too weak</strong>: you get double redemptions and wrong balances.</li>
+<li><strong>Too strong</strong>: you get blocking, retries and lower throughput.</li>
+</ul>
+<p>Choosing the level on purpose, not by accident, is a senior skill.</p>
+<h4>What is happening internally?</h4>
+<p>These are the problems (<em>anomalies</em>) that can happen. T1 and T2 are two transactions running at the same time.</p>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>Anomaly</th>
+<th>What happens</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Dirty read</strong></td>
+<td>T2 reads T1's change before T1 commits it; then T1 rolls back, so T2 used data that never existed</td>
+</tr>
+<tr>
+<td><strong>Non-repeatable read</strong></td>
+<td>T1 reads the same row twice and gets different values, because T2 committed an update in between</td>
+</tr>
+<tr>
+<td><strong>Phantom read</strong></td>
+<td>T1 runs the same range query twice and sees new or missing rows, because T2 inserted or deleted rows in between</td>
+</tr>
+<tr>
+<td><strong>Lost update</strong></td>
+<td>T1 and T2 both read balance 100, and each writes its own result; one of the updates is lost</td>
+</tr>
+<tr>
+<td><strong>Write skew</strong></td>
+<td>T1 and T2 read the same data, then each writes a <em>different</em> row based on it, and together they break a rule (two doctors both go off call, leaving nobody)</td>
+</tr>
+</tbody>
+</table></div>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>Isolation level</th>
+<th>Dirty</th>
+<th>Non-repeatable</th>
+<th>Phantom</th>
+<th>Default in</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>READ UNCOMMITTED</td>
+<td>possible</td>
+<td>possible</td>
+<td>possible</td>
+<td>—</td>
+</tr>
+<tr>
+<td>READ COMMITTED</td>
+<td>prevented</td>
+<td>possible</td>
+<td>possible</td>
+<td><strong>PostgreSQL, SQL Server, Oracle</strong></td>
+</tr>
+<tr>
+<td>REPEATABLE READ</td>
+<td>prevented</td>
+<td>prevented</td>
+<td>possible (prevented in Postgres's snapshot implementation; mostly prevented in InnoDB using gap locks)</td>
+<td><strong>MySQL InnoDB</strong></td>
+</tr>
+<tr>
+<td>SERIALIZABLE</td>
+<td>prevented</td>
+<td>prevented</td>
+<td>prevented</td>
+<td>—</td>
+</tr>
+</tbody>
+</table></div>
+<p>How do databases build these levels? Two main ways:</p>
+<ul>
+<li><strong>MVCC snapshots</strong> (multi-version concurrency control): each transaction reads a consistent snapshot of the data, as of a point in time. Used by PostgreSQL, Oracle, InnoDB, and SQL Server with snapshot isolation.</li>
+<li><strong>Locks</strong>: readers and writers block each other. SQL Server's default READ COMMITTED works this way.</li>
+</ul>
+<p>More details are in 12.7.</p>
+<blockquote class="co remember">
+<p><strong>Remember:</strong> <strong>Lost updates and write skew are not prevented by READ COMMITTED.</strong> To stop them, you need row locks, optimistic versions or atomic statements (7.15), or SERIALIZABLE.</p>
+</blockquote>
+<h4>How does it work?</h4>
+<div class="hl"><pre><span></span><code><span class="nd">@Transactional</span><span class="p">(</span><span class="n">isolation</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Isolation</span><span class="p">.</span><span class="na">REPEATABLE_READ</span><span class="p">)</span>
+<span class="kd">public</span><span class="w"> </span><span class="n">Report</span><span class="w"> </span><span class="nf">monthlyStatement</span><span class="p">(</span><span class="n">String</span><span class="w"> </span><span class="n">accountId</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="cm">/* several reads that must be consistent with each other */</span><span class="w"> </span><span class="p">}</span>
+
+<span class="nd">@Transactional</span><span class="p">(</span><span class="n">isolation</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Isolation</span><span class="p">.</span><span class="na">SERIALIZABLE</span><span class="p">)</span>
+<span class="kd">public</span><span class="w"> </span><span class="kt">void</span><span class="w"> </span><span class="nf">allocateLimitedVouchers</span><span class="p">(...)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="cm">/* rare: invariant across rows; be ready to RETRY serialization failures */</span><span class="w"> </span><span class="p">}</span>
+</code></pre></div>
+
+<p>(An <em>invariant</em> is a rule that must always stay true — for example, "balance never goes below zero".)</p>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code>Lost update under READ COMMITTED (balance = 100):
+T1: SELECT balance → 100              T2: SELECT balance → 100
+T1: UPDATE balance = 100 - 80 = 20    T2: UPDATE balance = 100 - 50 = 50
+T1: COMMIT                            T2: COMMIT  → final 50; 130 points spent from a 100 balance
+Fix: UPDATE account SET balance = balance - :p WHERE id = :id AND balance &gt;= :p   (7.15)
+</code></pre></div>
+
+<h4>When would I use it?</h4>
+<ul>
+<li><strong>Most OLTP work</strong> (normal day-to-day transactions): keep the default, READ COMMITTED. Protect specific rules with locking or atomic statements.</li>
+<li><strong>Several reads that must agree with each other</strong> (reports, statements): use REPEATABLE READ or a snapshot.</li>
+<li><strong>Complex rules across many rows</strong>: use SERIALIZABLE, but only rarely, and with automatic retry.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Raising isolation for the whole app "to be safe"</strong>: you get more blocking, more deadlocks and more serialisation failures.</li>
+<li><strong>Assuming a level behaves the same in every database</strong>: it does not. Postgres REPEATABLE READ is snapshot isolation; MySQL's REPEATABLE READ is not the same thing.</li>
+<li><strong>Forgetting to retry serialisation failures</strong> (SQLSTATE 40001). At SERIALIZABLE, the database cancels some transactions on purpose. You must retry them.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. Name the isolation levels and the anomalies each prevents.</strong> Read uncommitted prevents none. Read committed prevents dirty reads. Repeatable read also prevents non-repeatable reads. Serializable also prevents phantoms and write skew.</p>
+<p><strong>Q2. What is a lost update and how do you prevent it?</strong> Two read-modify-write transactions overwrite each other's result. Prevent it with an atomic UPDATE statement, <code>SELECT FOR UPDATE</code>, or an optimistic version check.</p>
+<p><strong>Q3. What is the default isolation in PostgreSQL and MySQL?</strong> PostgreSQL uses READ COMMITTED. MySQL InnoDB uses REPEATABLE READ.</p>
+<h2 id="s7-15">7.15 Optimistic locking, pessimistic locking and atomic updates</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> When two requests change the same row at once, you have three choices. Check for a clash at save time (optimistic). Lock the row while reading (pessimistic). Or do the check and the change in one SQL statement (atomic update).</p>
+<p>Many requests change the same rows at the same time. For example:</p>
+<ul>
+<li>two redemptions from the same account,</li>
+<li>two admins editing the same campaign,</li>
+<li>many users booking the last seat.</li>
+</ul>
+<p>You need a strategy that keeps the data correct, without killing throughput.</p>
+<p>Think of IRCTC tatkal booking. Many people want the last seat. Only one should get it, and nobody should be charged for a seat they did not get.</p>
+<h4>What is happening internally?</h4>
+<p><strong>1. Optimistic locking (<code>@Version</code>)</strong> — "assume no clash, but check at save time":</p>
+<ol>
+<li>No lock is taken while reading.</li>
+<li>On update, Hibernate adds <code>WHERE id = ? AND version = ?</code> and increases the version by one.</li>
+<li>If another transaction changed the row first, the version no longer matches. The update matches <strong>0 rows</strong>.</li>
+<li>Hibernate throws <code>OptimisticLockException</code>. (Spring wraps it as <code>ObjectOptimisticLockingFailureException</code>.)</li>
+<li>You retry, or report a conflict to the user.</li>
+</ol>
+<p>No locks are held between the read and the write.</p>
+<p><strong>2. Pessimistic locking</strong> — "lock first, then work":</p>
+<ul>
+<li><code>SELECT … FOR UPDATE</code> takes a <strong>row lock</strong> at read time.</li>
+<li>Other writers, and other <code>FOR UPDATE</code> readers, <strong>wait</strong> until you commit.</li>
+<li>The lock holder is sure to succeed. The cost is that others are blocked.</li>
+</ul>
+<p><strong>3. Atomic conditional update</strong> — "let the database do it in one step":</p>
+<ul>
+<li>One SQL statement does the read, the check and the write, all inside the database: <code>UPDATE … SET balance = balance - ? WHERE id = ? AND balance &gt;= ?</code>.</li>
+<li>The row lock is held only for that one statement.</li>
+<li>The number of affected rows tells you whether it worked: 1 = success, 0 = failed.</li>
+</ul>
+<h4>How does it work?</h4>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>Strategy</th>
+<th>Best when</th>
+<th>Cost</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Optimistic <code>@Version</code></td>
+<td>Clashes are rare (editing campaigns, profiles); the user takes a long time between reading and saving</td>
+<td>Retries or 409 errors when a clash happens</td>
+</tr>
+<tr>
+<td>Pessimistic <code>FOR UPDATE</code></td>
+<td>Clashes are frequent and retries are costly; a rule across many rows inside one transaction</td>
+<td>Blocking, risk of deadlock, lower throughput</td>
+</tr>
+<tr>
+<td>Atomic UPDATE</td>
+<td>A numeric rule on a single row (balance, stock, counters)</td>
+<td>The logic must fit in one SQL statement</td>
+</tr>
+</tbody>
+</table></div>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="nd">@Entity</span>
+<span class="kd">class</span> <span class="nc">Campaign</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nd">@Id</span><span class="w"> </span><span class="n">Long</span><span class="w"> </span><span class="n">id</span><span class="p">;</span>
+<span class="w">    </span><span class="n">String</span><span class="w"> </span><span class="n">name</span><span class="p">;</span>
+<span class="w">    </span><span class="nd">@Version</span><span class="w"> </span><span class="kt">long</span><span class="w"> </span><span class="n">version</span><span class="p">;</span><span class="w">                       </span><span class="c1">// optimistic locking</span>
+<span class="p">}</span>
+<span class="c1">// Two admins load version 3; first save → version 4; second save → UPDATE ... WHERE version=3 → 0 rows → 409 Conflict</span>
+
+<span class="kd">public</span><span class="w"> </span><span class="kd">interface</span> <span class="nc">AccountRepository</span><span class="w"> </span><span class="kd">extends</span><span class="w"> </span><span class="n">JpaRepository</span><span class="o">&lt;</span><span class="n">Account</span><span class="p">,</span><span class="w"> </span><span class="n">String</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nd">@Lock</span><span class="p">(</span><span class="n">LockModeType</span><span class="p">.</span><span class="na">PESSIMISTIC_WRITE</span><span class="p">)</span><span class="w">                                         </span><span class="c1">// SELECT ... FOR UPDATE</span>
+<span class="w">    </span><span class="nd">@QueryHints</span><span class="p">(</span><span class="nd">@QueryHint</span><span class="p">(</span><span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"jakarta.persistence.lock.timeout"</span><span class="p">,</span><span class="w"> </span><span class="n">value</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"3000"</span><span class="p">))</span>
+<span class="w">    </span><span class="nd">@Query</span><span class="p">(</span><span class="s">"select a from Account a where a.id = :id"</span><span class="p">)</span>
+<span class="w">    </span><span class="n">Optional</span><span class="o">&lt;</span><span class="n">Account</span><span class="o">&gt;</span><span class="w"> </span><span class="nf">findByIdForUpdate</span><span class="p">(</span><span class="nd">@Param</span><span class="p">(</span><span class="s">"id"</span><span class="p">)</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="n">id</span><span class="p">);</span>
+
+<span class="w">    </span><span class="nd">@Modifying</span>
+<span class="w">    </span><span class="nd">@Query</span><span class="p">(</span><span class="s">"update Account a set a.balance = a.balance - :p where a.id = :id and a.balance &gt;= :p"</span><span class="p">)</span>
+<span class="w">    </span><span class="kt">int</span><span class="w"> </span><span class="nf">debitIfSufficient</span><span class="p">(</span><span class="nd">@Param</span><span class="p">(</span><span class="s">"id"</span><span class="p">)</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="n">id</span><span class="p">,</span><span class="w"> </span><span class="nd">@Param</span><span class="p">(</span><span class="s">"p"</span><span class="p">)</span><span class="w"> </span><span class="kt">long</span><span class="w"> </span><span class="n">points</span><span class="p">);</span><span class="w">       </span><span class="c1">// 1 = success, 0 = insufficient</span>
+<span class="p">}</span>
+
+<span class="c1">// Optimistic retry with Spring Retry</span>
+<span class="nd">@Retryable</span><span class="p">(</span><span class="n">retryFor</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ObjectOptimisticLockingFailureException</span><span class="p">.</span><span class="na">class</span><span class="p">,</span><span class="w"> </span><span class="n">maxAttempts</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">3</span><span class="p">,</span><span class="w"> </span><span class="n">backoff</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nd">@Backoff</span><span class="p">(</span><span class="n">delay</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">50</span><span class="p">))</span>
+<span class="nd">@Transactional</span>
+<span class="kd">public</span><span class="w"> </span><span class="kt">void</span><span class="w"> </span><span class="nf">rename</span><span class="p">(</span><span class="n">Long</span><span class="w"> </span><span class="n">id</span><span class="p">,</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="n">name</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">campaignRepo</span><span class="p">.</span><span class="na">findById</span><span class="p">(</span><span class="n">id</span><span class="p">).</span><span class="na">orElseThrow</span><span class="p">().</span><span class="na">setName</span><span class="p">(</span><span class="n">name</span><span class="p">);</span><span class="w"> </span><span class="p">}</span>
+</code></pre></div>
+
+<p>Here is what happens when two redemptions run at the same time with the atomic update. The balance is 100, and both requests ask for 80:</p>
+<div class="hl"><pre><span></span><code>T1: UPDATE … WHERE id='A1' AND balance &gt;= 80 → row locked, balance 100 ≥ 80 → balance = 20, 1 row
+T2: same UPDATE → waits for T1's row lock → T1 commits → re-evaluates: 20 ≥ 80 false → 0 rows → insufficient
+Result: exactly one succeeds; no lost update, no application-level lock.
+</code></pre></div>
+
+<h4>When would I use it?</h4>
+<ul>
+<li><strong>Atomic updates</strong>: for balances, stock and counters — like your loyalty ledger.</li>
+<li><strong>Optimistic versions</strong>: for entities and aggregates that admins edit.</li>
+<li><strong>Pessimistic locks</strong>: for operations on many rows that must stay consistent within one transaction. Always lock rows in the same order everywhere, to avoid deadlocks (4.13 / 12.7).</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Holding pessimistic locks while calling external services</strong>: others stay blocked for a long time, and the pool runs out.</li>
+<li><strong>Locking rows in different orders in different code paths</strong>: T1 locks A then B, T2 locks B then A. Each waits for the other — a database deadlock.</li>
+<li><strong>Optimistic retries without backoff under heavy contention</strong>: everyone retries at the same moment and clashes again. This is a <em>retry storm</em>. Also, retrying side effects that are not idempotent (not safe to repeat) can do them twice.</li>
+<li><strong><code>@Version</code> with bulk JPQL updates</strong>: bulk updates do not increase the version, so the check is skipped.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. Optimistic vs pessimistic locking?</strong> Optimistic finds clashes at write time with a version check. It takes no locks and retries on conflict, so it suits low contention. Pessimistic locks rows at read time (<code>FOR UPDATE</code>) and blocks other writers, so it suits high contention.</p>
+<p><strong>Q2. How would you prevent double-spending of points under concurrency?</strong> Use an atomic conditional UPDATE (<code>balance &gt;= amount</code>) and check the affected row count — or use a row lock. Add an idempotency key so duplicate requests are not processed twice.</p>
+<p><strong>Q3. What happens when an optimistic lock check fails?</strong> The update affects zero rows, and Hibernate throws OptimisticLockException. The application then retries, or returns 409.</p>
+<h2 id="s7-16">7.16 Connection pools, migrations and JPA performance settings</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> Keep a set of ready database connections and reuse them (a pool). Change the schema only through numbered SQL scripts (migrations). And switch on a few Hibernate settings so inserts go in batches.</p>
+<p>Three needs, three tools:</p>
+<ul>
+<li><strong>Pool</strong>: opening a DB connection takes milliseconds — TCP setup, TLS, login. So every app keeps a <strong>pool</strong> of open connections and reuses them.</li>
+<li><strong>Migrations</strong>: schema changes must be versioned and must run the same way in every environment. So you need <strong>migrations</strong>.</li>
+<li><strong>Settings</strong>: a few Hibernate settings make the difference between 50 and 5,000 inserts per second.</li>
+</ul>
+<p>Think of an auto stand. Autos wait in a line, ready to go. You take one, finish your trip, and it comes back to the line. Nobody builds a new auto for each ride.</p>
+<h4>What is happening internally?</h4>
+<ul>
+<li><strong>HikariCP</strong> is Spring Boot's default pool. It keeps a set of open connections.
+  1. A thread borrows one (<code>getConnection</code>).
+  2. It uses it for the transaction.
+  3. It gives it back.
+  4. If no connection is free, the thread waits up to <code>connection-timeout</code>, and then fails.</li>
+<li><strong>Pool size — more is not better.</strong> The database has limited CPU cores and disk. Beyond a point, more parallel queries just fight each other for them.</li>
+<li>A common starting point is about 10–20 connections per app instance.</li>
+<li>Multiply by the number of instances. The total must stay within the DB's <code>max_connections</code>.</li>
+<li><strong>Flyway</strong> runs numbered SQL scripts (<code>V1__init.sql</code>, <code>V2__add_index.sql</code>) in order at startup. It records which ones it has run in the <code>flyway_schema_history</code> table. Liquibase is the alternative, based on XML/YAML.</li>
+</ul>
+<h4>How does it work?</h4>
+<div class="hl"><pre><span></span><code><span class="nt">spring</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">datasource</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">hikari</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">maximum-pool-size</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">20</span>
+<span class="w">      </span><span class="nt">minimum-idle</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">5</span>
+<span class="w">      </span><span class="nt">connection-timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3000</span><span class="w">        </span><span class="c1"># ms to wait for a free connection before failing</span>
+<span class="w">      </span><span class="nt">max-lifetime</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1500000</span><span class="w">           </span><span class="c1"># below DB/firewall idle limits (25 min here)</span>
+<span class="w">      </span><span class="nt">leak-detection-threshold</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">20000</span><span class="w"> </span><span class="c1"># log a stack trace if a connection is held &gt; 20 s</span>
+<span class="w">  </span><span class="nt">jpa</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">open-in-view</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span>
+<span class="w">    </span><span class="nt">hibernate.ddl-auto</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">validate</span><span class="w">      </span><span class="c1"># never 'update' in production</span>
+<span class="w">    </span><span class="nt">properties</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">hibernate.jdbc.batch_size</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">50</span>
+<span class="w">      </span><span class="nt">hibernate.order_inserts</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<span class="w">      </span><span class="nt">hibernate.order_updates</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<span class="w">      </span><span class="nt">hibernate.default_batch_fetch_size</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">50</span>
+<span class="w">  </span><span class="nt">flyway.enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+</code></pre></div>
+
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="c1">-- src/main/resources/db/migration/V3__ledger_account_index.sql</span>
+<span class="k">CREATE</span><span class="w"> </span><span class="k">INDEX</span><span class="w"> </span><span class="n">CONCURRENTLY</span><span class="w"> </span><span class="k">IF</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">EXISTS</span><span class="w"> </span><span class="n">ix_ledger_account_created</span><span class="w"> </span><span class="k">ON</span><span class="w"> </span><span class="n">ledger_entry</span><span class="w"> </span><span class="p">(</span><span class="n">account_id</span><span class="p">,</span><span class="w"> </span><span class="n">created_at</span><span class="w"> </span><span class="k">DESC</span><span class="p">);</span>
+<span class="c1">-- (PostgreSQL CONCURRENTLY can't run inside a transaction: mark this migration non-transactional in Flyway config)</span>
+</code></pre></div>
+
+<p><strong>Zero-downtime schema change</strong> — the <strong>expand → migrate → contract</strong> pattern. You change the schema while the app keeps running:</p>
+<ol>
+<li><strong>Expand</strong>: add the new column as nullable (V4).</li>
+<li>Deploy code that writes to both the old and the new column.</li>
+<li><strong>Migrate</strong>: fill in old rows (backfill) in small batches.</li>
+<li>Deploy code that reads from the new column.</li>
+<li><strong>Contract</strong>: drop the old column in a later release (V5).</li>
+</ol>
+<h4>When would I use it?</h4>
+<p>In every service:</p>
+<ul>
+<li>Tune the pool using its metrics (<code>hikaricp.connections.active</code>, <code>pending</code>).</li>
+<li>Put every schema change in a versioned migration.</li>
+<li>Turn on batching for jobs that write a lot.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Pool exhaustion</strong>: slow queries, long transactions, OSIV or leaked connections (borrowed and never returned). Threads get stuck in <code>getConnection</code>. A thread dump shows this (5.8).</li>
+<li><strong>Too many connections during autoscaling</strong>: pool size × number of pods goes above the DB's connection limit. Use PgBouncer (a connection pooler in front of Postgres), or size the pools correctly.</li>
+<li><strong>Migrations that lock big tables</strong>: for example, adding a column with a volatile default (a value computed per row, like <code>random()</code>), creating an index without <code>CONCURRENTLY</code>, or running a long backfill in one transaction.</li>
+<li><strong>Editing a migration file that has already run</strong>: Flyway stores a checksum of each file. The checksum no longer matches, so the app fails at startup.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. How do you size a connection pool?</strong> Start small, about 10–20 per instance. Keep the total under what the DB can handle. Then tune from pool metrics and DB load. The DB's cores and I/O limit useful parallel work — not the number of app threads.</p>
+<p><strong>Q2. Why not use <code>ddl-auto=update</code> in production?</strong> It is not versioned, and it cannot do safe data migrations. It may make destructive or locking changes, and it can behave differently in each environment. Use Flyway/Liquibase migrations, and set <code>validate</code>.</p>
+<p><strong>Q3. How do you make a schema change with zero downtime?</strong> Use expand-migrate-contract. Make additive changes first, write to both old and new, backfill in batches, switch reads to the new structure, and remove the old structure in a later release.</p>

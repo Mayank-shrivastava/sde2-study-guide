@@ -1,0 +1,1723 @@
+<h2 id="s11-1">11.1 The system design interview framework</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> A system design interview is like a vague order — "design a URL shortener". A fixed set of steps helps you ask the right questions, use numbers, and finish on time instead of drawing random boxes.</p>
+<p>System design questions are kept vague on purpose. For example: "design a URL shortener".</p>
+<p>The strong candidates are not the ones who know the most technologies. They are the ones who:
+- give the conversation a clear structure,
+- put numbers on the problem (users, requests per second, data size), and
+- explain why they chose one option over another (trade-offs).</p>
+<p>Without a framework, you jump straight to drawing boxes. You miss requirements. Then you run out of time before you reach the interesting parts.</p>
+<h4>What is happening internally?</h4>
+<p>While you talk, the interviewer is checking seven things:</p>
+<ol>
+<li><strong>Requirement gathering</strong> — do you ask questions to fix the scope?</li>
+<li><strong>Estimation</strong> — do you reason with numbers?</li>
+<li><strong>Design</strong> — are your components and data flows sensible?</li>
+<li><strong>Depth</strong> — can you go deep on the hard parts?</li>
+<li><strong>Trade-offs</strong> — do you know the other options and what they cost?</li>
+<li><strong>Operability</strong> — do you think about failures, scaling and monitoring?</li>
+<li><strong>Communication</strong> — can they follow your thinking easily?</li>
+</ol>
+<h4>How does it work?</h4>
+<p>Use this time plan for a 60-minute round. QPS means <em>queries per second</em> — how many requests hit the system each second. DAU means <em>daily active users</em>.</p>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>Minutes</th>
+<th>Step</th>
+<th>What goes on the board</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0–5</td>
+<td>Functional requirements</td>
+<td>3–5 main use cases; clearly list what is out of scope</td>
+</tr>
+<tr>
+<td>5–8</td>
+<td>Non-functional requirements</td>
+<td>DAU, QPS, read/write ratio, latency targets, availability, consistency, durability (data must not be lost), data size, compliance</td>
+</tr>
+<tr>
+<td>8–12</td>
+<td>Estimates</td>
+<td>Average and peak QPS, storage per year, bandwidth, cache size</td>
+</tr>
+<tr>
+<td>12–16</td>
+<td>API</td>
+<td>3–6 endpoints or events with their key fields</td>
+</tr>
+<tr>
+<td>16–20</td>
+<td>Data model</td>
+<td>Entities, keys, access patterns (how data is read and written) → choice of store with a one-line reason</td>
+</tr>
+<tr>
+<td>20–30</td>
+<td>High-level architecture</td>
+<td>Clients → edge/gateway → services → caches/queues → stores; walk one read and one write through it</td>
+</tr>
+<tr>
+<td>30–50</td>
+<td>Deep dives</td>
+<td>2 hard components (you suggest them, the interviewer picks)</td>
+</tr>
+<tr>
+<td>50–60</td>
+<td>Bottlenecks and evolution</td>
+<td>How it fails, what happens at 10× growth, monitoring, what you would do differently</td>
+</tr>
+</tbody>
+</table></div>
+<h4>Example</h4>
+<p>This is how you can open a URL shortener question:</p>
+<blockquote class="co note">
+<p>"Before designing, let me pin down scope. Users create short links and get redirected; optional custom aliases and expiry; basic click counts. Out of scope: user accounts UI and link editing. Non-functionally, redirects are latency-critical and must be highly available; creation can be slower. Reads dominate — roughly 100:1. Let me estimate…"</p>
+</blockquote>
+<p>Notice what this does. In under a minute, you fixed the scope, said what is out, named the most important non-functional need (fast, always-up redirects) and gave a read/write ratio.</p>
+<h4>When would I use it?</h4>
+<p>In every HLD (high-level design) round. Also at work, in real design reviews and RFCs (written design proposals). The same structure makes a good design document.</p>
+<h4>What can go wrong?</h4>
+<ul>
+<li>Drawing boxes before you know the requirements.</li>
+<li>Giving no numbers at all.</li>
+<li>Naming technologies without reasons — for example, just saying "use Kafka".</li>
+<li>Spending 30 minutes on the API.</li>
+<li>Going deep on something easy while ignoring the real bottleneck (the slowest, most loaded part).</li>
+<li>Silence — the interviewer cannot judge thinking they cannot hear.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. How do you approach a system design question?</strong> First I clarify the functional and non-functional requirements and estimate the scale. Then I define the APIs and the data model and sketch the architecture. Next I go deep on the hardest components. Finally I discuss bottlenecks, failures and how the system grows — and I justify each choice with its trade-offs.</p>
+<h2 id="s11-2">11.2 Back-of-envelope estimation</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> Quick rough maths tells you how big the problem really is. A small problem needs one server; a huge one needs many machines, caches and queues. The numbers pick the design for you.</p>
+<p>Numbers decide the architecture. For example:
+- 50 QPS fits easily on one server with one Postgres database.
+- 500,000 QPS needs sharding (splitting data across many databases), caching and queues.</p>
+<p>When you estimate, the interviewer sees that you are designing for <em>this</em> problem. You are not just repeating a standard architecture from memory.</p>
+<h4>What is happening internally?</h4>
+<p>First, know roughly how long common operations take. Only the order of size matters, not the exact number. (1 ms = 1,000 µs; 1 µs = 1,000 ns.)</p>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>Operation</th>
+<th>Approximate time</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>L1 cache / main memory reference</td>
+<td>1 ns / 100 ns</td>
+</tr>
+<tr>
+<td>Read 1 MB sequentially from memory</td>
+<td>~3 µs</td>
+</tr>
+<tr>
+<td>SSD random read</td>
+<td>~16–100 µs</td>
+</tr>
+<tr>
+<td>Round trip within a datacentre</td>
+<td>~0.5 ms</td>
+</tr>
+<tr>
+<td>Redis GET over the network</td>
+<td>~0.5–1 ms</td>
+</tr>
+<tr>
+<td>Indexed DB lookup</td>
+<td>~1–10 ms</td>
+</tr>
+<tr>
+<td>Read 1 MB sequentially from SSD</td>
+<td>~0.05–1 ms</td>
+</tr>
+<tr>
+<td>HDD seek</td>
+<td>~10 ms</td>
+</tr>
+<tr>
+<td>India ↔ US round trip</td>
+<td>~150–250 ms</td>
+</tr>
+</tbody>
+</table></div>
+<p>The main lesson: memory is very fast, the network adds about a millisecond, the database adds a few milliseconds, and crossing continents costs hundreds of milliseconds.</p>
+<p>Capacity rules of thumb (rough numbers you can use in any interview):
+- A day is 86,400 seconds. Round it to <strong>10⁵ s</strong>. So <strong>1 million requests/day ≈ 12 QPS</strong>.
+- <strong>Peak traffic is about 2–5× the average.</strong> Use 3× unless told otherwise.
+- One app instance (4–8 CPU cores, running on the JVM): about 1,000–5,000 simple requests per second.
+- One PostgreSQL/MySQL primary (the main database server): about 5,000–20,000 simple queries per second. It is comfortable up to a few TB of data.
+- One Redis node: 100,000+ operations per second. Its limit is usually RAM, not speed.
+- One Kafka partition: about 10 MB/s of writes. A full Kafka cluster can handle millions of messages per second.
+- Powers of two: 2¹⁰ ≈ 10³ (KB), 2²⁰ ≈ 10⁶ (MB), 2³⁰ ≈ 10⁹ (GB), 2⁴⁰ ≈ 10¹² (TB).</p>
+<h4>How does it work?</h4>
+<p>Follow these four calculations:</p>
+<ol>
+<li><strong>QPS:</strong> users → actions per user per day → requests per day → ÷ 10⁵ → average QPS → × 3 → peak QPS.</li>
+<li><strong>Storage:</strong> writes per day × bytes per record → storage per day → × 365 × number of years. Multiply again by the replication factor (how many copies you keep).</li>
+<li><strong>Bandwidth:</strong> read QPS × response size.</li>
+<li><strong>Cache size:</strong> hot set × object size. The <em>hot set</em> is the data that is read most often — often about 20% of daily reads.</li>
+</ol>
+<h4>Example</h4>
+<blockquote class="co note">
+<p>NOVA-like ordering assistant: 10M daily active retailers × 5 API calls = 50M/day ÷ 10⁵ = <strong>500 QPS average, ~1,500 peak</strong>. 2M orders/day × 1 KB = 2 GB/day ≈ <strong>730 GB/year</strong> → a single well-indexed Postgres primary handles it for a while; partition the orders table by month for retention. Catalogue reads are 10× higher (5,000 QPS) → cache SKU and price data in Redis; hot set ~200k SKUs × 2 KB ≈ 400 MB.</p>
+</blockquote>
+<p>What this tells you:
+- 1,500 peak QPS and 730 GB/year are small enough for <strong>one</strong> good Postgres primary for some time. No sharding needed yet.
+- Splitting the orders table by month (partitioning) makes it easy to delete old data later (retention).
+- Catalogue reads are much heavier, so they go to a Redis cache. The hot data is only about 400 MB, so it fits easily in memory.</p>
+<h4>When would I use it?</h4>
+<ul>
+<li>At the start of every design and every capacity plan.</li>
+<li>When deciding between "one database" and "shard it".</li>
+<li>When sizing caches, Kafka partitions and pods.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>False precision.</strong> Do not do exact maths. Spend about 3 minutes and round hard.</li>
+<li><strong>Forgetting peaks, replication and indexes.</strong> Real storage is often 2–3× the raw data size.</li>
+<li><strong>Looking at the wrong bottleneck.</strong> The limit is usually the database, not the app servers.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. How many QPS is 100 million requests per day?</strong> About 1,150 on average (10⁸ / 86,400). At a 3× peak, that is roughly 3,500.</p>
+<p><strong>Q2. Why estimate at all?</strong> Because the scale decides the architecture. It tells you whether one node is enough or you need sharding, how much caching you need, how much queue throughput you need, and what it will cost.</p>
+<h2 id="s11-3">11.3 Scaling basics: vertical, horizontal and stateless services</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> When traffic grows, you either buy a bigger machine or add more machines. Adding machines works best — but only if any machine can handle any request, which means the machines must not keep user data in their own memory.</p>
+<p>Traffic grows over time. You have two choices:
+- Buy a bigger machine. This is <strong>vertical</strong> scaling.
+- Add more machines. This is <strong>horizontal</strong> scaling.</p>
+<p>Only horizontal scaling can keep growing without a hard limit. It also survives a machine failure, because the other machines keep working. But it needs a design where <strong>any</strong> instance can serve <strong>any</strong> request.</p>
+<h4>What is happening internally?</h4>
+<ul>
+<li><strong>Vertical scaling</strong> means more CPU and RAM on one box.</li>
+<li>Good: it is simple and needs no code changes.</li>
+<li>Bad: hardware has a maximum size, big machines get expensive, and that one box is still a single point of failure (if it dies, everything dies).</li>
+<li><strong>Horizontal scaling</strong> means N identical instances behind a load balancer (a component that spreads requests across them).</li>
+<li>It needs <strong>stateless</strong> services. Stateless means the instance keeps no user session or request data in its own memory between requests.</li>
+<li>The state lives somewhere shared instead: a database, a cache, or a token the client carries (such as a JWT — a signed token).</li>
+<li><strong>The data tier is the hard part.</strong> App servers are easy to scale — just add more. Databases are harder. They need replication (11.8), partitioning (11.9) and caching (11.5).</li>
+</ul>
+<p>Think of a bank with many counters. If any clerk can serve you because your account is in the central system, you can open more counters any time. If only "your" clerk knows your details, you must always wait for that one clerk.</p>
+<p><strong>Availability maths:</strong>
+- Components in <strong>series</strong> (a request must pass through all of them) multiply their availability. Two parts at 99.9% each give 0.999 × 0.999 = 0.998. So the chain is <em>less</em> available than each part.
+- <strong>Redundant</strong> components in parallel (any one can do the job) improve availability. Two parts at 99.9% give 1 − 0.001² ≈ 0.999999.
+- 99.9% availability ≈ 8.8 hours of downtime per year. 99.99% ≈ 53 minutes per year.</p>
+<h4>How does it work?</h4>
+<div class="hl"><pre><span></span><code>Clients → Load balancer → [App 1] [App 2] [App 3]   (stateless, autoscaled)
+                              ↓       ↓       ↓
+                        Cache (Redis) · DB primary + replicas · Queue · Object storage
+</code></pre></div>
+
+<p>The app instances are all the same and hold no state. All shared data sits in the layer below them. So you can add or remove app instances freely (autoscaling).</p>
+<h4>Example</h4>
+<p>Take a shopping cart (session state):</p>
+<ol>
+<li>The cart is stored in the memory of one app pod.</li>
+<li>The user's next request lands on a different pod.</li>
+<li>That pod has no cart. The cart looks empty — the design is broken.</li>
+</ol>
+<p>The fix: move the cart to Redis (or into a signed token). Now every pod is the same. Kubernetes can add and remove pods freely.</p>
+<h4>When would I use it?</h4>
+<ul>
+<li>Always design the app tier to be stateless and horizontally scalable.</li>
+<li>For databases, scale vertically first because it is simpler. Move to replicas or shards only when you need them.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Sticky sessions hiding state.</strong> Sticky sessions send a user always to the same instance. This hides the fact that the service keeps state. It causes uneven load, and sessions are lost when that instance fails (failover).</li>
+<li><strong>Local file storage on instances.</strong> Files saved on one instance are missing on the others.</li>
+<li><strong>In-memory caches that drift apart.</strong> Each instance's local cache can hold a different version of the data.</li>
+<li><strong>The database becomes the bottleneck.</strong> Adding more app servers just sends more load to the same database.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. Vertical vs horizontal scaling?</strong> Vertical scaling adds resources to one machine. It is simple, but it has a limit and is a single point of failure. Horizontal scaling adds more machines. It has no hard limit and tolerates failures, but it needs stateless services and load balancing.</p>
+<p><strong>Q2. What makes a service stateless?</strong> The instance keeps no client-specific state in its memory between requests. All state is moved out to databases, caches or tokens.</p>
+<h2 id="s11-4">11.4 Load balancing</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> A load balancer is the traffic police at the front. It spreads requests across your servers and stops sending traffic to any server that is sick.</p>
+<p>Having many instances only helps if:
+- traffic is spread across them, and
+- dead instances stop getting requests.</p>
+<p>A load balancer does both. It also does other jobs:
+- It handles TLS (HTTPS encryption), so the app servers don't have to. This is called <em>terminating TLS</em>.
+- It routes by path or host name.
+- It is the first line of defence against too much traffic.</p>
+<h4>What is happening internally?</h4>
+<ul>
+<li><strong>L4 (transport layer)</strong> load balancers route TCP/UDP connections using only IP address and port. They don't read the HTTP request. They are very fast, but they cannot route by URL.</li>
+<li><strong>L7 (application layer)</strong> load balancers understand HTTP. They can route by path, header or cookie. They can terminate TLS, retry failed requests, rewrite requests and rate-limit (cap how many requests a client can send).</li>
+<li><strong>Health checks</strong> regularly test each instance and remove the failing ones.</li>
+<li><strong>Connection draining</strong> lets requests that are already running finish before an instance is removed, for example during a deploy.</li>
+<li><strong>Global load balancing</strong> sends users to the nearest healthy region. It uses DNS/GeoDNS (DNS answers differently based on the user's location) or Anycast (many locations share one IP; the network picks the nearest).</li>
+<li><strong>In Kubernetes:</strong> a <code>Service</code> gives L4 balancing (through kube-proxy). An Ingress or Gateway gives L7 routing. <strong>In Azure:</strong> Load Balancer is L4; Application Gateway and Front Door are L7.</li>
+</ul>
+<p>Ways to pick the next instance (algorithms):</p>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>Algorithm</th>
+<th>Use</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Round robin / weighted</td>
+<td>Identical, stateless instances (weighted gives bigger machines more traffic)</td>
+</tr>
+<tr>
+<td>Least connections / least response time</td>
+<td>Requests that cost very different amounts of work</td>
+</tr>
+<tr>
+<td>IP hash / consistent hashing</td>
+<td>Affinity — the same user or key always goes to the same server (caches, sticky routing)</td>
+</tr>
+</tbody>
+</table></div>
+<h4>How does it work?</h4>
+<p>A request passes through these layers:</p>
+<div class="hl"><pre><span></span><code>DNS → Front Door / CDN (global L7) → regional L7 LB (TLS, path routing) → service pods (L4 Service) → app
+</code></pre></div>
+
+<ol>
+<li>DNS points the user to the global edge.</li>
+<li>The global L7 layer (Front Door / CDN) picks the nearest healthy region.</li>
+<li>The regional L7 load balancer decrypts TLS and routes by path.</li>
+<li>The Kubernetes Service (L4) picks one healthy pod.</li>
+<li>The app handles the request.</li>
+</ol>
+<h4>Example</h4>
+<ul>
+<li><code>/api/orders/*</code> goes to the order service.</li>
+<li><code>/api/loyalty/*</code> goes to the loyalty service.</li>
+<li><code>/static/*</code> goes to the CDN.</li>
+</ul>
+<p>Pods that fail their readiness probes (the "am I ready to serve?" check) are removed within seconds. A canary release — a new version tried on a small slice of users — gets 5% of traffic through weighted routing.</p>
+<h4>When would I use it?</h4>
+<p>In front of every horizontally scaled tier. Also between services — often through the service mesh or the Kubernetes Service.</p>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>The load balancer itself becomes a single point of failure.</strong> Use managed, redundant load balancers.</li>
+<li><strong>Bad health checks.</strong> Some only test "is the process alive?" and miss real problems. Others fail whenever any dependency has a tiny blip, which removes healthy instances.</li>
+<li><strong>Sticky sessions</strong> make the load uneven.</li>
+<li><strong>Long-lived connections don't rebalance.</strong> WebSockets and gRPC keep one connection open for a long time. When you add new instances, the old connections stay on the old instances, so the new ones get little traffic.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. L4 vs L7 load balancing?</strong> L4 routes connections by IP and port. It is fast and works with any protocol. L7 understands HTTP. It routes by path, header or cookie, and it terminates TLS.</p>
+<p><strong>Q2. How does a load balancer know an instance is unhealthy?</strong> In two ways. Active health checks call the instance regularly — for example an HTTP readiness endpoint or a TCP check. Passive detection watches real traffic for errors or timeouts.</p>
+<h2 id="s11-5">11.5 Caching</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> A cache keeps a copy of popular data in fast memory. Most requests get their answer from this copy and never touch the slow database.</p>
+<p>The fastest request is the one that never reaches the database.</p>
+<p>Caching serves data that is read often and changed rarely, straight from memory. This gives two benefits:
+- <strong>Lower latency</strong> — from milliseconds down to microseconds.
+- <strong>Protection for the database</strong> — it is saved from load it could not handle.</p>
+<p>Think of a kirana shop. The shopkeeper keeps the fast-selling items on the counter. Only for rare items does he go to the back storeroom.</p>
+<h4>What is happening internally?</h4>
+<p><strong>Cache layers</strong> — a request can be answered at any of these levels, from nearest to farthest: browser → CDN → API gateway → in-process cache inside the app (Caffeine) → distributed cache shared by all instances (Redis/Memcached) → the database's own in-memory buffer pool.</p>
+<p><strong>Read and write strategies:</strong></p>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>Strategy</th>
+<th>How</th>
+<th>Trade-off</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Cache-aside</strong> (lazy)</td>
+<td>Read the cache → on a miss, load from DB → fill the cache. On a write, update the DB, then <strong>delete</strong> the key</td>
+<td>The default choice; data can be stale for a short time; the first read is always a miss</td>
+</tr>
+<tr>
+<td>Read-through</td>
+<td>The cache itself loads from the DB on a miss</td>
+<td>Simpler app code; but the cache becomes critical</td>
+</tr>
+<tr>
+<td>Write-through</td>
+<td>Write the cache and the DB together, synchronously</td>
+<td>Reads are always fresh; writes are slower</td>
+</tr>
+<tr>
+<td>Write-behind</td>
+<td>Write the cache; copy to the DB later, asynchronously</td>
+<td>Fast writes; risk of losing data</td>
+</tr>
+<tr>
+<td>Write-around</td>
+<td>Write only to the DB; cache it when it is read</td>
+<td>Avoids caching data that is rarely read again</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Eviction</strong> — which item to throw out when the cache is full:
+- LRU (least recently used) — the most common.
+- LFU (least frequently used).
+- FIFO (first in, first out).
+- TTL (time to live) — the item expires after a fixed time.</p>
+<p>Redis uses an approximate LRU/LFU. It checks a small random sample of keys instead of tracking all of them exactly.</p>
+<h4>How does it work?</h4>
+<p>Common failure modes and their fixes:</p>
+<ul>
+<li><strong>Stampede (thundering herd).</strong> A popular key expires. Thousands of requests miss at the same moment and all hit the DB together. Fixes:</li>
+<li><strong>Single-flight</strong> — only one request loads the key; the others wait for its result.</li>
+<li>Short locks.</li>
+<li><strong>Early probabilistic refresh</strong> — refresh the key a little before it expires.</li>
+<li><strong>Stale-while-revalidate</strong> — keep serving the old value while one request fetches the new one.</li>
+<li><strong>Penetration.</strong> Requests ask for keys that don't exist, so they always miss and always hit the DB. Fixes: cache "not found" results for a short time, or put a Bloom filter (a small structure that quickly says "definitely not present") in front.</li>
+<li><strong>Avalanche.</strong> Many keys expire at the same time and the DB gets flooded. Fix: add random <strong>jitter</strong> to TTLs so they expire at different times.</li>
+<li><strong>Hot keys.</strong> One key gets huge traffic and overloads one cache node. Fixes: copy it under several names (<code>key#1..#n</code>), and add a local in-process cache in front.</li>
+<li><strong>Consistency.</strong> Cache and DB can disagree. Fixes: delete on write (don't update), keep short TTLs as a safety net, and evict the key only after the DB transaction commits.</li>
+</ul>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code>GET /outlets/42/schemes
+  → Redis GET schemes:t7:42 → hit (0.8 ms) → return
+  → miss → DB query (25 ms) → SET schemes:t7:42 (TTL 10 min ± 60 s jitter) → return
+Admin edits a scheme → DB commit → DEL schemes:t7:* for affected outlets (or bump a version in the key)
+</code></pre></div>
+
+<p>Step by step:
+1. The app checks Redis. On a hit, it answers in under 1 ms.
+2. On a miss, it queries the DB (25 ms) and stores the result with a 10-minute TTL plus some random jitter.
+3. When an admin edits a scheme, the DB commits first. Then the related keys are deleted (or a version number in the key is increased, so old keys are simply never read again).</p>
+<p>Cache sizing: 20% of 10M outlet profiles × 2 KB = 4 GB. A small Redis cluster is enough.</p>
+<h4>When would I use it?</h4>
+<ul>
+<li>Data that is read a lot and changes little: catalogues, configuration, profiles, pre-computed totals, session data.</li>
+<li>Expensive computations.</li>
+<li>Protecting slow or rate-limited dependencies.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Caching data that must be strongly consistent</strong> — for example, point balances during a redemption. A stale value can cause wrong results.</li>
+<li><strong>Unbounded caches</strong> that grow until memory runs out.</li>
+<li><strong>Caching per-user data that is rarely reused</strong> — it wastes memory.</li>
+<li><strong>Stale data after writes.</strong></li>
+<li><strong>Using the cache as the database</strong> — data is lost when it is evicted or when the cache restarts.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. What caching strategy would you use and why?</strong> Usually cache-aside with TTLs. It is simple, and the system still works if the cache fails. I delete the key on writes and add jitter to TTLs.</p>
+<p><strong>Q2. How do you prevent a cache stampede?</strong> Use single-flight loading per key, locks, early refresh, serving stale data while one request refreshes it, and TTL jitter.</p>
+<p><strong>Q3. Why delete instead of update the cache on writes?</strong> An update can race with a read happening at the same time. That read may put old data back into the cache after your update. If you delete instead, the next read loads fresh data from the DB.</p>
+<h2 id="s11-6">11.6 CDNs and the edge</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> A CDN keeps copies of your images and files in many cities, close to users. Users download from the nearby copy instead of your far-away main server.</p>
+<p>Users are often far from your datacentre. Images, scripts and videos are large files.</p>
+<p>A <strong>Content Delivery Network (CDN)</strong> caches this content at hundreds of <em>edge locations</em> — small data centres close to users. This gives two benefits:
+- Lower latency, because the data travels a shorter distance.
+- Less load (and cost) on your <em>origin</em> servers (your own main servers), because the CDN serves most of the bandwidth.</p>
+<p>Think of a newspaper. It is printed in many city presses, not shipped from one office to the whole country.</p>
+<h4>What is happening internally?</h4>
+<ul>
+<li><strong>Pull CDN:</strong> on a miss, the edge fetches the file from the origin. It then caches it, following the <code>Cache-Control</code> headers. <strong>Push CDN:</strong> you upload the content to the CDN ahead of time.</li>
+<li><strong>Cache keys:</strong> the CDN identifies a cached item by its URL plus some chosen headers. Use <strong>versioned file names</strong> (<code>app.3f9a.js</code>). A new version gets a new name, so users get it at once. This is better than purging (deleting) old copies.</li>
+<li><strong>Other jobs of the edge:</strong> it terminates TLS, absorbs DDoS attacks (floods of fake traffic), compresses responses, converts images (to WebP/AVIF, or resizes them), and can run small pieces of your code called <strong>edge functions</strong>.</li>
+<li><strong>Dynamic API responses</strong> can also be cached at the edge for a short time (using <code>s-maxage</code> and <code>stale-while-revalidate</code>).</li>
+</ul>
+<h4>How does it work?</h4>
+<div class="hl"><pre><span></span><code>User in Varanasi → nearest edge (Delhi) → cache hit → 20 ms
+                                         → miss → origin (Mumbai region) → cache → serve
+</code></pre></div>
+
+<ol>
+<li>A user in Varanasi is sent to the nearest edge, in Delhi.</li>
+<li>If Delhi has the file (a hit), it answers in about 20 ms.</li>
+<li>If not (a miss), Delhi fetches it from the origin in the Mumbai region, caches it, and serves it. The next user near Delhi gets a hit.</li>
+</ol>
+<h4>Example</h4>
+<p>Product images in a retailer app:
+1. Upload the original images to object storage.
+2. The CDN serves URLs like <code>img.cdn/sku/123?w=320&amp;fmt=webp</code>. The edge resizes the image, converts it to WebP, and caches it.
+3. Cheap, low-end Android phones on 4G get small images in tens of milliseconds.</p>
+<h4>When would I use it?</h4>
+<p>For all static assets, images, video segments (13.16), downloadable files, and public API responses that are safe to cache.</p>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Caching personalised responses.</strong> One user's private data can be shown to another user — a data leak.</li>
+<li><strong>Forgetting invalidation.</strong> Users keep getting old assets.</li>
+<li><strong>Query-string explosion.</strong> Many slightly different URLs for the same file split the cache into many small, rarely-hit entries.</li>
+<li><strong>Origin overload after a purge.</strong> All edges miss at once and hit the origin together. A shield (origin-shield) layer — one middle cache in front of the origin — helps.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. How does a CDN reduce latency?</strong> It serves cached content from edge locations close to users. So requests avoid the long round trip to the origin.</p>
+<p><strong>Q2. How do you invalidate CDN content?</strong> Use versioned URLs (the preferred way), Cache-Control TTLs, or the CDN's explicit purge APIs.</p>
+<h2 id="s11-7">11.7 Choosing a database</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> Pick the database based on how your data is read and written, how correct it must be, and how big it will get — not because a database is popular. Start with PostgreSQL and add others only for a clear reason.</p>
+<p>The data store is the hardest component to change later. It is also usually the bottleneck.</p>
+<p>So choose it based on:
+- access patterns (how data is read and written),
+- consistency needs (how correct and up to date reads must be), and
+- scale.</p>
+<p>Do not choose by fashion. Making this choice well is one of the most visible SDE2 skills.</p>
+<h4>What is happening internally?</h4>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>Type</th>
+<th>Examples</th>
+<th>Strengths</th>
+<th>Typical use</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Relational (OLTP — everyday transactions)</td>
+<td>PostgreSQL, MySQL, SQL Server</td>
+<td>ACID transactions, joins, constraints, flexible queries</td>
+<td>Orders, payments, ledgers, users — the default</td>
+</tr>
+<tr>
+<td>Key-value</td>
+<td>Redis, DynamoDB</td>
+<td>O(1) access by key (same speed at any size), at huge scale</td>
+<td>Sessions, carts, idempotency keys (to detect repeated requests), caches</td>
+</tr>
+<tr>
+<td>Wide-column</td>
+<td>Cassandra, ScyllaDB, Bigtable</td>
+<td>Very high write throughput, access by partition key, multiple datacentres</td>
+<td>Messages, activity feeds, time series, IoT</td>
+</tr>
+<tr>
+<td>Document</td>
+<td>MongoDB, Cosmos DB</td>
+<td>Flexible schema, nested documents</td>
+<td>Catalogues, content, configuration</td>
+</tr>
+<tr>
+<td>Search</td>
+<td>Elasticsearch, OpenSearch</td>
+<td>Full-text search, fuzzy (typo-tolerant) matching, facets (filters with counts), relevance ranking</td>
+<td>Product and log search</td>
+</tr>
+<tr>
+<td>Columnar OLAP (analytics)</td>
+<td>ClickHouse, BigQuery, Snowflake, Trino over a lake</td>
+<td>Fast totals and group-bys over billions of rows</td>
+<td>Analytics, dashboards, incentive aggregates</td>
+</tr>
+<tr>
+<td>Graph</td>
+<td>Neo4j</td>
+<td>Queries that follow many relationship hops</td>
+<td>Social graphs, fraud rings</td>
+</tr>
+<tr>
+<td>Time-series</td>
+<td>Prometheus, TimescaleDB, InfluxDB</td>
+<td>Retention and downsampling (keeping old data at lower detail)</td>
+<td>Metrics</td>
+</tr>
+<tr>
+<td>Object storage</td>
+<td>S3, Azure Blob</td>
+<td>Cheap, durable storage for large objects</td>
+<td>Images, files, backups, data lake</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>ACID vs BASE:</strong>
+- <strong>ACID</strong> — atomic (all or nothing), consistent (rules always hold), isolated (transactions don't disturb each other), durable (committed data is not lost). Use it for data where correctness is critical.
+- <strong>BASE</strong> — basically available, soft state, eventually consistent (copies agree after some time). Many distributed NoSQL stores work this way.</p>
+<h4>How does it work?</h4>
+<p>Decision path:</p>
+<ol>
+<li>Start with PostgreSQL.</li>
+<li>Switch or add a store <strong>only when a specific requirement forces it</strong>. Name that requirement out loud. For example:
+   - "100k writes/s of append-only events with partition-key reads → Cassandra"
+   - "full-text with typo tolerance → Elasticsearch"
+   - "aggregations over 5 billion rows → ClickHouse"</li>
+<li>Using several stores in one system is normal. This is called <em>polyglot persistence</em>. A common setup: Postgres for the truth, Redis for hot paths, Elasticsearch for search, ClickHouse for analytics. The other stores are fed from Postgres by events or CDC (change data capture — streaming every change from the database's log).</li>
+</ol>
+<p>How indexes, MVCC and locking work inside the database is covered in Chapter 12.</p>
+<h4>Example</h4>
+<p>A loyalty platform:
+- Ledger and accounts in PostgreSQL — it needs transactions and constraints.
+- Balances cached in Redis.
+- Redemption history search in Elasticsearch (optional).
+- Monthly incentive and analytics totals in ClickHouse, fed via CDC.</p>
+<h4>When would I use it?</h4>
+<p>At the data-model step of every design.</p>
+<h4>What can go wrong?</h4>
+<ul>
+<li>Choosing NoSQL "for scale", then finding out you need transactions and joins.</li>
+<li>Choosing SQL for a write volume that a single primary cannot handle.</li>
+<li>Using the search index or the cache as the source of truth.</li>
+<li>Designing NoSQL tables like relational ones. In NoSQL you should design <em>query-first</em> — start from the queries you need and shape the tables around them.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. SQL vs NoSQL — how do you decide?</strong> I default to SQL, because it gives transactional integrity and flexible queries. I choose NoSQL only for a concrete need: massive write throughput, a flexible schema, simple key access at huge scale, or multi-region availability.</p>
+<p><strong>Q2. Why might you use several databases in one system?</strong> Because each one serves a different access pattern — transactions, caching, search, analytics. I keep one source of truth and feed the others from it using events or CDC.</p>
+<h2 id="s11-8">11.8 Replication</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> Replication means keeping copies of the database on other machines. If the main one dies, a copy takes over, and copies can also share the read load — but keeping all copies in sync is the hard part.</p>
+<p>One database server is a single point of failure. It is also a limit on how many reads you can serve.</p>
+<p>Copies on other machines are called <strong>replicas</strong>. They give you:
+- <strong>Availability</strong> — if the main server fails, a replica takes over. This is called <em>failover</em>.
+- <strong>Read scaling</strong> — reads can be spread across replicas.
+- <strong>Geographic closeness</strong> — a replica can sit near users in another region.</p>
+<p>The cost: you must keep all the copies consistent.</p>
+<h4>What is happening internally?</h4>
+<ul>
+<li><strong>Leader–follower (primary–replica).</strong> All writes go to the leader. The leader streams its log of changes (the WAL in Postgres, the binlog in MySQL) to the followers. Reads can go to the followers.</li>
+<li><strong>Synchronous:</strong> the leader waits for a follower to confirm each write. No data is lost on failover, but writes are slower.</li>
+<li><strong>Asynchronous:</strong> the leader does not wait. Writes are fast, but followers <strong>lag</strong> behind. The latest writes can be lost on failover.</li>
+<li><strong>Semi-synchronous:</strong> the leader waits for at least one follower.</li>
+<li><strong>Multi-leader.</strong> Writes are accepted in several regions. When two regions change the same data, the conflict must be resolved — by last-write-wins, CRDTs (data types that merge automatically) or merge logic in the application.</li>
+<li><strong>Leaderless</strong> (Dynamo-style, as in Cassandra):
+  1. Write to N replicas. The write succeeds after W of them confirm (acks).
+  2. Read from R replicas.
+  3. If <strong>R + W &gt; N</strong>, the replicas you read from and the replicas you wrote to always overlap. So at least one read sees the latest write.
+  4. <em>Read repair</em> (fixing stale copies during reads) and <em>anti-entropy</em> (a background job that compares and syncs copies) fix any differences.</li>
+<li><strong>Failover</strong> has three steps: detect that the leader failed, promote a follower to be the new leader, and point clients to it. The risks:</li>
+<li>Asynchronous writes that never reached the follower are lost.</li>
+<li><strong>Split brain</strong> — two nodes both think they are the leader. This is prevented with consensus (Raft/Paxos, through etcd, ZooKeeper or Patroni) and fencing tokens (a number that lets storage reject writes from the old leader).</li>
+</ul>
+<p>Think of a head office and branch offices. The head office makes every change and sends copies of the register to the branches. A branch can answer questions, but its register may be a few minutes old.</p>
+<h4>How does it work?</h4>
+<div class="hl"><pre><span></span><code>writes → Primary ──WAL stream──► Replica 1 (reads)
+                  └────────────► Replica 2 (reads, other AZ)
+primary dies → orchestrator (Patroni/managed service) promotes Replica 1 → DNS/endpoint switches
+</code></pre></div>
+
+<ol>
+<li>All writes go to the primary.</li>
+<li>The primary streams its WAL to both replicas. Replica 2 is in another availability zone (AZ — a separate datacentre in the same region).</li>
+<li>If the primary dies, an orchestrator (Patroni or the managed cloud service) promotes Replica 1.</li>
+<li>The DNS name or endpoint switches to the new primary, so clients reconnect there.</li>
+</ol>
+<h4>Example</h4>
+<p><strong>Read-your-writes problem:</strong>
+1. A retailer redeems points. This write goes to the primary.
+2. The app immediately reads the balance from a replica that is lagging.
+3. The screen shows the old balance. The user is confused.</p>
+<p>Fixes:
+- Read the user's own recent data from the primary for a short time after they write.
+- Track a "last write LSN/timestamp" (the position of their last write in the log) per session. Send reads only to replicas that have caught up to it.
+- For critical screens, always read from the primary.</p>
+<h4>When would I use it?</h4>
+<p>In every production database:
+- At least one synchronous or semi-synchronous standby in another availability zone, for failover.
+- Plus asynchronous replicas for read scaling and reporting.</p>
+<h4>What can go wrong?</h4>
+<ul>
+<li>Replica lag causes stale reads and a confusing user experience.</li>
+<li>Asynchronous failover loses recent writes.</li>
+<li>Heavy reports run on the primary instead of a replica, slowing everything down.</li>
+<li>Split brain, when fencing is not set up properly.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. Synchronous vs asynchronous replication?</strong> Synchronous replication waits for replicas to confirm each write. It is durable but makes writes slower. Asynchronous replication does not wait. It is fast, but replicas lag and recent writes can be lost on failover.</p>
+<p><strong>Q2. What is replication lag and how do you handle it?</strong> It is the delay before replicas show the leader's writes. I handle it with read-your-writes routing (send a user's reads to the leader right after they write), lag-aware routing, or by accepting eventual consistency where that is fine.</p>
+<p><strong>Q3. What is a quorum?</strong> In leaderless replication with N replicas, a write needs W acks and a read needs R responses, with R + W &gt; N. Because the two sets must overlap, every read includes at least one replica with the latest successful write.</p>
+<h2 id="s11-9">11.9 Partitioning and sharding</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> When one database can't hold all the data or keep up with the writes, you split the data across several databases. Each one holds only its own part.</p>
+<p>Sometimes one database node cannot hold all the data. Or it cannot keep up with the rate of writes.</p>
+<p>Then you split the data across nodes. Each piece is called a <strong>shard</strong>, and each shard holds only part of the data. So storage and write capacity grow as you add shards.</p>
+<p>Think of a railway reservation office with separate counters by train number range. Each counter handles only its own trains, so the queues move faster.</p>
+<h4>What is happening internally?</h4>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>Strategy</th>
+<th>How</th>
+<th>Pros</th>
+<th>Cons</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Range</td>
+<td>Each shard gets a range of keys (A–F, G–M; or date ranges)</td>
+<td>Range scans are efficient</td>
+<td>Hot spots (recent dates, popular ranges get all the traffic)</td>
+</tr>
+<tr>
+<td>Hash</td>
+<td><code>hash(key) % N</code>, or consistent hashing (11.11)</td>
+<td>Data spreads evenly</td>
+<td>Range queries must go to all shards; resharding is costly</td>
+</tr>
+<tr>
+<td>Directory / lookup</td>
+<td>A service keeps a map of key → shard</td>
+<td>Flexible placement; easy to move data</td>
+<td>An extra hop; the directory itself must be highly available</td>
+</tr>
+<tr>
+<td>Geo / tenant</td>
+<td>Split by region or by tenant (customer company)</td>
+<td>Data stays local, helps compliance, one noisy tenant can't hurt others</td>
+<td>Shards have uneven sizes → move big tenants to their own shards</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Choosing a shard key.</strong> A good shard key:
+- has high cardinality (many different values),
+- spreads data evenly, and
+- matches the main access pattern, so most queries hit <strong>one</strong> shard.</p>
+<p>For a multi-tenant SaaS, <code>tenant_id</code> is the natural choice. The largest tenants can be split further or given their own shards.</p>
+<h4>How does it work?</h4>
+<div class="hl"><pre><span></span><code>Router / client library: shard = hash(tenant_id) → shard 3
+Shard 0 [tenants a..]  Shard 1 [...]  Shard 2 [...]  Shard 3 [tenant t-42] ← query goes only here
+Cross-shard query (global top-10) → scatter to all shards, gather and merge (expensive; avoid on hot paths)
+</code></pre></div>
+
+<ol>
+<li>A router (or a client library) hashes the <code>tenant_id</code> to pick the shard — here, shard 3.</li>
+<li>The query for tenant t-42 goes only to shard 3.</li>
+<li>A query across all tenants (like a global top-10) must be sent to every shard. The results are then collected and merged. This is called <em>scatter-gather</em>. It is expensive, so avoid it on hot paths.</li>
+</ol>
+<p><strong>Rebalancing</strong> (moving data when you add shards):
+- With plain <code>% N</code>, adding one shard changes N. Almost every key moves to a new shard.
+- Consistent hashing, or many fixed <strong>virtual partitions</strong>, moves only a small fraction. For example, use 4,096 logical partitions and map them to physical nodes. Adding a node just moves some whole partitions to it.
+- Many systems (Citus, Vitess, Cassandra, DynamoDB) handle this for you.</p>
+<h4>Example</h4>
+<p>A loyalty ledger taking 50,000 writes/s:
+1. Shard by <code>tenant_id</code>. All of a tenant's accounts sit on one shard, so per-tenant queries stay on one shard.
+2. Inside each shard, partition the ledger table by month (Chapter 12.8). This makes it easy to drop old data (retention).
+3. The largest FMCG tenant gets its own shard.</p>
+<h4>When would I use it?</h4>
+<p>Only after you have used up the simpler options: vertical scaling, read replicas, caching and table partitioning. Sharding adds a lot of complexity — cross-shard joins, transactions, rebalancing and harder operations.</p>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>A shard key that creates hot spots.</strong> For example, IDs that always increase in range sharding (all new writes go to the last shard), or one giant tenant.</li>
+<li><strong>Cross-shard transactions.</strong> Avoid them; use sagas instead (a chain of local steps, each with an undo step).</li>
+<li><strong>Global secondary indexes</strong> (indexes across all shards) are hard to keep correct.</li>
+<li><strong>Uneven growth</strong> between shards.</li>
+<li><strong>Downtime during resharding.</strong></li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. How do you choose a shard key?</strong> It needs high cardinality and an even spread. It should match the main access path, so most queries hit one shard. For range sharding, avoid keys that always increase.</p>
+<p><strong>Q2. What problems does sharding introduce?</strong> Cross-shard queries and joins, distributed transactions, rebalancing, hot shards, and more operational complexity.</p>
+<p><strong>Q3. Partitioning vs sharding?</strong> Partitioning splits a table inside one database. It helps with pruning (skipping partitions a query doesn't need) and retention. Sharding spreads data across multiple database servers. It adds capacity and write scale.</p>
+<h2 id="s11-10">11.10 CAP, PACELC and consistency models</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> When the network between your database copies breaks, you must choose: refuse some requests to stay correct, or keep answering with possibly old data. You make this choice per feature — money needs correct, likes can be a bit old.</p>
+<p>A distributed data store cannot be perfectly consistent, always available, and tolerant of network breaks, all at the same time.</p>
+<p>So you must know which guarantee each part of your system needs, and say it out loud. This is how you justify your database and replication choices.</p>
+<h4>What is happening internally?</h4>
+<ul>
+<li><strong>CAP.</strong> Sometimes the network splits nodes into groups that cannot talk to each other. This is a <strong>partition</strong>. During a partition, the system must choose:</li>
+<li><strong>Consistency</strong> — refuse or delay requests it cannot answer correctly, or</li>
+<li><strong>Availability</strong> — answer anyway, maybe with stale data.</li>
+</ul>
+<p>Partitions will happen in real networks. So the real choice is C vs A <em>during</em> a partition.
+- <strong>PACELC</strong> adds the normal case:
+  - If there is a <strong>P</strong>artition → choose <strong>A</strong> or <strong>C</strong>.
+  - <strong>E</strong>lse (normal operation) → choose <strong>L</strong>atency or <strong>C</strong>onsistency. Waiting for every copy to agree is slower.
+  - Dynamo/Cassandra are PA/EL (prefer availability and low latency). Spanner and etcd are PC/EC (prefer consistency).
+- <strong>Consistency models</strong>, from strong to weak:</p>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>Model</th>
+<th>Guarantee</th>
+<th>Example need</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Linearizable (strong)</td>
+<td>Every read sees the latest committed write</td>
+<td>Balances, inventory counts, leader election</td>
+</tr>
+<tr>
+<td>Sequential</td>
+<td>All nodes see operations in the same order</td>
+<td></td>
+</tr>
+<tr>
+<td>Causal</td>
+<td>If one operation caused another, everyone sees them in that order</td>
+<td>A reply appears after its message</td>
+</tr>
+<tr>
+<td>Read-your-writes</td>
+<td>A user always sees their own writes</td>
+<td>Profile updates</td>
+</tr>
+<tr>
+<td>Monotonic reads</td>
+<td>Reads never go back in time (you never see older data after newer)</td>
+<td>Feeds</td>
+</tr>
+<tr>
+<td>Eventual</td>
+<td>Copies become the same once writes stop</td>
+<td>Likes, view counts, search indexes</td>
+</tr>
+</tbody>
+</table></div>
+<p>Think of an ATM when the link to the bank is down. A strict bank refuses withdrawals (consistency). A relaxed one allows small withdrawals and settles later (availability).</p>
+<h4>How does it work?</h4>
+<p>Choose <strong>per feature</strong>, not for the whole system:
+- Redemptions need strong consistency. Otherwise the same points can be spent twice (double spend).
+- A leaderboard or an analytics dashboard can be a few seconds stale.</p>
+<h4>Example</h4>
+<p>The network between two regions breaks:
+- The payment service refuses writes in the smaller (minority) region. It chooses CP, because double charges are worse than a short outage.
+- The product catalogue keeps serving cached data in both regions. It chooses AP, because slightly old product details are acceptable.</p>
+<h4>When would I use it?</h4>
+<ul>
+<li>When choosing stores and replication modes.</li>
+<li>When designing multi-region systems.</li>
+<li>When justifying caching and asynchronous updates.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li>Claiming a system is "CA". In a real distributed system, partitions happen, so you cannot skip P.</li>
+<li>Assuming eventual consistency is fine for money.</li>
+<li>Not handling what users see under eventual consistency — for example, you need "payment processing…" states and read-your-writes.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. Explain CAP with an example.</strong> During a network partition, you must choose consistency (reject or block some requests) or availability (serve data that might be stale). A payment ledger chooses C. A social feed chooses A.</p>
+<p><strong>Q2. What does PACELC add?</strong> It says that even with no partition, there is still a trade-off — between latency and consistency.</p>
+<p><strong>Q3. Where would you use strong vs eventual consistency in a loyalty platform?</strong> Strong consistency for balances, redemptions and idempotency checks (checks that stop the same request being processed twice). Eventual consistency for leaderboards, analytics, notifications and search.</p>
+<h2 id="s11-11">11.11 Consistent hashing</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> With simple <code>% N</code> hashing, adding one server moves almost every key to a new place. Consistent hashing puts servers and keys on a circle, so adding a server moves only a small share of keys.</p>
+<p>With <code>hash(key) % N</code>, adding or removing one cache or database node changes N. That moves almost every key to a different node. The result is a mass of cache misses, or a huge data migration.</p>
+<p>Consistent hashing moves only about 1/N of the keys.</p>
+<h4>What is happening internally?</h4>
+<ol>
+<li>Picture a <strong>ring</strong> of numbers from 0 to 2³²−1. Hash each node onto a point on this ring. Hash each key onto the ring too.</li>
+<li>A key belongs to the first node you meet going clockwise from the key's position.</li>
+<li>When you add a node, it takes only the keys between itself and the node before it.</li>
+<li>When you remove a node, its keys go to the next node clockwise.</li>
+<li><strong>Virtual nodes:</strong> each physical node is placed at many points (100–200) on the ring. This spreads the load more evenly. A bigger machine can be given more points, so it takes more keys.</li>
+</ol>
+<p>Think of a round dining table with plates (keys) and waiters (nodes) standing at spots. Each plate is served by the next waiter clockwise. A new waiter joining takes over only the plates just before him.</p>
+<div class="hl"><pre><span></span><code>ring: 0 ──[A#1]──k1──[B#1]──k2──[A#2]──k3──[C#1]──… (wraps)
+k1 → B, k2 → A, k3 → C.  Add node D between A#2 and C#1 → only keys in that arc move to D.
+</code></pre></div>
+
+<h4>How does it work?</h4>
+<p>The ring is a <code>TreeMap</code> from hash position to node. <code>ceilingEntry</code> finds the first node at or after the key's hash (clockwise). If there is none, the search wraps around to the first entry.</p>
+<div class="hl"><pre><span></span><code><span class="kd">class</span> <span class="nc">ConsistentHashRing</span><span class="o">&lt;</span><span class="n">T</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">private</span><span class="w"> </span><span class="kd">final</span><span class="w"> </span><span class="n">TreeMap</span><span class="o">&lt;</span><span class="n">Long</span><span class="p">,</span><span class="w"> </span><span class="n">T</span><span class="o">&gt;</span><span class="w"> </span><span class="n">ring</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">TreeMap</span><span class="o">&lt;&gt;</span><span class="p">();</span>
+<span class="w">    </span><span class="kd">private</span><span class="w"> </span><span class="kd">final</span><span class="w"> </span><span class="kt">int</span><span class="w"> </span><span class="n">vnodes</span><span class="p">;</span>
+<span class="w">    </span><span class="n">ConsistentHashRing</span><span class="p">(</span><span class="kt">int</span><span class="w"> </span><span class="n">vnodes</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="k">this</span><span class="p">.</span><span class="na">vnodes</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">vnodes</span><span class="p">;</span><span class="w"> </span><span class="p">}</span>
+<span class="w">    </span><span class="kt">void</span><span class="w"> </span><span class="nf">add</span><span class="p">(</span><span class="n">T</span><span class="w"> </span><span class="n">node</span><span class="p">)</span><span class="w">    </span><span class="p">{</span><span class="w"> </span><span class="k">for</span><span class="w"> </span><span class="p">(</span><span class="kt">int</span><span class="w"> </span><span class="n">i</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="p">;</span><span class="w"> </span><span class="n">i</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="n">vnodes</span><span class="p">;</span><span class="w"> </span><span class="n">i</span><span class="o">++</span><span class="p">)</span><span class="w"> </span><span class="n">ring</span><span class="p">.</span><span class="na">put</span><span class="p">(</span><span class="n">hash</span><span class="p">(</span><span class="n">node</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="s">"#"</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">i</span><span class="p">),</span><span class="w"> </span><span class="n">node</span><span class="p">);</span><span class="w"> </span><span class="p">}</span>
+<span class="w">    </span><span class="kt">void</span><span class="w"> </span><span class="nf">remove</span><span class="p">(</span><span class="n">T</span><span class="w"> </span><span class="n">node</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="k">for</span><span class="w"> </span><span class="p">(</span><span class="kt">int</span><span class="w"> </span><span class="n">i</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="p">;</span><span class="w"> </span><span class="n">i</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="n">vnodes</span><span class="p">;</span><span class="w"> </span><span class="n">i</span><span class="o">++</span><span class="p">)</span><span class="w"> </span><span class="n">ring</span><span class="p">.</span><span class="na">remove</span><span class="p">(</span><span class="n">hash</span><span class="p">(</span><span class="n">node</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="s">"#"</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">i</span><span class="p">));</span><span class="w"> </span><span class="p">}</span>
+<span class="w">    </span><span class="n">T</span><span class="w"> </span><span class="nf">nodeFor</span><span class="p">(</span><span class="n">String</span><span class="w"> </span><span class="n">key</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="n">Map</span><span class="p">.</span><span class="na">Entry</span><span class="o">&lt;</span><span class="n">Long</span><span class="p">,</span><span class="w"> </span><span class="n">T</span><span class="o">&gt;</span><span class="w"> </span><span class="n">e</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ring</span><span class="p">.</span><span class="na">ceilingEntry</span><span class="p">(</span><span class="n">hash</span><span class="p">(</span><span class="n">key</span><span class="p">));</span>
+<span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="p">(</span><span class="n">e</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="kc">null</span><span class="w"> </span><span class="o">?</span><span class="w"> </span><span class="n">e</span><span class="w"> </span><span class="p">:</span><span class="w"> </span><span class="n">ring</span><span class="p">.</span><span class="na">firstEntry</span><span class="p">()).</span><span class="na">getValue</span><span class="p">();</span><span class="w">          </span><span class="c1">// wrap around</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">    </span><span class="kd">private</span><span class="w"> </span><span class="kt">long</span><span class="w"> </span><span class="nf">hash</span><span class="p">(</span><span class="n">String</span><span class="w"> </span><span class="n">s</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w">                                         </span><span class="c1">// well-mixed hash: MD5's first 8 bytes (as in ketama)</span>
+<span class="w">        </span><span class="k">try</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="kt">byte</span><span class="o">[]</span><span class="w"> </span><span class="n">d</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">java</span><span class="p">.</span><span class="na">security</span><span class="p">.</span><span class="na">MessageDigest</span><span class="p">.</span><span class="na">getInstance</span><span class="p">(</span><span class="s">"MD5"</span><span class="p">).</span><span class="na">digest</span><span class="p">(</span><span class="n">s</span><span class="p">.</span><span class="na">getBytes</span><span class="p">(</span><span class="n">java</span><span class="p">.</span><span class="na">nio</span><span class="p">.</span><span class="na">charset</span><span class="p">.</span><span class="na">StandardCharsets</span><span class="p">.</span><span class="na">UTF_8</span><span class="p">));</span>
+<span class="w">            </span><span class="kt">long</span><span class="w"> </span><span class="n">h</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="p">;</span>
+<span class="w">            </span><span class="k">for</span><span class="w"> </span><span class="p">(</span><span class="kt">int</span><span class="w"> </span><span class="n">i</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="p">;</span><span class="w"> </span><span class="n">i</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="mi">8</span><span class="p">;</span><span class="w"> </span><span class="n">i</span><span class="o">++</span><span class="p">)</span><span class="w"> </span><span class="n">h</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">(</span><span class="n">h</span><span class="w"> </span><span class="o">&lt;&lt;</span><span class="w"> </span><span class="mi">8</span><span class="p">)</span><span class="w"> </span><span class="o">|</span><span class="w"> </span><span class="p">(</span><span class="n">d</span><span class="o">[</span><span class="n">i</span><span class="o">]</span><span class="w"> </span><span class="o">&amp;</span><span class="w"> </span><span class="mh">0xff</span><span class="p">);</span>
+<span class="w">            </span><span class="k">return</span><span class="w"> </span><span class="n">h</span><span class="p">;</span><span class="w">                                                     </span><span class="c1">// Murmur3/xxHash are faster alternatives</span>
+<span class="w">        </span><span class="p">}</span><span class="w"> </span><span class="k">catch</span><span class="w"> </span><span class="p">(</span><span class="n">java</span><span class="p">.</span><span class="na">security</span><span class="p">.</span><span class="na">NoSuchAlgorithmException</span><span class="w"> </span><span class="n">e</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="k">throw</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">IllegalStateException</span><span class="p">(</span><span class="n">e</span><span class="p">);</span><span class="w"> </span><span class="p">}</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p>Key points in the code:
+- <code>add</code> places each node at <code>vnodes</code> points, using the names <code>node#0</code>, <code>node#1</code> and so on.
+- <code>nodeFor</code> is O(log n), because <code>TreeMap</code> is a sorted tree.
+- The hash must be well mixed so the points spread evenly around the ring. Here it takes the first 8 bytes of MD5, as the ketama library does.</p>
+<h4>Example</h4>
+<p>A Redis cache tier grows from 4 nodes to 5:
+- With modulo hashing, about 80% of keys move. That causes a storm of cache misses on the DB.
+- With consistent hashing, only about 20% move.</p>
+<h4>When would I use it?</h4>
+<ul>
+<li>Distributed caches.</li>
+<li>Cassandra/Dynamo partitioning.</li>
+<li>Load balancing with affinity (always routing the same key to the same server).</li>
+<li>Sharded rate limiters.</li>
+<li>Routing chat connections.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Too few virtual nodes</strong> — the load is uneven.</li>
+<li><strong>A poor hash function</strong> — points cluster together on the ring.</li>
+<li><strong>Hot keys still overload one node</strong> — consistent hashing spreads keys, not traffic per key. Replicate hot keys.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. What problem does consistent hashing solve?</strong> It keeps key movement small when nodes are added or removed. Only about 1/N of the keys move, instead of nearly all of them.</p>
+<p><strong>Q2. Why virtual nodes?</strong> They spread each physical node's ranges all around the ring, which evens out the load. They also let you give bigger nodes more points, so they take a bigger share.</p>
+<h2 id="s11-12">11.12 Message queues and asynchronous processing (RabbitMQ and friends)</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> A queue is a waiting line between two services. One service drops a job in the line and moves on; another service picks it up when it is ready.</p>
+<p>When services call each other directly and wait for the answer, they are tightly tied together. This is a <em>synchronous call chain</em>. The problems are easy to see:</p>
+<ul>
+<li>If the notification service is slow, checkout also becomes slow.</li>
+<li>If the loyalty service is down, orders fail.</li>
+</ul>
+<p>A queue fixes this. The service that sends work is the <em>producer</em>. It puts the job in the queue and continues without waiting. The service that does the work is the <em>consumer</em>. This gives you four benefits:</p>
+<ul>
+<li><strong>Decoupling</strong> — the producer does not care if the consumer is slow or down right now.</li>
+<li><strong>Absorbing traffic spikes</strong> — a sudden burst waits in the queue; workers finish it at a steady speed. This is called <em>load levelling</em>.</li>
+<li><strong>Retries</strong> — failed work can be tried again in the background. The user does not wait for it.</li>
+<li><strong>Fan-out</strong> — one event can be sent to many consumers.</li>
+</ul>
+<p>Think of a restaurant token system. You order at the counter, get a token and sit down. The kitchen cooks orders one by one. The cashier does not stand and wait for your food.</p>
+<h4>What is happening internally?</h4>
+<p>There are two families of messaging systems. A <em>message queue</em> deletes a message once it is handled. A <em>log</em> (or <em>stream</em>) keeps every message for days, and each reader remembers its own position.</p>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th></th>
+<th>Message queue (RabbitMQ, Amazon SQS, Azure Service Bus)</th>
+<th>Log / stream (Kafka, Kinesis, Event Hubs, Pulsar)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Model</td>
+<td>A message is deleted once a consumer confirms it (acks)</td>
+<td>Messages are only added to the end of a log and kept for days; each consumer remembers its position (offset)</td>
+</tr>
+<tr>
+<td>Consumers</td>
+<td>Several consumers share one queue and compete for messages</td>
+<td>Consumers form groups; many separate groups can read the same data again</td>
+</tr>
+<tr>
+<td>Ordering</td>
+<td>Per queue (but parallel consumers and redelivery can break it)</td>
+<td>Per partition</td>
+</tr>
+<tr>
+<td>Replay</td>
+<td>No (gone once acked)</td>
+<td>Yes (move the offset back)</td>
+</tr>
+<tr>
+<td>Routing</td>
+<td>Rich (exchanges, topics, headers)</td>
+<td>Topic + partition key</td>
+</tr>
+<tr>
+<td>Per-message features</td>
+<td>Ack/nack, TTL, delay, priority, DLQ</td>
+<td>Mostly works in batches and offsets</td>
+</tr>
+<tr>
+<td>Best for</td>
+<td>Task/work queues, commands, RPC-style workflows</td>
+<td>Event streaming, event sourcing, CDC, analytics pipelines, high throughput</td>
+</tr>
+</tbody>
+</table></div>
+<p>A few terms from the table:</p>
+<ul>
+<li><strong>Ack</strong> (acknowledge) — the consumer tells the broker "I am done, delete it". <strong>Nack</strong> means "I failed".</li>
+<li><strong>TTL</strong> (time to live) — how long a message may wait before it expires.</li>
+<li><strong>DLQ</strong> (dead-letter queue) — a side queue where failed or expired messages are parked for a human to check.</li>
+<li><strong>Offset</strong> — the position number of a message in a log, like a page number.</li>
+<li><strong>CDC</strong> (change data capture) — streaming every change made in a database as events.</li>
+</ul>
+<p><strong>RabbitMQ in particular</strong>:
+- The path of a message is: Producer → <strong>exchange</strong> → (binding with routing key) → <strong>queue</strong> → consumer. The exchange is a sorting desk. It reads the message's <em>routing key</em> (a label) and decides which queue gets it. Exchange types:
+  - <strong>direct</strong> — the key must match exactly.
+  - <strong>topic</strong> — the key can match wildcards, like <code>order.*.created</code> or <code>#</code>.
+  - <strong>fanout</strong> — copy the message to every queue bound to it. This is pub/sub (publish/subscribe).
+  - <strong>headers</strong> — match on message headers instead of the key.
+- <strong>Acks</strong>: the consumer sends an ack only after it finishes processing. If the consumer dies before acking, RabbitMQ gives the message to someone else. So each message is delivered at least once (<em>at-least-once</em>). A consumer can also <code>nack</code> or reject a message, with or without putting it back in the queue (<em>requeue</em>).
+- <strong>Prefetch (QoS)</strong>: this limits how many unacked messages one consumer can hold at a time. Because of this, a slow consumer does not hoard work, and load is shared fairly.
+- <strong>Durability</strong>: to survive a broker restart, you need three things together: durable queues, persistent messages and <em>publisher confirms</em> (the broker tells the producer "saved"). For high availability (HA), use <strong>quorum queues</strong>. These copy each queue to several nodes using Raft, a voting-based replication protocol.
+- <strong>Dead-letter exchanges (DLX)</strong>: some messages cannot be handled — they are rejected, expired (TTL) or the queue is full. These go to a DLX. You use a DLX for two things:
+  1. DLQs — a parking place for failed messages.
+  2. <strong>Delayed retries</strong> — send the message to a waiting queue with a TTL. When the TTL expires, it is dead-lettered back to the work queue for another try.
+- <strong>Azure Service Bus</strong> is closer to RabbitMQ than to Kafka. It offers queues and topics/subscriptions, <em>sessions</em> for ordering, a built-in DLQ, scheduled messages and duplicate detection.</p>
+<p><strong>Delivery semantics</strong> (how many times a message is delivered):
+- <strong>At-most-once</strong>: the consumer acks (or commits) first and processes later. If it crashes in between, the message is lost. So you may lose messages.
+- <strong>At-least-once</strong>: the consumer processes first and acks later. If it crashes after processing but before acking, the message comes again. So you may get duplicates. Because of this, <strong>consumers must be idempotent</strong> (11.14) — handling the same message twice must give the same result as handling it once. This is the practical default.
+- <strong>Exactly-once</strong>: possible only inside one closed system. For example, Kafka transactions for read-process-write inside Kafka. Across different systems you get "effectively once". That means at-least-once delivery + idempotency.</p>
+<h4>How does it work?</h4>
+<ol>
+<li>Checkout publishes a <code>SendReceipt</code> message to the notifications queue and returns to the user.</li>
+<li>Three workers compete for messages. Each message goes to only one worker.</li>
+<li>If a message fails three times, it goes to the DLX and then to <code>notifications.dlq</code>. Someone gets an alert, inspects it and replays it.</li>
+<li>If 50k messages arrive at once, the queue holds them. Workers finish them at their own speed. KEDA (a Kubernetes autoscaler) adds more workers when the queue gets deep or lag grows.</li>
+</ol>
+<div class="hl"><pre><span></span><code>Checkout ──publish "SendReceipt"──► [notifications queue] ──► worker 1 / worker 2 / worker 3 (competing)
+                                         │ fails 3× → DLX → [notifications.dlq] → alert, inspect, replay
+Spike of 50k messages → the queue absorbs it; workers drain at their own pace; autoscale on queue depth/lag (KEDA)
+</code></pre></div>
+
+<h4>Example</h4>
+<p>Perfect Store photo verification works like this:</p>
+<ol>
+<li>The app uploads photos.</li>
+<li>The API puts a <code>VerifyAudit{auditId}</code> message in the queue (<em>enqueues</em> it).</li>
+<li>GPU/AI workers pick up messages at their own pace.</li>
+<li>They write the results back and publish a notification event.</li>
+</ol>
+<p>The user sees "verification in progress". They do not wait 30 seconds on an HTTP call.</p>
+<h4>When would I use it?</h4>
+<p>Use a queue when:</p>
+<ul>
+<li>The work is slow or unreliable, and the user does not need it done right now. Examples: notifications, image processing, report generation, third-party calls.</li>
+<li>Traffic comes in sudden spikes.</li>
+<li>One event must reach many consumers (fan-out).</li>
+<li>Services owned by different teams must talk to each other.</li>
+</ul>
+<p>How to choose:</p>
+<ul>
+<li><strong>Work queue</strong> (RabbitMQ / Service Bus / SQS) — for tasks and commands.</li>
+<li><strong>Kafka</strong> — for event streams that several consumers need, or when you need replay.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Duplicates with non-idempotent consumers.</strong> The same message is processed twice, and the effect happens twice.</li>
+<li><strong>Poison messages.</strong> A message that always fails can block the queue. Use a DLQ with a retry limit.</li>
+<li><strong>Hidden slow consumers.</strong> The queue keeps growing without limit, and nobody notices. Monitor queue depth and lag, and alert on them.</li>
+<li><strong>Lost messages with auto-ack.</strong> The message is acked as soon as it is received. If the consumer then crashes, the message is gone.</li>
+<li><strong>Broken ordering.</strong> Parallel consumers can process messages out of order. Don't assume order.</li>
+<li><strong>Wrong tool.</strong> Don't use a queue when the user actually needs an answer right now (a synchronous response).</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. Why introduce a message queue?</strong> It decouples producers from consumers, so one being slow or down does not stop the other. It absorbs traffic spikes, retries failed work in the background, and fans out events to many consumers. Overall, the user path becomes more resilient and faster.</p>
+<p><strong>Q2. Queue (RabbitMQ) vs log (Kafka)?</strong> A queue hands out tasks and deletes each message once it is acknowledged; it has rich routing and per-message features like TTL, priority and DLQ. Kafka keeps an ordered log per partition that can be replayed. Many consumer groups read it independently, at very high throughput.</p>
+<p><strong>Q3. What delivery guarantee do you design for?</strong> At-least-once delivery with idempotent consumers, so duplicates are harmless. Exactly-once is possible only inside systems that support transactions end to end.</p>
+<h2 id="s11-13">11.13 Kafka in depth</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> Kafka is a giant, shared notebook that you can only add lines to. Many readers read it at their own speed, each with their own bookmark, and can go back to old pages when needed.</p>
+<p>Kafka has become the backbone of event-driven systems. It carries order events, CDC streams (database changes as events), analytics pipelines and audit logs.</p>
+<p>Its design is a <em>partitioned, replicated, append-only log</em>. In plain words:</p>
+<ul>
+<li><strong>Append-only log</strong> — new messages are only added at the end, never edited.</li>
+<li><strong>Partitioned</strong> — the log is split into pieces, so many machines can work in parallel.</li>
+<li><strong>Replicated</strong> — each piece is copied to several machines, so nothing is lost if one dies.</li>
+</ul>
+<p>Because of this design you get very high throughput, ordering per key, durability and replay. Kafka questions come up in almost every SDE2 system-design round.</p>
+<h4>What is happening internally?</h4>
+<ul>
+<li><strong>Storage</strong>: a <strong>topic</strong> is split into <strong>partitions</strong>. Each partition is an ordered, append-only log. On disk, it is stored as several <strong>segment files</strong>. Every message has a number called its <strong>offset</strong> — its position in the partition.</li>
+<li><strong>Performance</strong>: Kafka is fast for four reasons:
+  1. It writes to disk sequentially (always at the end), which is very fast.
+  2. It uses the OS page cache (the operating system keeps recent file data in memory).
+  3. It batches and compresses messages.
+  4. It uses <strong>zero-copy</strong> transfer (<code>sendfile</code>). Data goes from the page cache straight to the network, without passing through the application's memory.</li>
+<li><strong>Replication</strong>: each partition has one <strong>leader</strong> and some followers. Producers and consumers talk to the leader. Followers copy from it. Followers that are fully caught up are called the <strong>ISR</strong> (in-sync replicas). A safe setup is:</li>
+<li><code>replication.factor=3</code> — three copies of each partition.</li>
+<li><code>min.insync.replicas=2</code> — at least two copies must be in sync.</li>
+<li>Producer <code>acks=all</code> — the write is confirmed only when all in-sync replicas have it.</li>
+</ul>
+<p>With this, a write is acknowledged only after at least two replicas have it. So if one broker dies, no data is lost.
+- <strong>Producer</strong>:
+  - It picks the partition using <code>hash(key) % partitions</code>. The same key always goes to the same partition, so messages with the same key stay in order.
+  - It batches messages for speed, controlled by <code>linger.ms</code> (how long to wait to fill a batch) and <code>batch.size</code>.
+  - The <strong>idempotent producer</strong> (on by default since 3.0) gives each message a sequence number. Because of this, a retry does not create a duplicate.
+  - <strong>Transactions</strong> let a producer write to several partitions and commit consumer offsets as one atomic unit — all or nothing. This gives exactly-once read-process-write <em>within Kafka</em>.
+- <strong>Consumer groups</strong>: the partitions of a topic are divided among the members of a group. One partition goes to only one member of the group. So <strong>max parallelism = number of partitions</strong>. Different groups read independently, so each group gets every message (pub/sub). When members join or leave, Kafka reassigns partitions. This is <strong>rebalancing</strong>. <em>Cooperative-sticky assignment</em> moves as few partitions as possible, so there is less disruption.
+- <strong>Offsets</strong>: a consumer saves its position (commits its offset) in an internal topic called <code>__consumer_offsets</code>. If it commits <em>after</em> processing, you get at-least-once delivery.
+- <strong>Retention</strong>: Kafka deletes old data by time or by size. Or it uses <strong>log compaction</strong> — keep only the latest value for each key. This is ideal for changelogs and state.
+- <strong>Coordination</strong>: older Kafka used ZooKeeper to manage the cluster. Since 3.x, Kafka has <strong>KRaft</strong>, its own built-in Raft (voting-based) coordination. ZooKeeper was removed in Kafka 4.0.
+- <strong>Ecosystem</strong>:
+  - Kafka Connect — ready-made source/sink connectors to move data in and out.
+  - Debezium — CDC; it reads the database's log and turns changes into events.
+  - Kafka Streams / Flink — stream processing.
+  - Schema Registry — stores Avro/Protobuf/JSON schemas and enforces compatibility rules, so producers can't break consumers.</p>
+<p>Think of a railway reservation register with several counters. Each counter (partition) has its own register, written line by line. Photocopies are kept at two other stations (replicas). Different departments (consumer groups) read the registers, each with its own bookmark (offset).</p>
+<h4>How does it work?</h4>
+<p>The picture below shows:</p>
+<ol>
+<li>A producer sends events with <code>key = accountId</code> to the topic <code>points-events</code>.</li>
+<li>The topic has three partitions, with leaders on different brokers.</li>
+<li>The "notifications" group has two members. Member A reads p0 and p1; member B reads p2.</li>
+<li>The "analytics" group has one member reading all three partitions.</li>
+<li>Each group has its own offsets, so both groups see every event.</li>
+</ol>
+<div class="hl"><pre><span></span><code>Producer (key = accountId) ──► topic points-events
+   partition 0: [0][1][2][3]…   leader on broker 1, followers on 2 and 3
+   partition 1: [0][1][2]…      leader on broker 2
+   partition 2: …
+Consumer group "notifications": member A ← p0, p1;  member B ← p2
+Consumer group "analytics":     member X ← p0, p1, p2   (independent offsets — both see every event)
+</code></pre></div>
+
+<p><strong>Choosing the partition count</strong>: divide your target throughput by what one partition can handle. Then add room for more consumers in future (e.g., 12–48 for a busy topic). Plan this well at the start. If you increase the count later, the key → partition mapping changes. During that change, per-key ordering breaks.</p>
+<h4>Example</h4>
+<p>Month-end spike: 500 accrual events/s for 2 hours. Here is how the setup handles it:</p>
+<ul>
+<li>The <code>order-completed</code> topic has 24 partitions, keyed by <code>outletId</code>.</li>
+<li>The loyalty consumer group autoscales from 4 to 24 pods based on <strong>consumer lag</strong> (how far the consumers are behind the latest message).</li>
+<li>Because the key is <code>outletId</code>, events for each outlet stay in order.</li>
+<li>Kafka keeps data for 7 days. So if you find a bug, you can fix the consumer and replay from an earlier offset.</li>
+</ul>
+<h4>When would I use it?</h4>
+<ul>
+<li>Event-driven microservices.</li>
+<li>CDC pipelines (DB → Kafka → search/analytics).</li>
+<li>High-volume telemetry and logs.</li>
+<li>Event sourcing (storing every change as an event).</li>
+<li>Stream processing.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Too few partitions.</strong> You can't add more consumers than partitions, so you can't scale.</li>
+<li><strong>Hot partitions.</strong> If keys are skewed (one key gets most of the traffic), one partition gets overloaded.</li>
+<li><strong>Rebalance storms.</strong> A consumer that takes longer than <code>max.poll.interval.ms</code> between polls is treated as dead. Its partitions move, then come back, again and again.</li>
+<li><strong>Data loss on broker failure.</strong> This happens with <code>acks=1</code> or <code>min.insync.replicas=1</code>.</li>
+<li><strong>High storage cost.</strong> Retention with no limit grows forever.</li>
+<li><strong>Broken consumers.</strong> A schema change that is not compatible breaks the readers.</li>
+<li><strong>Wrong use.</strong> Kafka is not a database. Don't use it for random lookups by key.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. How does Kafka guarantee ordering?</strong> Only within a partition. So choose the message key so that events which must stay in order share the same key, and therefore the same partition.</p>
+<p><strong>Q2. What limits consumer parallelism?</strong> The number of partitions. Each partition is read by at most one member of a consumer group, so extra members sit idle.</p>
+<p><strong>Q3. How do you configure Kafka for no data loss?</strong> Replication factor 3, <code>min.insync.replicas=2</code>, and producer <code>acks=all</code> with idempotence on. On the consumer side, commit offsets only after processing.</p>
+<p><strong>Q4. What is log compaction?</strong> Kafka keeps only the latest record for each key, plus <em>tombstones</em> (a key with an empty value) to mark deletes. This turns the topic into a durable changelog of the current state.</p>
+<h2 id="s11-14">11.14 Idempotency and delivery guarantees in practice</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> Idempotent means "doing it twice is the same as doing it once". If the user presses "Pay" two times, they should still pay only once.</p>
+<p>Networks fail in the worst possible way: the request succeeds, but the response is lost. The caller does not know it succeeded. So:</p>
+<ul>
+<li>Clients retry.</li>
+<li>Queues redeliver.</li>
+<li>Users double-tap "Pay".</li>
+</ul>
+<p>Without idempotency, every retry can double-charge, double-credit or double-ship. This is exactly the "duplicate reward postings under retry/failure" problem you solved at FieldAssist. Design for it on purpose, at every layer.</p>
+<h4>What is happening internally?</h4>
+<p>An operation is <strong>idempotent</strong> if doing it many times has the same effect as doing it once. By HTTP's own definition, GET, PUT and DELETE are idempotent. POST is not — unless you make it so.</p>
+<p>Think of an ATM. If the network drops after cash is debited, the bank must not debit you again when the machine retries. It checks the transaction number first.</p>
+<p>You handle this at four layers:</p>
+<ol>
+<li><strong>API</strong>:</li>
+<li>The client creates an <code>Idempotency-Key</code> (a UUID) for each logical operation. On retry, it sends the same key again.</li>
+<li>The server stores <code>(key, request hash, status, response)</code> with a <strong>unique constraint</strong> on the key. It does this in the <strong>same transaction</strong> as the business change.</li>
+<li>On a replay (same key, same payload), the server returns the stored response.</li>
+<li>Same key with a different payload → 422.</li>
+<li>A second copy arrives while the first is still running → 409 (or wait for the first to finish).</li>
+<li><strong>Consumers</strong>: two options.
+   - Keep a processed-event table keyed by event ID. Write to it in the same transaction as the effect.
+   - Or make the effect naturally idempotent. For example, an upsert by business key, or a conditional update like <code>UPDATE … SET status='PAID' WHERE status='PENDING'</code> (the second run changes nothing).</li>
+<li><strong>Downstream calls</strong>: pass idempotency keys to payment gateways and partner APIs. Most of them support it.</li>
+<li><strong>Retries</strong>: use exponential backoff (wait longer after each failure) with jitter (a little randomness, so clients don't all retry together). Cap the number of attempts, and use retry budgets (a limit on what share of traffic can be retries).</li>
+</ol>
+<h4>How does it work?</h4>
+<ol>
+<li>Attempt 1: the server inserts the key with status <code>IN_PROGRESS</code>, debits points, writes the ledger and outbox, saves the response, and commits. The response is lost on the network.</li>
+<li>Attempt 2 (the retry): the insert fails with a unique-key violation. The server reads the saved response and returns the same 201 body. Nothing is debited again.</li>
+</ol>
+<div class="hl"><pre><span></span><code>POST /redemptions  Idempotency-Key: 7f3c…   (attempt 1: response lost on the network)
+   BEGIN; INSERT idempotency(key=7f3c, status=IN_PROGRESS) → OK; debit; ledger; outbox;
+          UPDATE idempotency SET status=DONE, response=…; COMMIT
+POST /redemptions  Idempotency-Key: 7f3c…   (attempt 2, retry)
+   INSERT idempotency(key=7f3c) → unique violation → SELECT response → return the same 201 body
+</code></pre></div>
+
+<h4>Example</h4>
+<p>The table is keyed by tenant and key. It stores a hash of the request, so a different request with the same key can be caught.</p>
+<div class="hl"><pre><span></span><code><span class="k">CREATE</span><span class="w"> </span><span class="k">TABLE</span><span class="w"> </span><span class="n">idempotency_key</span><span class="w"> </span><span class="p">(</span>
+<span class="w">  </span><span class="n">tenant_id</span><span class="w">     </span><span class="nb">VARCHAR</span><span class="p">(</span><span class="mi">40</span><span class="p">)</span><span class="w">  </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span>
+<span class="w">  </span><span class="k">key</span><span class="w">           </span><span class="nb">VARCHAR</span><span class="p">(</span><span class="mi">80</span><span class="p">)</span><span class="w">  </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span>
+<span class="w">  </span><span class="n">request_hash</span><span class="w">  </span><span class="nb">CHAR</span><span class="p">(</span><span class="mi">64</span><span class="p">)</span><span class="w">     </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span>
+<span class="w">  </span><span class="n">status</span><span class="w">        </span><span class="nb">VARCHAR</span><span class="p">(</span><span class="mi">16</span><span class="p">)</span><span class="w">  </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span><span class="w">            </span><span class="c1">-- IN_PROGRESS, DONE</span>
+<span class="w">  </span><span class="n">response_body</span><span class="w"> </span><span class="n">JSONB</span><span class="p">,</span>
+<span class="w">  </span><span class="n">created_at</span><span class="w">    </span><span class="n">TIMESTAMPTZ</span><span class="w">  </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="w"> </span><span class="k">DEFAULT</span><span class="w"> </span><span class="n">now</span><span class="p">(),</span>
+<span class="w">  </span><span class="k">PRIMARY</span><span class="w"> </span><span class="k">KEY</span><span class="w"> </span><span class="p">(</span><span class="n">tenant_id</span><span class="p">,</span><span class="w"> </span><span class="k">key</span><span class="p">)</span>
+<span class="p">);</span>
+<span class="c1">-- expire rows after e.g. 24–72 h with a cleanup job (clients don't retry forever)</span>
+</code></pre></div>
+
+<h4>When would I use it?</h4>
+<p>Use it for every operation that:</p>
+<ul>
+<li>moves money, points or inventory,</li>
+<li>creates orders,</li>
+<li>sends messages, or</li>
+<li>is triggered by an event that may be retried.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Check and effect in separate transactions.</strong> Two copies arrive at the same time. Both check, both find no key, and both do the effect.</li>
+<li><strong>Server-generated keys per attempt.</strong> Each retry gets a new key, so the key is useless. The client must create it.</li>
+<li><strong>Not hashing the payload.</strong> A different request that reuses a key silently gets the wrong (old) result.</li>
+<li><strong>Keys that never expire.</strong> The table grows without limit.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. How do you make a POST endpoint idempotent?</strong> The client sends an idempotency key. The server stores the key and the response under a unique constraint, in the same transaction as the business effect. On a duplicate, it returns the stored response instead of doing the work again.</p>
+<p><strong>Q2. How do you make a Kafka consumer idempotent?</strong> Save each processed event ID under a unique constraint, in the same transaction as the business effect. Or make the effect itself safe to repeat, such as an upsert or a conditional update.</p>
+<p><strong>Q3. Can you guarantee exactly-once delivery?</strong> Not across independent systems. Instead, you get exactly-once <em>effects</em>: deliver at least once, and make the processing idempotent.</p>
+<h2 id="s11-15">11.15 The transactional outbox and sagas</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> The outbox makes sure "save to DB" and "send the event" never get out of step. A saga breaks one big multi-service job into small steps, each with an "undo" step if something later fails.</p>
+<p>In microservices you face two related consistency problems:</p>
+<ol>
+<li><strong>Dual write</strong>: look at <code>save(order); kafka.send(OrderCreated)</code>. Two things can go wrong:
+   - The DB commits, but the publish fails.
+   - Or the publish succeeds, but the DB commit fails.</li>
+</ol>
+<p>Either way, the systems disagree. And you cannot make a database and a message broker commit together as one atomic step.
+2. <strong>Distributed business transactions</strong>: redeeming points for a partner voucher touches three systems — loyalty, the voucher partner and notifications. One option is <em>two-phase commit (2PC)</em>: a coordinator asks all parties to prepare, then tells all to commit. But 2PC is slow and blocking, and most brokers and SaaS APIs don't support it.</p>
+<h4>What is happening internally?</h4>
+<p><strong>Transactional outbox</strong>:</p>
+<ol>
+<li>In the <strong>same local transaction</strong> as the business change, also insert the event into an <code>outbox</code> table. Now both are saved together, or neither is.</li>
+<li>A separate process, the <strong>relay</strong>, reads outbox rows, publishes them to Kafka and marks them as published. It finds new rows in one of two ways:
+   - <strong>Polling</strong> — run a query like <code>SELECT … WHERE published_at IS NULL ORDER BY created_at LIMIT 100 FOR UPDATE SKIP LOCKED</code> again and again. <code>SKIP LOCKED</code> lets several relays run without picking the same rows.
+   - <strong>CDC</strong> — Debezium reads the database's log and streams new outbox inserts.</li>
+<li>Delivery is at-least-once (a row can be sent twice if the relay crashes after sending). So consumers must stay idempotent.</li>
+</ol>
+<p>Think of a post office outbox tray. You write the letter and put it in the tray in the same moment. The postman collects from the tray later. The letter can't get "lost between desk and post box".</p>
+<p><strong>Saga</strong>: a long-running business transaction written as a chain of <strong>local transactions</strong> (each service commits its own step). Each step has a <strong>compensating action</strong>. If a later step fails, the compensation undoes the earlier step in business terms (for example, credit points back). There are two styles:</p>
+<ul>
+<li><strong>Choreography</strong>: services react to each other's events, with no central boss. For example: OrderCreated → PaymentService charges → PaymentCompleted → Inventory reserves → … This is simple for 2–3 steps. But the overall flow is not written anywhere, so it is hard to follow.</li>
+<li><strong>Orchestration</strong>: one coordinator tells each participant what to do. The coordinator is a state machine — Temporal, Camunda, AWS Step Functions, or your own table-driven orchestrator. It handles timeouts and retries. If a step fails, it runs the compensations in reverse order. The flow is explicit and easy to observe.</li>
+</ul>
+<h4>How does it work?</h4>
+<p>The outbox part:</p>
+<ol>
+<li>In one transaction: debit 500 points (only if the balance is enough), add a ledger entry and insert an outbox row.</li>
+<li>The relay runs every 200 ms (or uses CDC). It reads unpublished rows, sends them to Kafka with <code>acks=all</code>, and sets <code>published_at</code>.</li>
+</ol>
+<p>The saga part (redeem points for a voucher):</p>
+<ol>
+<li>Loyalty debits points. Compensation: credit them back.</li>
+<li>The voucher partner issues a code, called with an idempotency key. Compensation: void the code.</li>
+<li>Notification sends the code. No compensation needed.</li>
+<li>If step 2 still fails after retries, the orchestrator runs compensation 1. The redemption becomes FAILED, and the user is told.</li>
+</ol>
+<div class="hl"><pre><span></span><code>Outbox:
+  BEGIN
+    UPDATE account SET balance = balance - 500 WHERE id='A1' AND balance &gt;= 500;
+    INSERT INTO ledger_entry (...);
+    INSERT INTO outbox (id, topic, key, payload) VALUES (uuid, 'points-events', 'A1', '{"type":"PointsRedeemed",...}');
+  COMMIT
+  Relay (every 200 ms or via CDC): read unpublished → send to Kafka (acks=all) → mark published_at
+
+Saga (orchestrated) — redeem points for a voucher:
+  1. Loyalty: debit points (local tx)                 compensation: credit points back
+  2. Voucher partner: issue code (idempotency key)    compensation: void the code
+  3. Notification: send the code                      (no compensation needed)
+  Step 2 fails after retries → orchestrator runs compensation 1 → redemption = FAILED, user informed
+</code></pre></div>
+
+<h4>Example</h4>
+<p>The outbox table below has a partial index on unpublished rows only. So the relay's query stays fast even when the table has many published rows.</p>
+<div class="hl"><pre><span></span><code><span class="k">CREATE</span><span class="w"> </span><span class="k">TABLE</span><span class="w"> </span><span class="n">outbox</span><span class="w"> </span><span class="p">(</span>
+<span class="w">  </span><span class="n">id</span><span class="w">           </span><span class="n">UUID</span><span class="w"> </span><span class="k">PRIMARY</span><span class="w"> </span><span class="k">KEY</span><span class="p">,</span>
+<span class="w">  </span><span class="n">aggregate_id</span><span class="w"> </span><span class="nb">VARCHAR</span><span class="p">(</span><span class="mi">40</span><span class="p">)</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span>
+<span class="w">  </span><span class="n">topic</span><span class="w">        </span><span class="nb">VARCHAR</span><span class="p">(</span><span class="mi">80</span><span class="p">)</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span>
+<span class="w">  </span><span class="n">payload</span><span class="w">      </span><span class="n">JSONB</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span>
+<span class="w">  </span><span class="n">created_at</span><span class="w">   </span><span class="n">TIMESTAMPTZ</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="w"> </span><span class="k">DEFAULT</span><span class="w"> </span><span class="n">now</span><span class="p">(),</span>
+<span class="w">  </span><span class="n">published_at</span><span class="w"> </span><span class="n">TIMESTAMPTZ</span>
+<span class="p">);</span>
+<span class="k">CREATE</span><span class="w"> </span><span class="k">INDEX</span><span class="w"> </span><span class="n">ix_outbox_unpublished</span><span class="w"> </span><span class="k">ON</span><span class="w"> </span><span class="n">outbox</span><span class="w"> </span><span class="p">(</span><span class="n">created_at</span><span class="p">)</span><span class="w"> </span><span class="k">WHERE</span><span class="w"> </span><span class="n">published_at</span><span class="w"> </span><span class="k">IS</span><span class="w"> </span><span class="k">NULL</span><span class="p">;</span>
+</code></pre></div>
+
+<p>For an orchestrator, keep a saga state table: <code>redemption_saga(id, step, status, attempts, last_error, updated_at)</code>. Because the state is saved, the saga can continue after a crash. Each step must also be idempotent, because it may run again.</p>
+<h4>When would I use it?</h4>
+<ul>
+<li><strong>Outbox</strong>: whenever a DB change must reliably produce an event.</li>
+<li><strong>Sagas</strong>: business processes that span several services or external partners. Examples: checkout, redemption with partner vouchers, payouts, onboarding.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Outbox problems:</strong></li>
+<li>The relay lags or fails. Monitor the age of the oldest unpublished row.</li>
+<li>The outbox table grows forever. Clean up published rows.</li>
+<li>Ordering breaks when several relay instances run. Partition the work by aggregate key.</li>
+<li><strong>Saga problems:</strong></li>
+<li>Some steps can't be fully undone — for example, an email already sent. Design <em>semantic</em> compensations instead (e.g., send a "please ignore" message).</li>
+<li>Users see in-between states. Show "processing".</li>
+<li>Steps that are not idempotent run twice after retries.</li>
+<li>Saga state is lost because it was not saved to storage.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. What is the dual-write problem and how does the outbox solve it?</strong> Writing to a database and to a broker can't be done as one atomic step, so one can succeed while the other fails. The outbox writes the event into a table in the same DB transaction as the change. Then a relay or CDC publishes it reliably, at-least-once.</p>
+<p><strong>Q2. Saga vs 2PC?</strong> 2PC locks resources across all participants and gets stuck if the coordinator fails. Sagas use local transactions with compensating actions instead. You get eventual consistency without distributed locks, which is why sagas are preferred in microservices.</p>
+<p><strong>Q3. Choreography vs orchestration?</strong> In choreography, services react to each other's events with no central coordinator; it is simple, but the flow is hidden. In orchestration, a coordinator drives the steps and compensations; it is explicit and easier to monitor and change.</p>
+<h2 id="s11-16">11.16 Rate limiting and API gateways</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> Rate limiting means "each caller gets only so many requests per second". The API gateway is the front gate where every request is checked before it goes in.</p>
+<p>Without limits, one buggy client, scraper or tenant can flood your service. Then it becomes slow for everyone. Partners also give you quotas that you must respect when you call them.</p>
+<p>Rate limiting keeps things fair and protects your capacity. The API gateway is the natural place to enforce it. It already handles authentication and routing for every request.</p>
+<p>Think of a railway reservation counter that allows only a fixed number of forms per person per day. One person can't block the line for everyone else.</p>
+<h4>What is happening internally?</h4>
+<ul>
+<li><strong>Algorithms</strong> (explained with code in 10.5): fixed window, sliding window log, sliding window counter, token bucket, leaky bucket. A <em>token bucket</em>, for example, fills with tokens at a steady rate; each request spends one token; when the bucket is empty, requests are refused.</li>
+<li><strong>Distributed limiting</strong>: when you have many servers, the counters must be shared. You keep them in Redis. The key is user, API key, IP or tenant + endpoint. You update the counters atomically (in one step, so two servers can't clash):</li>
+<li><code>INCR</code> + <code>EXPIRE</code> for a fixed window.</li>
+<li>Sorted sets for a sliding log.</li>
+<li>A Lua script (runs inside Redis in one step) for a token bucket.</li>
+</ul>
+<p>The full design is in 13.2.
+- <strong>API gateway</strong> jobs: routing, authentication (JWT validation), rate limiting, TLS termination (decrypting HTTPS at the edge), changing requests/responses, CORS, observability and canary routing (sending a small share of traffic to a new version). <strong>No business logic.</strong>
+- <strong>BFF (backend for frontend)</strong>: a separate gateway shaped for each client type — mobile, web or partner.</p>
+<h4>How does it work?</h4>
+<ol>
+<li>The client calls the API gateway.</li>
+<li>The gateway validates the JWT and finds tenant = t-42, plan = GOLD.</li>
+<li>It builds the rate-limit key <code>t-42:/redemptions</code> and checks a token bucket in Redis. A Lua script does this in one round trip.</li>
+<li>If allowed, the request is routed to loyalty-service.</li>
+<li>If denied, the gateway returns 429 with <code>Retry-After</code> and <code>X-RateLimit-Remaining</code> headers.</li>
+</ol>
+<div class="hl"><pre><span></span><code>Client → API Gateway: validate JWT → tenant = t-42, plan = GOLD
+         rate limit key "t-42:/redemptions" → Redis token bucket (Lua, 1 round trip)
+         allowed → route to loyalty-service;  denied → 429 + Retry-After + X-RateLimit-Remaining
+</code></pre></div>
+
+<h4>Example</h4>
+<ul>
+<li>Plans: FREE gets 10 req/s and GOLD gets 100 req/s, per tenant.</li>
+<li>OTP endpoints: 5 requests/hour per phone number.</li>
+<li>Outbound calls to a partner API: 50 req/s across all pods. Use a shared Redis bucket, or give each of the N pods a share of 50/N.</li>
+</ul>
+<h4>When would I use it?</h4>
+<ul>
+<li>Public and partner APIs.</li>
+<li>Login, OTP and password-reset endpoints, to stop abuse.</li>
+<li>Fairness between tenants in a multi-tenant system.</li>
+<li>Outbound calls to partners that rate-limit you.</li>
+<li>Load shedding during incidents (dropping extra work to stay alive).</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Per-instance limits.</strong> If each server has its own counter, the real limit becomes limit × number of instances.</li>
+<li><strong>Redis as a hard dependency.</strong> If Redis is down, what happens? Decide per endpoint: fail-open (allow requests) or fail-closed (block them).</li>
+<li><strong>Hot keys.</strong> A huge tenant puts all its load on one Redis key.</li>
+<li><strong>No <code>Retry-After</code>.</strong> Clients don't know when to try again, so they retry immediately and hammer you.</li>
+<li><strong>Blocking real bursts.</strong> Limits that are too strict block normal short bursts. A token bucket allows controlled bursts.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. Where would you implement rate limiting?</strong> At the API gateway or edge for limits on clients, backed by a shared store like Redis so all instances see the same counts. Also inside your own clients, to respect outbound partner limits.</p>
+<p><strong>Q2. What should an API gateway do and not do?</strong> It should do routing, auth, rate limiting, TLS, observability and request shaping. It should not contain business logic.</p>
+<h2 id="s11-17">11.17 API design: REST, gRPC, GraphQL and real-time</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> An API is a promise to other teams and apps about how to talk to your service. Pick the right style for each job, and design it carefully, because changing it later is painful.</p>
+<p>APIs live for years. Clients build on them. A badly chosen style or careless design causes years of pain for those clients. Typical mistakes:</p>
+<ul>
+<li>no pagination,</li>
+<li>no versioning,</li>
+<li>write calls that are not idempotent (not safe to retry),</li>
+<li>a different error format on every endpoint.</li>
+</ul>
+<p>Interviewers expect you to define clean APIs in your design. They also expect you to pick the right protocol for each interaction.</p>
+<h4>What is happening internally?</h4>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>Style</th>
+<th>Strengths</th>
+<th>Typical use</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>REST/JSON over HTTP</td>
+<td>Works everywhere, can be cached, easy to debug</td>
+<td>Public, mobile and most internal APIs</td>
+</tr>
+<tr>
+<td>gRPC (HTTP/2 + Protobuf)</td>
+<td>Fast binary format, typed contracts, streaming, deadlines</td>
+<td>Internal service-to-service calls, low latency</td>
+</tr>
+<tr>
+<td>GraphQL</td>
+<td>The client picks the fields it wants; one round trip can pull from many sources</td>
+<td>Complex UIs that combine many entities</td>
+</tr>
+<tr>
+<td>WebSockets</td>
+<td>Both sides can send at any time (full-duplex); the connection stays open</td>
+<td>Chat, live tracking, collaborative editing</td>
+</tr>
+<tr>
+<td>Server-Sent Events</td>
+<td>A simple one-way stream from server to client over HTTP</td>
+<td>Notifications, LLM token streaming</td>
+</tr>
+<tr>
+<td>Long polling</td>
+<td>Works everywhere</td>
+<td>Fallback for real-time</td>
+</tr>
+<tr>
+<td>Webhooks</td>
+<td>The server calls the client when an event happens</td>
+<td>Payment callbacks, partner integrations</td>
+</tr>
+</tbody>
+</table></div>
+<p>A few words from the table:</p>
+<ul>
+<li><strong>Protobuf</strong> — Google's compact binary format with a fixed schema.</li>
+<li><strong>Deadline</strong> — the caller says "I'll wait at most 300 ms", and the whole call chain respects it.</li>
+<li><strong>Long polling</strong> — the client asks "anything new?", and the server holds the request open until there is something to send.</li>
+</ul>
+<h4>How does it work?</h4>
+<p>Use this design checklist:</p>
+<ul>
+<li><strong>Resources and verbs</strong>: put nouns in paths (<code>/accounts/{id}/redemptions</code>). Use HTTP methods for actions. Return the correct status codes (7.2).</li>
+<li><strong>Idempotency</strong>: add idempotency keys on POSTs that change data (11.14), so retries are safe.</li>
+<li><strong>Pagination</strong>: for large or changing data, use <strong>cursor/keyset</strong> pagination (<code>?after=&lt;lastId&gt;&amp;limit=50</code>). "Give me the next 50 after this ID" stays fast and does not skip or repeat rows. Use offset pagination only for small admin lists.</li>
+<li><strong>Filtering and sorting</strong>: use query parameters. Put a maximum on the page size.</li>
+<li><strong>Versioning</strong>: putting the version in the URI (<code>/v1/</code>) is explicit and common. Within one version, make only additive (backward-compatible) changes, like adding new optional fields.</li>
+<li><strong>Errors</strong>: use one consistent format (<code>ProblemDetail</code>, 7.4).</li>
+<li><strong>Security</strong>: auth scopes per endpoint, tenant checks and rate-limit headers.</li>
+<li><strong>Webhooks</strong>:</li>
+<li>Sign the payloads with HMAC (a shared-secret signature), so receivers know the call is genuine.</li>
+<li>Retry with backoff.</li>
+<li>Make receivers idempotent.</li>
+<li>Allow replay of past events.</li>
+</ul>
+<h4>Example</h4>
+<ul>
+<li>Create a redemption with an idempotency key; get back 201.</li>
+<li>List redemptions with a cursor (<code>after=R_812</code>); the response gives the <code>next</code> cursor.</li>
+<li>Read the balance.</li>
+<li>Receive a signed partner webhook, idempotent on event ID.</li>
+<li>Call an internal gRPC method with a 300 ms deadline.</li>
+</ul>
+<div class="hl"><pre><span></span><code>POST   /v1/accounts/{id}/redemptions        Idempotency-Key    → 201 {id, status}
+GET    /v1/accounts/{id}/redemptions?after=R_812&amp;limit=20      → 200 {items:[…], next:"R_792"}
+GET    /v1/accounts/{id}/balance                                → 200 {points, asOf}
+POST   /webhooks/voucher-partner   X-Signature: sha256=…        → 200 (idempotent on event id)
+gRPC   LoyaltyService.Accrue(AccrueRequest) returns (AccrueResponse)   // internal, deadline 300 ms
+</code></pre></div>
+
+<h4>When would I use it?</h4>
+<p>Use this in the API step of every design:</p>
+<ul>
+<li><strong>REST</strong> — the default.</li>
+<li><strong>gRPC</strong> — between internal services with tight latency budgets.</li>
+<li><strong>WebSockets/SSE</strong> — for live updates.</li>
+<li><strong>GraphQL</strong> — when many clients need different shapes of the same data.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Breaking changes without versioning.</strong> Old clients stop working.</li>
+<li><strong>Chatty APIs.</strong> One screen needs N separate calls.</li>
+<li><strong>Offset pagination on huge tables.</strong> The database must skip millions of rows, so it gets slow.</li>
+<li><strong>Leaking internal models.</strong> Your DB structure becomes the public contract and can't change.</li>
+<li><strong>Webhooks without signatures or retries.</strong> Anyone can fake them, and failed ones are lost.</li>
+<li><strong>GraphQL without query cost limits.</strong> A deeply nested query can be very expensive.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. REST vs gRPC?</strong> REST/JSON works everywhere, humans can read it, and it can be cached. gRPC is a typed, binary protocol on HTTP/2 with streaming and lower latency. So gRPC fits better for internal service-to-service calls.</p>
+<p><strong>Q2. How do you paginate a large, changing dataset?</strong> Use keyset/cursor pagination on an indexed, unique ordering column. Return an opaque "next" cursor that the client sends back for the next page.</p>
+<p><strong>Q3. How do you design reliable webhooks?</strong> Sign the payloads, retry with backoff, make receivers idempotent by keying on the event ID, and give a replay endpoint or dashboard.</p>
+<h2 id="s11-18">11.18 Storage for files, search and analytics</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> Your main database is good at small, quick reads and writes. Big files, text search and huge reports each need their own special store, filled with copies from the main database.</p>
+<p>Not all data belongs in your OLTP database — the one that handles day-to-day transactions. Here is why:</p>
+<ul>
+<li>Large files make it bloated.</li>
+<li>Full-text search is slow in SQL.</li>
+<li>Analytical queries that scan billions of rows slow down normal transactions.</li>
+</ul>
+<p>So you use a specialised store for each job. Each one is fed from the <em>source of truth</em> — the main database that holds the correct data.</p>
+<h4>What is happening internally?</h4>
+<ul>
+<li><strong>Object storage</strong> (S3, Azure Blob):</li>
+<li>Cheap and very durable (11 nines — 99.999999999%).</li>
+<li>Holds unlimited files, each fetched by a key (like a file path).</li>
+<li>You can't edit a file in place; you replace it.</li>
+<li>Clients upload <strong>directly</strong> to storage using <strong>pre-signed URLs</strong>. A pre-signed URL is a temporary link that allows one specific upload and expires soon. Because of this, large files never pass through your app servers.</li>
+<li>The file's metadata (name, owner, key) lives in the DB.</li>
+<li>Files are delivered to users through a CDN.</li>
+<li><strong>Search engines</strong> (Elasticsearch/OpenSearch):</li>
+<li>They use an <strong>inverted index</strong>: a map from each word to the list of documents that contain it — like the index at the back of a book.</li>
+<li><em>Analysers</em> break text into words and clean them up: lowercasing, stemming (running → run), synonyms and transliteration.</li>
+<li>Results are ranked by relevance using BM25, a scoring formula.</li>
+<li>Indexing is near-real-time — new data is searchable within about a second.</li>
+<li>The search engine is fed by events or CDC. So it is <strong>eventually consistent</strong> (it catches up a little later) and is never the source of truth.</li>
+<li><strong>Analytics</strong> (ClickHouse, BigQuery, Snowflake, Trino over a data lake):</li>
+<li>Data is stored by column, not by row (<em>columnar</em>), and compressed. It is processed in large chunks at once (<em>vectorised execution</em>). This makes big scans fast.</li>
+<li>It is fed by CDC/streams or by batch ETL (scheduled extract-transform-load jobs).</li>
+<li>Two common designs: <strong>Lambda</strong> architecture has a batch layer plus a fast "speed" layer; <strong>Kappa</strong> uses only streams.</li>
+</ul>
+<p>Think of a library. The books (files) sit on shelves (object storage). The catalogue cards (DB rows) say which shelf. The subject index (search engine) helps you find books by word. The yearly statistics report (analytics) is made in a separate office so the front desk is not disturbed.</p>
+<h4>How does it work?</h4>
+<ol>
+<li><strong>Upload</strong>: the app asks the API for an upload. The API returns a pre-signed PUT URL. The app uploads straight to Blob. An event triggers processing, and a metadata row is saved.</li>
+<li><strong>Search</strong>: Postgres changes go through Debezium CDC into Kafka. An indexer writes them to Elasticsearch. The search API reads from Elasticsearch.</li>
+<li><strong>Analytics</strong>: data flows from Postgres/Kafka into ClickHouse (MergeTree tables, materialised views). Dashboards read from ClickHouse.</li>
+</ol>
+<div class="hl"><pre><span></span><code>Upload: app → POST /uploads → API returns pre-signed PUT URL → app uploads to Blob → event → processing → metadata row
+Search: Postgres → Debezium CDC → Kafka → indexer → Elasticsearch ← search API
+Analytics: Postgres/Kafka → ClickHouse (MergeTree, materialised views) ← dashboards
+</code></pre></div>
+
+<h4>Example</h4>
+<p>Perfect Store audits:</p>
+<ol>
+<li>Photos (2–5 MB each) go straight to Azure Blob through pre-signed URLs.</li>
+<li>The audit row stores only the blob keys.</li>
+<li>An AI verification worker processes the photos.</li>
+<li>Compliance dashboards per region come from ClickHouse, not from the transactional database.</li>
+</ol>
+<h4>When would I use it?</h4>
+<ul>
+<li><strong>Object storage</strong> — for any user-uploaded media or documents.</li>
+<li><strong>Search engine</strong> — for product, outlet or text search.</li>
+<li><strong>OLAP</strong> (analytics store) — for dashboards and reports over a large history.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Uploads through app servers.</strong> They use up memory and hit timeouts.</li>
+<li><strong>Public buckets.</strong> Anyone can read the files, so data leaks.</li>
+<li><strong>Search index drift.</strong> The index slowly differs from the source. You need reindexing and reconciliation (comparing and fixing).</li>
+<li><strong>Analytics on the OLTP primary.</strong> Heavy reports slow down live transactions.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. How would you handle large file uploads?</strong> Give the client a pre-signed URL so it uploads directly to object storage, using multipart/resumable upload for big files. Keep metadata in the DB, start processing from storage events, and deliver files through a CDN.</p>
+<p><strong>Q2. Why not use the database for full-text search?</strong> A search engine has inverted indexes, analysers and relevance scoring. It handles fuzzy, multilingual, ranked search at scale far better than SQL. Feed it via CDC, and keep the DB as the source of truth.</p>
+<h2 id="s11-19">11.19 Reliability patterns</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> In a big system, something is always broken somewhere. Good design expects this, and makes sure one broken part can't take down everything else.</p>
+<p>At scale, something is always failing — a pod, a zone, a dependency or a deploy. Reliable systems assume failure will happen. They limit its <em>blast radius</em> — how much of the system one failure can damage. Interviewers expect you to discuss how each component you draw can fail.</p>
+<p>Think of a building with fuses on each floor. A short circuit on one floor trips that fuse only. The rest of the building keeps its lights on.</p>
+<h4>What is happening internally?</h4>
+<ul>
+<li><strong>Timeouts</strong>: put a timeout on every network call. Each timeout must be shorter than the caller's own timeout, so the whole chain fits in its <em>timeout budget</em>.</li>
+<li><strong>Retries</strong>:</li>
+<li>Use exponential backoff (wait longer each time) with <strong>jitter</strong> (random spread, so clients don't retry together).</li>
+<li>Retry only idempotent operations and <em>transient</em> errors (temporary ones, like a timeout).</li>
+<li>Use retry budgets to avoid retry storms.</li>
+<li><strong>Circuit breakers</strong>: if a dependency is unhealthy, stop calling it for a while and fail fast (8.7).</li>
+<li><strong>Bulkheads</strong>: give each dependency its own thread or connection pool. Then one slow dependency can't use up everything. (The name comes from the walls inside a ship that stop water spreading.)</li>
+<li><strong>Graceful degradation</strong>: serve stale or cached data, or a smaller set of features. For example, hide recommendations but keep checkout working.</li>
+<li><strong>Load shedding</strong>: under overload, reject low-priority work early (429/503). This protects the core flows.</li>
+<li><strong>Redundancy</strong>: run N+1 instances (one more than you need) across availability zones. For critical paths, use multi-region <em>active-passive</em> (one region on standby) or <em>active-active</em> (both serve traffic).</li>
+<li><strong>Backups and DR</strong> (disaster recovery):</li>
+<li><strong>RPO</strong> (recovery point objective) — how much data you can afford to lose.</li>
+<li><strong>RTO</strong> (recovery time objective) — how fast you must be back up.</li>
+</ul>
+<p>These two numbers decide your replication and backup design. Test restores regularly.
+- <strong>Health checks</strong>: liveness ("is it alive?") vs readiness ("can it take traffic?") (8.9).
+- <strong>Safe deployments</strong>:
+  - Rolling, blue-green or canary releases, with automatic rollback if the SLO is breached.
+  - Feature flags.
+  - Backward-compatible schema changes (7.16).
+- <strong>Coordination</strong>: leader election and distributed locks use etcd, ZooKeeper or Kubernetes leases. Always add <strong>fencing tokens</strong>. A fencing token is a number that goes up with every new lock. If an old lock holder was paused and wakes up with a stale lock, its writes carry an old number and get rejected.
+- <strong>Clocks</strong>: machine wall clocks drift apart. So don't order distributed events by timestamps alone. Use sequence numbers, partitions or logical clocks (counters that only go up).</p>
+<h4>How does it work?</h4>
+<p>For each box in your diagram, ask three questions:</p>
+<ol>
+<li>What if it is slow?</li>
+<li>What if it is down?</li>
+<li>What if it is wrong (bad data, duplicate messages)?</li>
+</ol>
+<p>Then add the matching pattern and the alert for each answer.</p>
+<h4>Example</h4>
+<p>The voucher partner is down for 20 minutes during a festival campaign. Here is what happens:</p>
+<ol>
+<li>The circuit breaker opens after 50% of calls fail.</li>
+<li>Redemptions are still accepted and points are debited.</li>
+<li>The saga parks the voucher step for a later retry. The user sees "voucher arriving shortly".</li>
+<li>The bulkhead keeps the other APIs responsive.</li>
+<li>The breaker goes <em>half-open</em> (lets a few test calls through). When they succeed, the backlog drains with rate limiting.</li>
+<li>Alerts fire when the breaker opens and when the saga backlog gets too old.</li>
+</ol>
+<h4>When would I use it?</h4>
+<p>In the "failure handling" step of every design, and in production readiness reviews.</p>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Retry storms.</strong> Everyone retries at once and makes the outage worse.</li>
+<li><strong>Silent fallbacks.</strong> Fallbacks hide failures, and no alert fires.</li>
+<li><strong>Untested backups.</strong> You find out they don't restore only during a disaster.</li>
+<li><strong>Single-AZ deployments.</strong> One zone outage takes everything down.</li>
+<li><strong>Distributed locks without fencing.</strong> A stale lock holder can still write.</li>
+<li><strong>Deploys that can't roll back.</strong> A schema change makes the old version incompatible.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. How do you prevent cascading failures?</strong> Use timeouts, limited retries with backoff and jitter, circuit breakers, bulkheads, load shedding and graceful degradation. Together they stop one failing part from pulling down the services that call it.</p>
+<p><strong>Q2. What are RPO and RTO?</strong> RPO is the maximum data loss you can accept, measured in time. RTO is the maximum time you can take to restore service. Together they decide your replication, backup and failover design.</p>
+<p><strong>Q3. Why do distributed locks need fencing tokens?</strong> A client can pause (because of GC or the network) and its lock can expire while another client takes the lock. A token that always increases lets the resource reject writes from the old, stale holder.</p>
+<h2 id="s11-20">11.20 Observability, SLIs and SLOs</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> Observability means you can see what your system is doing from the outside. SLOs turn "is it healthy?" into a clear number that everyone agrees on.</p>
+<p>You can't run what you can't see. And "is the system healthy?" needs an exact definition, based on what users experience.</p>
+<p>An SLO (service level objective) turns reliability into a measurable target. That target then guides your alerts and your release decisions.</p>
+<p>Think of a car dashboard. The speedometer and fuel gauge are your metrics. The rule "keep the speed under 80" is your objective.</p>
+<h4>What is happening internally?</h4>
+<ul>
+<li><strong>Metrics</strong> (Prometheus/Grafana, Azure Monitor): numbers measured over time.</li>
+<li><strong>RED</strong> per service: rate (requests/sec), errors, duration.</li>
+<li><strong>USE</strong> per resource: utilisation, saturation (how much work is waiting), errors.</li>
+<li>Business KPIs.</li>
+<li><strong>Logs</strong> (ELK/OpenSearch/Loki): structured JSON, with trace, tenant and request IDs in every line.</li>
+<li><strong>Traces</strong> (OpenTelemetry → Jaeger/Tempo/App Insights): one request's journey across services, queues and DB calls, split into timed steps called <em>spans</em>.</li>
+<li><strong>SLI</strong> (service level indicator): what you measure. For example, "% of redemption requests completing successfully in &lt; 500 ms".</li>
+<li><strong>SLO</strong> (objective): the target. For example, 99.9% over 30 days.</li>
+<li><strong>Error budget</strong>: 100% − SLO. Here that is 0.1%, which is about 43 minutes of "bad" per month. If the budget is burning fast, slow down releases and fix reliability.</li>
+<li><strong>SLA</strong> (service level agreement): the promise in the customer contract, with penalties. It is looser than the internal SLO, so you get warned before you break it.</li>
+<li><strong>Alerting on burn rate</strong>: page someone when the error budget is being used up fast. For example, 2% of the monthly budget in 1 hour. Don't page on every CPU spike.</li>
+</ul>
+<h4>How does it work?</h4>
+<ol>
+<li>Instrument the code once (Micrometer/OpenTelemetry).</li>
+<li>Build a dashboard for each service.</li>
+<li>Define 2–4 SLOs for each critical user journey.</li>
+<li>Alert on symptoms (what users feel), not on causes.</li>
+<li>Link every alert to a runbook (a step-by-step fix guide).</li>
+</ol>
+<h4>Example</h4>
+<p>Loyalty SLOs:</p>
+<ul>
+<li>Redemption availability: 99.9%.</li>
+<li>Redemption p99 latency: &lt; 800 ms (99% of requests finish faster than this).</li>
+<li>Accrual freshness: 99% of order events appear in balances within 60 s. You measure this from consumer lag and event timestamps.</li>
+</ul>
+<h4>When would I use it?</h4>
+<p>From the first deploy of any service. Also in the "monitoring" step of every design interview.</p>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Alert fatigue.</strong> Alerts on causes (like CPU) fire all the time, so people start ignoring them.</li>
+<li><strong>Dashboards without SLOs.</strong> Lots of charts, but no clear "good or bad" line.</li>
+<li><strong>High-cardinality metrics cost.</strong> Labels with too many unique values (like user ID) make the metrics store huge and expensive.</li>
+<li><strong>Sampling away the traces you need.</strong> Use <em>tail-based sampling</em> — decide what to keep after the request ends, so errors and slow requests are always kept.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. SLI vs SLO vs SLA?</strong> The SLI is the measured indicator. The SLO is the internal target for it. The SLA is the external promise in the customer contract.</p>
+<p><strong>Q2. What is an error budget used for?</strong> It puts a number on how much unreliability is allowed. When it burns fast, alerts fire and feature releases slow down so the team can focus on reliability work.</p>
+<h2 id="s11-21">11.21 Security in system design</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> Security means only the right person can do the right thing on the right data. In a multi-tenant system, the biggest job is making sure one company can never see another company's data.</p>
+<p>Security failures are the most expensive kind. They cause data breaches, fraud, regulatory penalties and lost customer trust.</p>
+<p>In a multi-tenant SaaS, many customer companies (tenants) share the same system. So one authorisation bug can show one brand's data to another brand. That is why designs are expected to cover security explicitly.</p>
+<p>Think of a bank locker room. The guard checks your ID at the door (authentication). Your key opens only your own locker (authorisation). Every visit is written in the register (audit).</p>
+<h4>What is happening internally?</h4>
+<ul>
+<li><strong>Authentication</strong> (who are you?): OAuth2/OIDC with an identity provider. JWT access tokens are validated at the gateway and in the services (8.2).</li>
+<li><strong>Authorisation</strong> (what can you do?): check roles and scopes. Also check <strong>resource- and tenant-level</strong> access on every query. The most common real-world vulnerability is broken access control — OWASP #1.</li>
+<li><strong>Transport</strong>: TLS everywhere. Use mTLS (both sides show certificates) between services, often through a service mesh.</li>
+<li><strong>Secrets</strong>: keep them in a vault (Azure Key Vault, HashiCorp Vault) and rotate them. Never put them in code or images.</li>
+<li><strong>Data</strong>:</li>
+<li>Encrypt data at rest.</li>
+<li>For sensitive data, use field-level encryption or tokenisation (replace the real value with a stand-in token). This covers PII (personal data) and payment data. For cards, use a PSP (payment service provider).</li>
+<li>Keep as little PII as possible, and mask it in logs.</li>
+<li><strong>Input</strong>:</li>
+<li>Validate all input.</li>
+<li>Use parameterised queries (stops SQL injection).</li>
+<li>Encode output (stops XSS — cross-site scripting).</li>
+<li>Protect URL fetches against SSRF (tricking your server into calling internal addresses).</li>
+<li><strong>Edge</strong>: WAF (web application firewall), DDoS protection and rate limits (11.16).</li>
+<li><strong>Audit</strong>: keep immutable (unchangeable) audit logs for sensitive actions, like admin adjustments and payouts. Add maker-checker approvals: one person makes the change, a second person approves it.</li>
+<li><strong>Webhooks and partners</strong>: signed requests, IP allow-lists and idempotency.</li>
+</ul>
+<h4>How does it work?</h4>
+<p>Threat-model each flow. That means asking:</p>
+<ol>
+<li>Who can call it?</li>
+<li>With which identity?</li>
+<li>Which tenant's data does it touch?</li>
+<li>What could an attacker replay or forge?</li>
+<li>What gets logged?</li>
+</ol>
+<h4>Example</h4>
+<p>Admin points adjustment:</p>
+<ol>
+<li>It needs <code>ROLE_ADMIN</code> and the same tenant claim as the account.</li>
+<li>It creates a pending adjustment (the maker).</li>
+<li>A second admin approves it (the checker).</li>
+<li>The ledger entry records both identities.</li>
+<li>The action is audited. If it is above a threshold, an alert fires.</li>
+</ol>
+<h4>When would I use it?</h4>
+<p>In the API and data steps of every design. Also when reviewing any feature that touches money, PII or cross-tenant data.</p>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Trusting client-supplied tenant or user IDs.</strong> The client can simply change them.</li>
+<li><strong>Secrets in Git.</strong> Anyone with repo access, or a leak, gets them.</li>
+<li><strong>Verbose errors.</strong> Error messages leak internal details.</li>
+<li><strong>Logging tokens or PII.</strong> Logs become a security risk.</li>
+<li><strong>No rate limits on OTP/login.</strong> Attackers can guess codes or passwords.</li>
+<li><strong>Overly broad service credentials.</strong> One stolen credential opens too much.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. How do you ensure tenant isolation in a multi-tenant system?</strong> Take the tenant from the authenticated token, never from the request body. Enforce it in authorisation checks, and apply mandatory tenant filters at the data layer — or use separate schemas/databases for strong isolation. Add tests that try cross-tenant access.</p>
+<p><strong>Q2. What security measures would you add to a payments or points system?</strong> Strong auth, idempotency, maker-checker for manual adjustments, audit logs, encryption, rate limits, anomaly alerts and reconciliation.</p>
+<h2 id="s11-22">11.22 Generating unique IDs at scale</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> When many servers create records at the same time, each record still needs a unique ID. The trick is to make IDs unique without all servers asking one central place every time.</p>
+<p>Orders, messages, events and short links all need unique IDs. There are two simple options, and both have problems:</p>
+<ul>
+<li><strong>One auto-increment database sequence.</strong> With many shards and regions, everyone waits on this one counter. It becomes a bottleneck and a single point of failure (SPOF).</li>
+<li><strong>Random UUIDs.</strong> They are unique, but large and unordered. That is bad for B-tree index locality (new rows land all over the index) and for sorting by time.</li>
+</ul>
+<p>Think of restaurant token numbers. If each counter prints tokens starting with its own counter number, two counters can never give out the same token — and they don't need to talk to each other.</p>
+<h4>What is happening internally?</h4>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>Approach</th>
+<th>Properties</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>DB auto-increment / sequence</td>
+<td>Simple and ordered; a bottleneck/SPOF across shards</td>
+</tr>
+<tr>
+<td>UUIDv4 (random)</td>
+<td>No coordination needed; 128 bits; random → poor index locality</td>
+</tr>
+<tr>
+<td><strong>UUIDv7</strong></td>
+<td>Starts with a timestamp, then randomness; no coordination; friendly to indexes</td>
+</tr>
+<tr>
+<td><strong>Snowflake</strong> (Twitter)</td>
+<td>64-bit: 1 sign bit + 41-bit millisecond timestamp (~69 years) + 10-bit machine ID (1,024 nodes) + 12-bit sequence (4,096 IDs per ms per node) → roughly sorted by time, compact</td>
+</tr>
+<tr>
+<td>Range allocation</td>
+<td>Each service instance leases a block (e.g., 1M IDs) from a coordinator and hands them out locally</td>
+</tr>
+</tbody>
+</table></div>
+<h4>How does it work?</h4>
+<p>Each node makes Snowflake IDs like this:</p>
+<ol>
+<li>On each request, read the current millisecond.</li>
+<li>If it is the same millisecond as last time, add 1 to the sequence.</li>
+<li>If the sequence goes past 4,095 (overflows), wait for the next millisecond.</li>
+<li>If it is a new millisecond, reset the sequence to 0.</li>
+<li>Combine the parts: <code>(timestamp − epoch) &lt;&lt; 22 | machineId &lt;&lt; 12 | sequence</code>.</li>
+</ol>
+<p>The <em>epoch</em> is a fixed starting date. Subtracting it keeps the timestamp small enough to fit in 41 bits.</p>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="kd">final</span><span class="w"> </span><span class="kd">class</span> <span class="nc">Snowflake</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">private</span><span class="w"> </span><span class="kd">static</span><span class="w"> </span><span class="kd">final</span><span class="w"> </span><span class="kt">long</span><span class="w"> </span><span class="n">EPOCH</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1_735_689_600_000L</span><span class="p">;</span><span class="w">   </span><span class="c1">// 2025-01-01</span>
+<span class="w">    </span><span class="kd">private</span><span class="w"> </span><span class="kd">final</span><span class="w"> </span><span class="kt">long</span><span class="w"> </span><span class="n">machineId</span><span class="p">;</span><span class="w"> </span><span class="kd">private</span><span class="w"> </span><span class="kt">long</span><span class="w"> </span><span class="n">lastMs</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="o">-</span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="n">seq</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="p">;</span>
+<span class="w">    </span><span class="n">Snowflake</span><span class="p">(</span><span class="kt">long</span><span class="w"> </span><span class="n">machineId</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">machineId</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="mi">0</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="n">machineId</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="mi">1023</span><span class="p">)</span><span class="w"> </span><span class="k">throw</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">IllegalArgumentException</span><span class="p">();</span><span class="w"> </span><span class="k">this</span><span class="p">.</span><span class="na">machineId</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">machineId</span><span class="p">;</span><span class="w"> </span><span class="p">}</span>
+<span class="w">    </span><span class="kd">synchronized</span><span class="w"> </span><span class="kt">long</span><span class="w"> </span><span class="nf">next</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="kt">long</span><span class="w"> </span><span class="n">now</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">System</span><span class="p">.</span><span class="na">currentTimeMillis</span><span class="p">();</span>
+<span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">now</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="n">lastMs</span><span class="p">)</span><span class="w"> </span><span class="k">throw</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">IllegalStateException</span><span class="p">(</span><span class="s">"clock moved backwards"</span><span class="p">);</span>
+<span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">now</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="n">lastMs</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="n">seq</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">(</span><span class="n">seq</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="mi">1</span><span class="p">)</span><span class="w"> </span><span class="o">&amp;</span><span class="w"> </span><span class="mi">4095</span><span class="p">;</span>
+<span class="w">            </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">seq</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="mi">0</span><span class="p">)</span><span class="w"> </span><span class="k">while</span><span class="w"> </span><span class="p">((</span><span class="n">now</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">System</span><span class="p">.</span><span class="na">currentTimeMillis</span><span class="p">())</span><span class="w"> </span><span class="o">&lt;=</span><span class="w"> </span><span class="n">lastMs</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="p">}</span><span class="w">   </span><span class="c1">// sequence exhausted: wait for the next ms</span>
+<span class="w">        </span><span class="p">}</span><span class="w"> </span><span class="k">else</span><span class="w"> </span><span class="n">seq</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="p">;</span>
+<span class="w">        </span><span class="n">lastMs</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">now</span><span class="p">;</span>
+<span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="p">((</span><span class="n">now</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">EPOCH</span><span class="p">)</span><span class="w"> </span><span class="o">&lt;&lt;</span><span class="w"> </span><span class="mi">22</span><span class="p">)</span><span class="w"> </span><span class="o">|</span><span class="w"> </span><span class="p">(</span><span class="n">machineId</span><span class="w"> </span><span class="o">&lt;&lt;</span><span class="w"> </span><span class="mi">12</span><span class="p">)</span><span class="w"> </span><span class="o">|</span><span class="w"> </span><span class="n">seq</span><span class="p">;</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h4>When would I use it?</h4>
+<ul>
+<li><strong>Snowflake-style or UUIDv7 IDs</strong> — for high-volume entities across shards: orders, events, messages, tweets (13.17).</li>
+<li><strong>Range allocation</strong> — for short-link codes (13.1).</li>
+<li><strong>DB sequences</strong> — when one database is enough.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Duplicate machine IDs.</strong> Two nodes with the same ID can create the same IDs. Assign machine IDs through config, a coordinator or Kubernetes StatefulSet ordinals (each pod gets a fixed number).</li>
+<li><strong>Clock moving backwards.</strong> NTP (time sync) can move the clock back. Refuse to create IDs, or wait until the clock catches up.</li>
+<li><strong>Exposing sequential IDs publicly.</strong> Attackers can guess other IDs by counting (enumeration attacks). Use opaque public IDs instead.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. How would you generate unique IDs across many servers?</strong> Use Snowflake-style IDs (timestamp + machine ID + sequence) or UUIDv7. Both are time-ordered and need no coordination. Use range leasing when IDs must be dense or short.</p>
+<p><strong>Q2. Why are random UUIDs bad as primary keys in B-tree indexes?</strong> Random inserts land all over the index. This causes page splits, poor cache locality and larger indexes. Time-ordered IDs are added near the end of the index instead.</p>

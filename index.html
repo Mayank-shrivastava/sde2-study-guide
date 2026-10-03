@@ -1,0 +1,1168 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="description" content="16-week SDE2 / Senior Java interview study guide: Java, concurrency, JVM, Spring Boot, databases, LLD, HLD. Progress saves in your browser.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%238A2E52'/%3E%3Ctext x='16' y='22' font-family='monospace' font-size='15' font-weight='700' fill='white' text-anchor='middle'%3EJ%3C/text%3E%3C/svg%3E">
+<title>SDE2 Java Study Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
+<style>
+/* Layout: study desk — a quiet left rail (nav + where-am-I), one reading column, week cards like a printed planner. */
+:root{
+  --ink:#1A1417; --paper:#FBF9FA; --surface:#FFFFFF; --surface-2:#F4EFF2;
+  --border:#E7E0E4; --border-strong:#D3C7CD; --muted:#7A6E74;
+  --accent:#8A2E52; --accent-soft:#F6E8EE; --accent-ink:#FFFFFF;
+  --done:#2E7D5B; --done-soft:#E4F1EA; --due:#B4690E; --due-soft:#FBF0E1;
+  --info:#3E5C8A; --info-soft:#E7EDF6; --warn:#C0392B;
+  --code-bg:#F7F3F5;
+  --shadow:0 1px 2px rgba(26,20,23,.05), 0 8px 24px -12px rgba(26,20,23,.18);
+  --radius:10px;
+  --display:"Bricolage Grotesque","Trebuchet MS",sans-serif;
+  --body:"IBM Plex Sans","Segoe UI",system-ui,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  --read-size:16px;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --ink:#F2EDEF; --paper:#161114; --surface:#1F181C; --surface-2:#271E23;
+    --border:#362C31; --border-strong:#4A3C43; --muted:#A2939A;
+    --accent:#E8749C; --accent-soft:#3A2330; --accent-ink:#1A1417;
+    --done:#5BC493; --done-soft:#1E3830; --due:#E0A44E; --due-soft:#3A2D1A;
+    --info:#93B4E8; --info-soft:#1F2A3C; --warn:#EE8477;
+    --code-bg:#1A1417;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.6);
+    color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --ink:#F2EDEF; --paper:#161114; --surface:#1F181C; --surface-2:#271E23;
+  --border:#362C31; --border-strong:#4A3C43; --muted:#A2939A;
+  --accent:#E8749C; --accent-soft:#3A2330; --accent-ink:#1A1417;
+  --done:#5BC493; --done-soft:#1E3830; --due:#E0A44E; --due-soft:#3A2D1A;
+  --info:#93B4E8; --info-soft:#1F2A3C; --warn:#EE8477;
+  --code-bg:#1A1417;
+  --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.6);
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+html,body{background:var(--paper)}
+body{margin:0;color:var(--ink);font-family:var(--body);font-size:15px;line-height:1.55;-webkit-font-smoothing:antialiased}
+a{color:inherit}
+button{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.mono{font-family:var(--mono)}
+.sn{font-family:var(--mono);font-size:.86em;color:var(--muted);margin-right:6px;font-variant-numeric:tabular-nums}
+
+/* ---------- shell ---------- */
+.shell{display:grid;grid-template-columns:248px minmax(0,1fr);min-height:100%}
+.rail{position:sticky;top:env(safe-area-inset-top,0px);align-self:start;height:calc(100vh - env(safe-area-inset-top,0px));
+  border-right:1px solid var(--border);background:var(--paper);display:flex;flex-direction:column;gap:14px;padding:18px 14px;overflow-y:auto}
+.brand{font-family:var(--mono);font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);font-weight:600}
+.logo{font-family:var(--display);font-weight:800;font-size:20px;letter-spacing:-.02em;line-height:1.1;margin:2px 0 0;text-decoration:none;display:block}
+.nav{display:flex;flex-direction:column;gap:2px}
+.nav a{display:flex;align-items:center;gap:10px;text-decoration:none;padding:7px 10px;border-radius:8px;font-size:14px;color:var(--muted);font-weight:500}
+.nav a:hover{background:var(--surface-2);color:var(--ink)}
+.nav a[aria-current="page"]{background:var(--accent-soft);color:var(--accent)}
+.nav svg{width:17px;height:17px;flex:none}
+.searchbtn{display:flex;align-items:center;gap:8px;width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--muted);cursor:pointer;font-size:13.5px;text-align:left}
+.searchbtn kbd{margin-left:auto;font-family:var(--mono);font-size:10.5px;border:1px solid var(--border);border-radius:4px;padding:0 5px}
+.railsec{font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);font-weight:600;margin:4px 10px -6px}
+.toc{display:flex;flex-direction:column;gap:1px;margin:0;padding:0;list-style:none}
+.toc a{display:grid;grid-template-columns:10px 34px minmax(0,1fr);gap:4px;align-items:baseline;text-decoration:none;font-size:12.5px;line-height:1.35;padding:4px 8px;border-radius:6px;color:var(--muted)}
+.toc a:hover{background:var(--surface-2);color:var(--ink)}
+.toc a.here{background:var(--surface-2);color:var(--ink);font-weight:500}
+.toc .sn{font-family:var(--mono);font-size:11px;font-variant-numeric:tabular-nums}
+.dot{width:7px;height:7px;border-radius:50%;border:1.5px solid var(--border-strong);display:inline-block;transform:translateY(-1px)}
+.dot.read{background:var(--done);border-color:var(--done)}
+.dot.due{background:var(--due);border-color:var(--due)}
+.railfoot{margin-top:auto;display:flex;flex-direction:column;gap:8px;font-size:12px;color:var(--muted)}
+.sync{display:flex;align-items:center;gap:7px}
+.sync i{width:8px;height:8px;border-radius:50%;background:var(--border-strong);flex:none}
+.sync[data-s="cloud"] i{background:var(--done)}
+.sync[data-s="saving"] i{background:var(--due)}
+.railbtns{display:flex;gap:6px;flex-wrap:wrap}
+.btn{font:inherit;font-size:12.5px;padding:5px 11px;border-radius:7px;cursor:pointer;background:var(--surface);border:1px solid var(--border);color:var(--ink);text-decoration:none;display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.btn:hover{border-color:var(--border-strong)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:500}
+.btn.danger{color:var(--warn)}
+.chip{font:inherit;font-size:12.5px;padding:5px 11px;border-radius:99px;cursor:pointer;background:var(--surface);border:1px solid var(--border);color:var(--muted)}
+.chip[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:500}
+
+.mobbar{display:none}
+.tabbar{display:none}
+main{min-width:0;padding-inline:clamp(16px,4vw,48px);padding-block:26px 90px}
+.page{max-width:900px;margin:0 auto}
+.page.reader{max-width:780px}
+
+/* ---------- headers, meters, tiles ---------- */
+.eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);font-weight:600}
+h1.h{font-family:var(--display);font-weight:800;font-size:clamp(24px,4.4vw,34px);margin:4px 0 4px;letter-spacing:-.02em;line-height:1.1;text-wrap:balance}
+.lede{color:var(--muted);margin:0;font-size:14.5px;max-width:62ch}
+.meter{margin-top:14px;display:flex;align-items:center;gap:12px}
+.bar{flex:1;height:8px;border-radius:99px;background:var(--surface-2);border:1px solid var(--border);overflow:hidden}
+.bar>i{display:block;height:100%;width:0;background:var(--accent);border-radius:99px;transition:width .35s ease}
+.pct{font-family:var(--mono);font-size:13px;font-weight:600;font-variant-numeric:tabular-nums;min-width:4ch;text-align:right}
+.tiles{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-top:12px}
+.tile{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:9px 11px}
+.tile b{display:block;font-family:var(--mono);font-weight:600;font-size:18px;font-variant-numeric:tabular-nums;line-height:1.2}
+.tile b small{font-size:12px;color:var(--muted);font-weight:400}
+.tile span{font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.phase{margin:30px 0 10px;display:flex;align-items:center;gap:10px}
+.phase h2{font-family:var(--display);font-weight:600;font-size:14px;margin:0;letter-spacing:.02em;white-space:nowrap}
+.phase .rule{flex:1;height:1px;background:var(--border)}
+.phase .cnt{font-family:var(--mono);font-size:11.5px;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
+.controls{display:flex;gap:6px;margin-top:14px;flex-wrap:wrap;align-items:center}
+.spacer{flex:1 1 auto}
+
+/* ---------- today ---------- */
+.todayset{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:10px}
+.tcard{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:13px 14px;display:flex;flex-direction:column;gap:6px;text-decoration:none;min-width:0}
+.tcard:hover{border-color:var(--border-strong);box-shadow:var(--shadow)}
+.tcard .k{font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;font-weight:600}
+.tcard.new .k{color:var(--accent)} .tcard.rev .k{color:var(--due)} .tcard.none .k{color:var(--done)}
+.tcard .t{font-weight:600;font-size:15px;line-height:1.3}
+.tcard .m{font-size:12.5px;color:var(--muted)}
+.tcard .go{margin-top:auto;font-size:12.5px;color:var(--accent);font-weight:500}
+.continue{display:flex;align-items:center;gap:12px;margin-top:10px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius);padding:10px 14px;text-decoration:none}
+.continue b{font-weight:600}
+.continue span{color:var(--muted);font-size:13px}
+.continue .go{margin-left:auto;color:var(--accent);font-size:13px;font-weight:500;white-space:nowrap}
+.howto{margin-top:12px;font-size:13.5px;color:var(--muted);max-width:68ch}
+.howto b{color:var(--ink)}
+
+/* ---------- week cards (planner) ---------- */
+.day{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);margin-bottom:7px;overflow:hidden}
+.day[open]{box-shadow:var(--shadow);border-color:var(--border-strong)}
+.day summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:11px;padding:11px 13px}
+.day summary::-webkit-details-marker{display:none}
+.day summary:hover{background:var(--surface-2)}
+.dnum{flex:none;width:40px;height:34px;border-radius:7px;display:grid;place-items:center;font-family:var(--mono);font-weight:600;font-size:14px;font-variant-numeric:tabular-nums;background:var(--surface-2);border:1px solid var(--border);color:var(--muted)}
+.day[data-done="1"] .dnum{background:var(--done);border-color:var(--done);color:#fff}
+.day[data-now="1"]:not([data-done="1"]) .dnum{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.dtop{flex:1;min-width:0}
+.dtop .t{font-weight:500;font-size:14.5px;display:block;overflow-wrap:anywhere}
+.day[data-done="1"] .dtop .t{color:var(--muted);text-decoration:line-through;text-decoration-color:var(--border-strong)}
+.dtop .m{font-family:var(--mono);font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
+.pill{font-family:var(--mono);font-size:9.5px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;padding:2px 6px;border-radius:4px;margin-left:6px;vertical-align:1px}
+.pill.now{background:var(--accent-soft);color:var(--accent)}
+.pill.gate{background:var(--info-soft);color:var(--info)}
+.mini{flex:none;width:52px;height:4px;border-radius:99px;background:var(--surface-2);border:1px solid var(--border);overflow:hidden}
+.mini>i{display:block;height:100%;width:0;background:var(--accent)}
+.day[data-done="1"] .mini>i{background:var(--done)}
+.caret{flex:none;color:var(--muted);font-size:11px;transition:transform .18s}
+.day[open] .caret{transform:rotate(90deg)}
+.wbody{padding:2px 13px 14px;border-top:1px dashed var(--border)}
+.secttl{font-family:var(--mono);font-size:10.5px;letter-spacing:.11em;text-transform:uppercase;color:var(--muted);margin:13px 0 6px;font-weight:600}
+ul.check{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:2px}
+ul.check li{display:flex;align-items:flex-start;gap:9px;padding:4px 6px;border-radius:6px}
+ul.check li:hover{background:var(--surface-2)}
+ul.check input[type=checkbox]{flex:none;margin:3px 0 0;width:15px;height:15px;accent-color:var(--accent);cursor:pointer}
+ul.check .lab{flex:1;min-width:0;font-size:14px;overflow-wrap:anywhere}
+ul.check a.lab{text-decoration:none}
+ul.check a.lab:hover{text-decoration:underline;text-underline-offset:2px}
+ul.check li.on .lab{color:var(--muted);text-decoration:line-through;text-decoration-color:var(--border-strong)}
+ul.check .sn{font-family:var(--mono);font-size:12px;color:var(--muted);margin-right:6px;font-variant-numeric:tabular-nums}
+.tag{flex:none;font-family:var(--mono);font-size:9.5px;font-weight:600;letter-spacing:.07em;padding:1px 5px;border-radius:4px;margin-top:3px;border:1px solid currentColor}
+.tag.due{color:var(--due)}
+.gatebox{margin-top:13px;padding:9px 11px;background:var(--info-soft);border-radius:7px}
+.gatebox .secttl{color:var(--info);margin-top:2px}
+.empty{text-align:center;color:var(--muted);padding:34px 16px;font-size:14px;border:1px dashed var(--border);border-radius:var(--radius);background:var(--surface)}
+
+/* ---------- chapters ---------- */
+.chgrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.chcard{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:12px 14px;text-decoration:none;display:flex;flex-direction:column;gap:8px;min-width:0}
+.chcard:hover{border-color:var(--border-strong);box-shadow:var(--shadow)}
+.chcard .top{display:flex;gap:10px;align-items:baseline}
+.chcard .n{font-family:var(--mono);font-weight:600;color:var(--accent);font-size:13px;font-variant-numeric:tabular-nums}
+.chcard .t{font-weight:600;font-size:14.5px;line-height:1.3}
+.chcard .row{display:flex;align-items:center;gap:10px;font-family:var(--mono);font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
+.chcard .row .bar{height:5px}
+.chcard.done .row .bar>i{background:var(--done)}
+
+/* ---------- notes ---------- */
+.nitem{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:12px 14px;margin-bottom:8px}
+.nitem a{font-weight:600;text-decoration:none}
+.nitem a:hover{text-decoration:underline}
+.nitem .sn{font-family:var(--mono);font-size:12px;color:var(--accent);margin-right:6px}
+.nitem p{margin:6px 0 0;white-space:pre-wrap;font-size:14px;overflow-wrap:anywhere}
+.nitem small{color:var(--muted);font-family:var(--mono);font-size:11px}
+
+/* ---------- reader ---------- */
+.rtools{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;background:var(--paper);border-bottom:1px solid var(--border);margin:-26px 0 18px;padding:10px 0;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.rtools .where{font-size:13px;color:var(--muted);min-width:0;flex:1 1 200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rtools .where b{color:var(--ink);font-weight:600}
+.rtools .bar{max-width:120px;height:6px}
+.seg{display:inline-flex;border:1px solid var(--border);border-radius:7px;overflow:hidden}
+.seg button{border:0;background:var(--surface);padding:4px 9px;cursor:pointer;font-size:12.5px;white-space:nowrap}
+.seg button+button{border-left:1px solid var(--border)}
+.seg button[aria-pressed="true"]{background:var(--accent-soft);color:var(--accent);font-weight:600}
+.chhead .chn{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);font-weight:600}
+.prose{font-size:var(--read-size);line-height:1.68}
+.prose h2{font-family:var(--display);font-weight:600;font-size:1.45em;line-height:1.2;letter-spacing:-.01em;margin:2.4em 0 .3em;text-wrap:balance;scroll-margin-top:70px}
+.prose h3{font-family:var(--display);font-weight:600;font-size:1.12em;margin:1.6em 0 .3em}
+.prose h4{font-family:var(--mono);font-size:.68em;letter-spacing:.12em;text-transform:uppercase;color:var(--accent);margin:1.8em 0 .5em;font-weight:600;display:flex;align-items:center;gap:8px}
+.prose h4::after{content:"";flex:1;height:1px;background:var(--border)}
+.prose p,.prose li{max-width:68ch}
+.prose ul,.prose ol{padding-left:1.3em}
+.prose li{margin:.25em 0}
+.prose code{overflow-wrap:anywhere;font-family:var(--mono);font-size:.86em;background:var(--surface-2);border:1px solid var(--border);border-radius:4px;padding:0 4px}
+.prose .hl{background:var(--code-bg);border:1px solid var(--border);border-radius:8px;margin:1em 0;overflow-x:auto}
+.prose .hl pre{margin:0;padding:12px 14px;font-family:var(--mono);font-size:12.6px;line-height:1.55}
+.prose .hl code{background:none;border:0;padding:0;font-size:inherit}
+.prose pre{overflow-x:auto}
+.prose .tbl{overflow-x:auto;margin:1em 0;border:1px solid var(--border);border-radius:8px}
+.prose table{border-collapse:collapse;width:100%;font-size:.86em}
+.prose th,.prose td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+.prose th{background:var(--surface-2);font-weight:600}
+.prose tr:last-child td{border-bottom:0}
+.prose p.simple{background:var(--done-soft);border-radius:8px;padding:10px 13px;max-width:none}
+.prose p.simple strong:first-child{display:block;font-family:var(--mono);font-size:.66em;letter-spacing:.12em;text-transform:uppercase;color:var(--done)}
+.prose blockquote{margin:1em 0;padding:9px 13px;border-radius:8px;background:var(--surface-2)}
+.prose blockquote p{margin:.3em 0}
+.prose blockquote.co.trap{background:var(--due-soft)}
+.prose blockquote.co.tip,.prose blockquote.co.remember,.prose blockquote.co.rule{background:var(--accent-soft)}
+.prose blockquote.co.interview,.prose blockquote.co.saythis{background:var(--info-soft)}
+.prose p.qa{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 13px;max-width:none}
+.prose p.qa>strong:first-child{display:block;margin-bottom:3px}
+.quiz .prose p.qa .ans{filter:blur(5px);cursor:pointer;user-select:none;transition:filter .15s}
+.quiz .prose p.qa.shown .ans{filter:none;user-select:auto}
+.quiz .prose p.qa .ans::before{content:""}
+.stool{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:4px 0 10px;font-size:12.5px}
+.tbtn{font:inherit;font-size:12.5px;padding:4px 10px;border-radius:99px;cursor:pointer;background:var(--surface);border:1px solid var(--border);color:var(--muted);display:inline-flex;align-items:center;gap:6px}
+.tbtn:hover{border-color:var(--border-strong);color:var(--ink)}
+.tbtn[aria-pressed="true"].read{background:var(--done-soft);border-color:var(--done);color:var(--done);font-weight:500}
+.tbtn[aria-pressed="true"].rev{background:var(--due-soft);border-color:var(--due);color:var(--due);font-weight:500}
+.tbtn.note[aria-pressed="true"]{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
+.stool .due{font-family:var(--mono);font-size:11px;color:var(--muted)}
+.stool .due.now{color:var(--due);font-weight:600}
+.notebox{margin:0 0 12px}
+.notebox textarea{width:100%;min-height:96px;resize:vertical;font:inherit;font-size:14px;line-height:1.5;padding:9px 11px;border-radius:8px;border:1px solid var(--border-strong);background:var(--surface);color:var(--ink)}
+.notebox small{font-family:var(--mono);font-size:11px;color:var(--muted)}
+.pn{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:40px}
+.pn a{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:11px 13px;text-decoration:none;font-weight:500;font-size:14px;min-width:0}
+.pn a:hover{border-color:var(--border-strong)}
+.pn a span{display:block;font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+.pn a.next{text-align:right;grid-column:2}
+.loading{color:var(--muted);padding:40px 0}
+
+/* ---------- search ---------- */
+.sdlg{position:fixed;inset:0;z-index:50;background:rgba(26,20,23,.35);display:flex;justify-content:center;align-items:flex-start;padding:calc(env(safe-area-inset-top,0px) + 8vh) 16px 16px}
+.sbox{width:min(640px,100%);background:var(--surface);border:1px solid var(--border-strong);border-radius:12px;box-shadow:var(--shadow);overflow:hidden;display:flex;flex-direction:column;max-height:76vh}
+.sbox input{border:0;border-bottom:1px solid var(--border);padding:14px 16px;font:inherit;font-size:16px;background:transparent;color:var(--ink);outline:none}
+.sres{overflow-y:auto}
+.sres a{display:block;padding:10px 16px;text-decoration:none;border-bottom:1px solid var(--border)}
+.sres a[aria-selected="true"],.sres a:hover{background:var(--surface-2)}
+.sres b{display:block;font-size:14px}
+.sres small{display:block;color:var(--muted);font-size:12.5px;line-height:1.45}
+.sres mark{background:var(--accent-soft);color:var(--accent);border-radius:3px;padding:0 1px}
+.shint{padding:12px 16px;color:var(--muted);font-size:13px}
+
+/* ---------- backup panel ---------- */
+.panel{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-top:30px;font-size:13px;color:var(--muted)}
+.panel h3{font-family:var(--display);font-weight:600;font-size:15px;margin:0 0 4px;color:var(--ink)}
+.panel p{margin:0 0 8px}
+.io{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+#code{font-family:var(--mono);font-size:11px;width:100%;margin-top:8px;padding:8px;border-radius:7px;border:1px solid var(--border);background:var(--paper);color:var(--ink);resize:vertical;min-height:58px}
+.toast{position:fixed;left:50%;bottom:calc(84px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--ink);color:var(--paper);padding:8px 14px;border-radius:8px;font-size:13px;z-index:60;box-shadow:var(--shadow)}
+
+/* ---------- phone ---------- */
+@media (max-width:860px){
+  .shell{grid-template-columns:minmax(0,1fr)}
+  .rail{display:none}
+  .mobbar{display:flex;align-items:center;gap:10px;position:sticky;top:env(safe-area-inset-top,0px);z-index:20;background:var(--paper);border-bottom:1px solid var(--border);padding:10px 16px}
+  .mobbar .logo{font-size:17px}
+  .mobbar .spacer{flex:1}
+  .tabbar{display:grid;grid-template-columns:repeat(5,1fr);position:fixed;left:0;right:0;bottom:0;z-index:30;background:var(--surface);border-top:1px solid var(--border);padding-bottom:env(safe-area-inset-bottom,0px)}
+  .tabbar a,.tabbar button{display:flex;flex-direction:column;align-items:center;gap:2px;padding:7px 0 8px;font-size:10.5px;text-decoration:none;color:var(--muted);border:0;background:none;cursor:pointer}
+  .tabbar svg{width:20px;height:20px}
+  .tabbar [aria-current="page"]{color:var(--accent);font-weight:600}
+  main{padding-block:16px 96px}
+  .rtools{top:calc(env(safe-area-inset-top,0px) + 53px);margin-top:-16px;flex-wrap:nowrap}
+  .rtools .bar,.rtools .pct,.rtools .fs{display:none}
+  .rtools .where{flex:1 1 auto}
+  .prose h2{scroll-margin-top:118px}
+  .tiles{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .todayset{grid-template-columns:minmax(0,1fr)}
+  .chgrid{grid-template-columns:minmax(0,1fr)}
+  .mini{display:none}
+  .phase{flex-wrap:wrap;row-gap:2px}
+  .phase h2{white-space:normal}
+  .phase .rule{display:none}
+  .phase .cnt{white-space:normal}
+  .sheet{position:fixed;inset:auto 0 0 0;z-index:40;background:var(--surface);border-top:1px solid var(--border-strong);border-radius:14px 14px 0 0;max-height:70vh;overflow-y:auto;padding:14px 14px calc(70px + env(safe-area-inset-bottom,0px));box-shadow:var(--shadow)}
+}
+@media (min-width:861px){ .sheet{display:none!important} .mobonly{display:none!important} }
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+pre { line-height: 125%; }
+td.linenos .normal { color: #666666; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: #666666; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.hl .hll { background-color: #ffffcc }
+.hl .c { color: #60A0B0; font-style: italic } /* Comment */
+.hl .err { border: 1px solid #F00 } /* Error */
+.hl .k { color: #007020; font-weight: bold } /* Keyword */
+.hl .o { color: #666 } /* Operator */
+.hl .ch { color: #60A0B0; font-style: italic } /* Comment.Hashbang */
+.hl .cm { color: #60A0B0; font-style: italic } /* Comment.Multiline */
+.hl .cp { color: #007020 } /* Comment.Preproc */
+.hl .cpf { color: #60A0B0; font-style: italic } /* Comment.PreprocFile */
+.hl .c1 { color: #60A0B0; font-style: italic } /* Comment.Single */
+.hl .gd { color: #A00000 } /* Generic.Deleted */
+.hl .ge { font-style: italic } /* Generic.Emph */
+.hl .ges { font-weight: bold; font-style: italic } /* Generic.EmphStrong */
+.hl .gr { color: #F00 } /* Generic.Error */
+.hl .gh { color: #000080; font-weight: bold } /* Generic.Heading */
+.hl .gi { color: #00A000 } /* Generic.Inserted */
+.hl .go { color: #888 } /* Generic.Output */
+.hl .gp { color: #C65D09; font-weight: bold } /* Generic.Prompt */
+.hl .gs { font-weight: bold } /* Generic.Strong */
+.hl .gu { color: #800080; font-weight: bold } /* Generic.Subheading */
+.hl .gt { color: #04D } /* Generic.Traceback */
+.hl .kc { color: #007020; font-weight: bold } /* Keyword.Constant */
+.hl .kd { color: #007020; font-weight: bold } /* Keyword.Declaration */
+.hl .kn { color: #007020; font-weight: bold } /* Keyword.Namespace */
+.hl .kp { color: #007020 } /* Keyword.Pseudo */
+.hl .kr { color: #007020; font-weight: bold } /* Keyword.Reserved */
+.hl .kt { color: #902000 } /* Keyword.Type */
+.hl .m { color: #40A070 } /* Literal.Number */
+.hl .s { color: #4070A0 } /* Literal.String */
+.hl .na { color: #4070A0 } /* Name.Attribute */
+.hl .nb { color: #007020 } /* Name.Builtin */
+.hl .nc { color: #0E84B5; font-weight: bold } /* Name.Class */
+.hl .no { color: #60ADD5 } /* Name.Constant */
+.hl .nd { color: #555; font-weight: bold } /* Name.Decorator */
+.hl .ni { color: #D55537; font-weight: bold } /* Name.Entity */
+.hl .ne { color: #007020 } /* Name.Exception */
+.hl .nf { color: #06287E } /* Name.Function */
+.hl .nl { color: #002070; font-weight: bold } /* Name.Label */
+.hl .nn { color: #0E84B5; font-weight: bold } /* Name.Namespace */
+.hl .nt { color: #062873; font-weight: bold } /* Name.Tag */
+.hl .nv { color: #BB60D5 } /* Name.Variable */
+.hl .ow { color: #007020; font-weight: bold } /* Operator.Word */
+.hl .w { color: #BBB } /* Text.Whitespace */
+.hl .mb { color: #40A070 } /* Literal.Number.Bin */
+.hl .mf { color: #40A070 } /* Literal.Number.Float */
+.hl .mh { color: #40A070 } /* Literal.Number.Hex */
+.hl .mi { color: #40A070 } /* Literal.Number.Integer */
+.hl .mo { color: #40A070 } /* Literal.Number.Oct */
+.hl .sa { color: #4070A0 } /* Literal.String.Affix */
+.hl .sb { color: #4070A0 } /* Literal.String.Backtick */
+.hl .sc { color: #4070A0 } /* Literal.String.Char */
+.hl .dl { color: #4070A0 } /* Literal.String.Delimiter */
+.hl .sd { color: #4070A0; font-style: italic } /* Literal.String.Doc */
+.hl .s2 { color: #4070A0 } /* Literal.String.Double */
+.hl .se { color: #4070A0; font-weight: bold } /* Literal.String.Escape */
+.hl .sh { color: #4070A0 } /* Literal.String.Heredoc */
+.hl .si { color: #70A0D0; font-style: italic } /* Literal.String.Interpol */
+.hl .sx { color: #C65D09 } /* Literal.String.Other */
+.hl .sr { color: #235388 } /* Literal.String.Regex */
+.hl .s1 { color: #4070A0 } /* Literal.String.Single */
+.hl .ss { color: #517918 } /* Literal.String.Symbol */
+.hl .bp { color: #007020 } /* Name.Builtin.Pseudo */
+.hl .fm { color: #06287E } /* Name.Function.Magic */
+.hl .vc { color: #BB60D5 } /* Name.Variable.Class */
+.hl .vg { color: #BB60D5 } /* Name.Variable.Global */
+.hl .vi { color: #BB60D5 } /* Name.Variable.Instance */
+.hl .vm { color: #BB60D5 } /* Name.Variable.Magic */
+.hl .il { color: #40A070 } /* Literal.Number.Integer.Long */
+@media (prefers-color-scheme:dark){
+pre { line-height: 125%; }
+td.linenos .normal { color: #6e7681; background-color: #0d1117; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: #6e7681; background-color: #0d1117; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #e6edf3; background-color: #6e7681; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #e6edf3; background-color: #6e7681; padding-left: 5px; padding-right: 5px; }
+:root:not([data-theme="light"]) .hl .hll { background-color: #6e7681 }
+:root:not([data-theme="light"]) .hl .c { color: #8B949E; font-style: italic } /* Comment */
+:root:not([data-theme="light"]) .hl .err { color: #F85149 } /* Error */
+:root:not([data-theme="light"]) .hl .esc { color: #E6EDF3 } /* Escape */
+:root:not([data-theme="light"]) .hl .g { color: #E6EDF3 } /* Generic */
+:root:not([data-theme="light"]) .hl .k { color: #FF7B72 } /* Keyword */
+:root:not([data-theme="light"]) .hl .l { color: #A5D6FF } /* Literal */
+:root:not([data-theme="light"]) .hl .n { color: #E6EDF3 } /* Name */
+:root:not([data-theme="light"]) .hl .o { color: #FF7B72; font-weight: bold } /* Operator */
+:root:not([data-theme="light"]) .hl .x { color: #E6EDF3 } /* Other */
+:root:not([data-theme="light"]) .hl .p { color: #E6EDF3 } /* Punctuation */
+:root:not([data-theme="light"]) .hl .ch { color: #8B949E; font-style: italic } /* Comment.Hashbang */
+:root:not([data-theme="light"]) .hl .cm { color: #8B949E; font-style: italic } /* Comment.Multiline */
+:root:not([data-theme="light"]) .hl .cp { color: #8B949E; font-weight: bold; font-style: italic } /* Comment.Preproc */
+:root:not([data-theme="light"]) .hl .cpf { color: #8B949E; font-style: italic } /* Comment.PreprocFile */
+:root:not([data-theme="light"]) .hl .c1 { color: #8B949E; font-style: italic } /* Comment.Single */
+:root:not([data-theme="light"]) .hl .cs { color: #8B949E; font-weight: bold; font-style: italic } /* Comment.Special */
+:root:not([data-theme="light"]) .hl .ge { color: #E6EDF3; font-style: italic } /* Generic.Emph */
+:root:not([data-theme="light"]) .hl .ges { color: #E6EDF3; font-weight: bold; font-style: italic } /* Generic.EmphStrong */
+:root:not([data-theme="light"]) .hl .gr { color: #FFA198 } /* Generic.Error */
+:root:not([data-theme="light"]) .hl .gh { color: #79C0FF; font-weight: bold } /* Generic.Heading */
+:root:not([data-theme="light"]) .hl .go { color: #8B949E } /* Generic.Output */
+:root:not([data-theme="light"]) .hl .gp { color: #8B949E } /* Generic.Prompt */
+:root:not([data-theme="light"]) .hl .gs { color: #E6EDF3; font-weight: bold } /* Generic.Strong */
+:root:not([data-theme="light"]) .hl .gu { color: #79C0FF } /* Generic.Subheading */
+:root:not([data-theme="light"]) .hl .gt { color: #FF7B72 } /* Generic.Traceback */
+:root:not([data-theme="light"]) .hl .g-Underline { color: #E6EDF3; text-decoration: underline } /* Generic.Underline */
+:root:not([data-theme="light"]) .hl .kc { color: #79C0FF } /* Keyword.Constant */
+:root:not([data-theme="light"]) .hl .kd { color: #FF7B72 } /* Keyword.Declaration */
+:root:not([data-theme="light"]) .hl .kn { color: #FF7B72 } /* Keyword.Namespace */
+:root:not([data-theme="light"]) .hl .kp { color: #79C0FF } /* Keyword.Pseudo */
+:root:not([data-theme="light"]) .hl .kr { color: #FF7B72 } /* Keyword.Reserved */
+:root:not([data-theme="light"]) .hl .kt { color: #FF7B72 } /* Keyword.Type */
+:root:not([data-theme="light"]) .hl .ld { color: #79C0FF } /* Literal.Date */
+:root:not([data-theme="light"]) .hl .m { color: #A5D6FF } /* Literal.Number */
+:root:not([data-theme="light"]) .hl .s { color: #A5D6FF } /* Literal.String */
+:root:not([data-theme="light"]) .hl .na { color: #E6EDF3 } /* Name.Attribute */
+:root:not([data-theme="light"]) .hl .nb { color: #E6EDF3 } /* Name.Builtin */
+:root:not([data-theme="light"]) .hl .nc { color: #F0883E; font-weight: bold } /* Name.Class */
+:root:not([data-theme="light"]) .hl .no { color: #79C0FF; font-weight: bold } /* Name.Constant */
+:root:not([data-theme="light"]) .hl .nd { color: #D2A8FF; font-weight: bold } /* Name.Decorator */
+:root:not([data-theme="light"]) .hl .ni { color: #FFA657 } /* Name.Entity */
+:root:not([data-theme="light"]) .hl .ne { color: #F0883E; font-weight: bold } /* Name.Exception */
+:root:not([data-theme="light"]) .hl .nf { color: #D2A8FF; font-weight: bold } /* Name.Function */
+:root:not([data-theme="light"]) .hl .nl { color: #79C0FF; font-weight: bold } /* Name.Label */
+:root:not([data-theme="light"]) .hl .nn { color: #FF7B72 } /* Name.Namespace */
+:root:not([data-theme="light"]) .hl .nx { color: #E6EDF3 } /* Name.Other */
+:root:not([data-theme="light"]) .hl .py { color: #79C0FF } /* Name.Property */
+:root:not([data-theme="light"]) .hl .nt { color: #7EE787 } /* Name.Tag */
+:root:not([data-theme="light"]) .hl .nv { color: #79C0FF } /* Name.Variable */
+:root:not([data-theme="light"]) .hl .ow { color: #FF7B72; font-weight: bold } /* Operator.Word */
+:root:not([data-theme="light"]) .hl .pm { color: #E6EDF3 } /* Punctuation.Marker */
+:root:not([data-theme="light"]) .hl .w { color: #6E7681 } /* Text.Whitespace */
+:root:not([data-theme="light"]) .hl .mb { color: #A5D6FF } /* Literal.Number.Bin */
+:root:not([data-theme="light"]) .hl .mf { color: #A5D6FF } /* Literal.Number.Float */
+:root:not([data-theme="light"]) .hl .mh { color: #A5D6FF } /* Literal.Number.Hex */
+:root:not([data-theme="light"]) .hl .mi { color: #A5D6FF } /* Literal.Number.Integer */
+:root:not([data-theme="light"]) .hl .mo { color: #A5D6FF } /* Literal.Number.Oct */
+:root:not([data-theme="light"]) .hl .sa { color: #79C0FF } /* Literal.String.Affix */
+:root:not([data-theme="light"]) .hl .sb { color: #A5D6FF } /* Literal.String.Backtick */
+:root:not([data-theme="light"]) .hl .sc { color: #A5D6FF } /* Literal.String.Char */
+:root:not([data-theme="light"]) .hl .dl { color: #79C0FF } /* Literal.String.Delimiter */
+:root:not([data-theme="light"]) .hl .sd { color: #A5D6FF } /* Literal.String.Doc */
+:root:not([data-theme="light"]) .hl .s2 { color: #A5D6FF } /* Literal.String.Double */
+:root:not([data-theme="light"]) .hl .se { color: #79C0FF } /* Literal.String.Escape */
+:root:not([data-theme="light"]) .hl .sh { color: #79C0FF } /* Literal.String.Heredoc */
+:root:not([data-theme="light"]) .hl .si { color: #A5D6FF } /* Literal.String.Interpol */
+:root:not([data-theme="light"]) .hl .sx { color: #A5D6FF } /* Literal.String.Other */
+:root:not([data-theme="light"]) .hl .sr { color: #79C0FF } /* Literal.String.Regex */
+:root:not([data-theme="light"]) .hl .s1 { color: #A5D6FF } /* Literal.String.Single */
+:root:not([data-theme="light"]) .hl .ss { color: #A5D6FF } /* Literal.String.Symbol */
+:root:not([data-theme="light"]) .hl .bp { color: #E6EDF3 } /* Name.Builtin.Pseudo */
+:root:not([data-theme="light"]) .hl .fm { color: #D2A8FF; font-weight: bold } /* Name.Function.Magic */
+:root:not([data-theme="light"]) .hl .vc { color: #79C0FF } /* Name.Variable.Class */
+:root:not([data-theme="light"]) .hl .vg { color: #79C0FF } /* Name.Variable.Global */
+:root:not([data-theme="light"]) .hl .vi { color: #79C0FF } /* Name.Variable.Instance */
+:root:not([data-theme="light"]) .hl .vm { color: #79C0FF } /* Name.Variable.Magic */
+:root:not([data-theme="light"]) .hl .il { color: #A5D6FF } /* Literal.Number.Integer.Long */
+}
+pre { line-height: 125%; }
+td.linenos .normal { color: #6e7681; background-color: #0d1117; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: #6e7681; background-color: #0d1117; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #e6edf3; background-color: #6e7681; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #e6edf3; background-color: #6e7681; padding-left: 5px; padding-right: 5px; }
+:root[data-theme="dark"] .hl .hll { background-color: #6e7681 }
+:root[data-theme="dark"] .hl .c { color: #8B949E; font-style: italic } /* Comment */
+:root[data-theme="dark"] .hl .err { color: #F85149 } /* Error */
+:root[data-theme="dark"] .hl .esc { color: #E6EDF3 } /* Escape */
+:root[data-theme="dark"] .hl .g { color: #E6EDF3 } /* Generic */
+:root[data-theme="dark"] .hl .k { color: #FF7B72 } /* Keyword */
+:root[data-theme="dark"] .hl .l { color: #A5D6FF } /* Literal */
+:root[data-theme="dark"] .hl .n { color: #E6EDF3 } /* Name */
+:root[data-theme="dark"] .hl .o { color: #FF7B72; font-weight: bold } /* Operator */
+:root[data-theme="dark"] .hl .x { color: #E6EDF3 } /* Other */
+:root[data-theme="dark"] .hl .p { color: #E6EDF3 } /* Punctuation */
+:root[data-theme="dark"] .hl .ch { color: #8B949E; font-style: italic } /* Comment.Hashbang */
+:root[data-theme="dark"] .hl .cm { color: #8B949E; font-style: italic } /* Comment.Multiline */
+:root[data-theme="dark"] .hl .cp { color: #8B949E; font-weight: bold; font-style: italic } /* Comment.Preproc */
+:root[data-theme="dark"] .hl .cpf { color: #8B949E; font-style: italic } /* Comment.PreprocFile */
+:root[data-theme="dark"] .hl .c1 { color: #8B949E; font-style: italic } /* Comment.Single */
+:root[data-theme="dark"] .hl .cs { color: #8B949E; font-weight: bold; font-style: italic } /* Comment.Special */
+:root[data-theme="dark"] .hl .ge { color: #E6EDF3; font-style: italic } /* Generic.Emph */
+:root[data-theme="dark"] .hl .ges { color: #E6EDF3; font-weight: bold; font-style: italic } /* Generic.EmphStrong */
+:root[data-theme="dark"] .hl .gr { color: #FFA198 } /* Generic.Error */
+:root[data-theme="dark"] .hl .gh { color: #79C0FF; font-weight: bold } /* Generic.Heading */
+:root[data-theme="dark"] .hl .go { color: #8B949E } /* Generic.Output */
+:root[data-theme="dark"] .hl .gp { color: #8B949E } /* Generic.Prompt */
+:root[data-theme="dark"] .hl .gs { color: #E6EDF3; font-weight: bold } /* Generic.Strong */
+:root[data-theme="dark"] .hl .gu { color: #79C0FF } /* Generic.Subheading */
+:root[data-theme="dark"] .hl .gt { color: #FF7B72 } /* Generic.Traceback */
+:root[data-theme="dark"] .hl .g-Underline { color: #E6EDF3; text-decoration: underline } /* Generic.Underline */
+:root[data-theme="dark"] .hl .kc { color: #79C0FF } /* Keyword.Constant */
+:root[data-theme="dark"] .hl .kd { color: #FF7B72 } /* Keyword.Declaration */
+:root[data-theme="dark"] .hl .kn { color: #FF7B72 } /* Keyword.Namespace */
+:root[data-theme="dark"] .hl .kp { color: #79C0FF } /* Keyword.Pseudo */
+:root[data-theme="dark"] .hl .kr { color: #FF7B72 } /* Keyword.Reserved */
+:root[data-theme="dark"] .hl .kt { color: #FF7B72 } /* Keyword.Type */
+:root[data-theme="dark"] .hl .ld { color: #79C0FF } /* Literal.Date */
+:root[data-theme="dark"] .hl .m { color: #A5D6FF } /* Literal.Number */
+:root[data-theme="dark"] .hl .s { color: #A5D6FF } /* Literal.String */
+:root[data-theme="dark"] .hl .na { color: #E6EDF3 } /* Name.Attribute */
+:root[data-theme="dark"] .hl .nb { color: #E6EDF3 } /* Name.Builtin */
+:root[data-theme="dark"] .hl .nc { color: #F0883E; font-weight: bold } /* Name.Class */
+:root[data-theme="dark"] .hl .no { color: #79C0FF; font-weight: bold } /* Name.Constant */
+:root[data-theme="dark"] .hl .nd { color: #D2A8FF; font-weight: bold } /* Name.Decorator */
+:root[data-theme="dark"] .hl .ni { color: #FFA657 } /* Name.Entity */
+:root[data-theme="dark"] .hl .ne { color: #F0883E; font-weight: bold } /* Name.Exception */
+:root[data-theme="dark"] .hl .nf { color: #D2A8FF; font-weight: bold } /* Name.Function */
+:root[data-theme="dark"] .hl .nl { color: #79C0FF; font-weight: bold } /* Name.Label */
+:root[data-theme="dark"] .hl .nn { color: #FF7B72 } /* Name.Namespace */
+:root[data-theme="dark"] .hl .nx { color: #E6EDF3 } /* Name.Other */
+:root[data-theme="dark"] .hl .py { color: #79C0FF } /* Name.Property */
+:root[data-theme="dark"] .hl .nt { color: #7EE787 } /* Name.Tag */
+:root[data-theme="dark"] .hl .nv { color: #79C0FF } /* Name.Variable */
+:root[data-theme="dark"] .hl .ow { color: #FF7B72; font-weight: bold } /* Operator.Word */
+:root[data-theme="dark"] .hl .pm { color: #E6EDF3 } /* Punctuation.Marker */
+:root[data-theme="dark"] .hl .w { color: #6E7681 } /* Text.Whitespace */
+:root[data-theme="dark"] .hl .mb { color: #A5D6FF } /* Literal.Number.Bin */
+:root[data-theme="dark"] .hl .mf { color: #A5D6FF } /* Literal.Number.Float */
+:root[data-theme="dark"] .hl .mh { color: #A5D6FF } /* Literal.Number.Hex */
+:root[data-theme="dark"] .hl .mi { color: #A5D6FF } /* Literal.Number.Integer */
+:root[data-theme="dark"] .hl .mo { color: #A5D6FF } /* Literal.Number.Oct */
+:root[data-theme="dark"] .hl .sa { color: #79C0FF } /* Literal.String.Affix */
+:root[data-theme="dark"] .hl .sb { color: #A5D6FF } /* Literal.String.Backtick */
+:root[data-theme="dark"] .hl .sc { color: #A5D6FF } /* Literal.String.Char */
+:root[data-theme="dark"] .hl .dl { color: #79C0FF } /* Literal.String.Delimiter */
+:root[data-theme="dark"] .hl .sd { color: #A5D6FF } /* Literal.String.Doc */
+:root[data-theme="dark"] .hl .s2 { color: #A5D6FF } /* Literal.String.Double */
+:root[data-theme="dark"] .hl .se { color: #79C0FF } /* Literal.String.Escape */
+:root[data-theme="dark"] .hl .sh { color: #79C0FF } /* Literal.String.Heredoc */
+:root[data-theme="dark"] .hl .si { color: #A5D6FF } /* Literal.String.Interpol */
+:root[data-theme="dark"] .hl .sx { color: #A5D6FF } /* Literal.String.Other */
+:root[data-theme="dark"] .hl .sr { color: #79C0FF } /* Literal.String.Regex */
+:root[data-theme="dark"] .hl .s1 { color: #A5D6FF } /* Literal.String.Single */
+:root[data-theme="dark"] .hl .ss { color: #A5D6FF } /* Literal.String.Symbol */
+:root[data-theme="dark"] .hl .bp { color: #E6EDF3 } /* Name.Builtin.Pseudo */
+:root[data-theme="dark"] .hl .fm { color: #D2A8FF; font-weight: bold } /* Name.Function.Magic */
+:root[data-theme="dark"] .hl .vc { color: #79C0FF } /* Name.Variable.Class */
+:root[data-theme="dark"] .hl .vg { color: #79C0FF } /* Name.Variable.Global */
+:root[data-theme="dark"] .hl .vi { color: #79C0FF } /* Name.Variable.Instance */
+:root[data-theme="dark"] .hl .vm { color: #79C0FF } /* Name.Variable.Magic */
+:root[data-theme="dark"] .hl .il { color: #A5D6FF } /* Literal.Number.Integer.Long */
+</style>
+
+</head>
+<body>
+<div class="shell">
+  <aside class="rail" aria-label="Navigation">
+    <div>
+      <div class="brand">Mayank · SDE2 prep</div>
+      <a class="logo" href="#today">SDE2 Java Study Guide</a>
+    </div>
+    <button class="searchbtn" data-act="search" type="button">
+      <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      Search the guide <kbd>/</kbd>
+    </button>
+    <nav class="nav" id="nav">
+      <a href="#today" data-v="today"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Today</a>
+      <a href="#plan" data-v="plan"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 2v4M16 2v4"/></svg>16-week plan</a>
+      <a href="#chapters" data-v="chapters"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5V5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2"/><path d="M19 17v4H6"/></svg>Chapters</a>
+      <a href="#notes" data-v="notes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>My notes</a>
+    </nav>
+    <div id="railctx"></div>
+    <div class="railfoot">
+      <div class="sync" id="sync" data-s="local"><i></i><span>Saved in this browser</span></div>
+      <div class="railbtns">
+        <button class="btn" data-act="theme" type="button"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18Z" fill="currentColor"/></svg> Theme</button>
+        <a class="btn" href="#today" data-act="backup">Backup</a>
+      </div>
+    </div>
+  </aside>
+
+  <div style="min-width:0">
+    <header class="mobbar">
+      <a class="logo" href="#today">SDE2 Study Guide</a>
+      <span class="spacer"></span>
+      <div class="sync" id="sync2" data-s="local" title="Where your progress is saved"><i></i></div>
+      <button class="btn" data-act="theme" type="button" aria-label="Switch theme"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18Z" fill="currentColor"/></svg></button>
+    </header>
+    <main id="main"><div class="page"><p class="loading">Loading the guide…</p></div></main>
+  </div>
+</div>
+
+<nav class="tabbar" aria-label="Sections">
+  <a href="#today" data-v="today"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2"/></svg>Today</a>
+  <a href="#plan" data-v="plan"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18"/></svg>Plan</a>
+  <a href="#chapters" data-v="chapters"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5V5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2"/></svg>Chapters</a>
+  <a href="#notes" data-v="notes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>Notes</a>
+  <button type="button" data-act="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>Search</button>
+</nav>
+
+<div class="sdlg" id="sdlg" hidden>
+  <div class="sbox" role="dialog" aria-label="Search the guide">
+    <input id="sq" type="search" placeholder="Search: HashMap resize, N+1, outbox, CAP…" autocomplete="off">
+    <div class="sres" id="sres"><p class="shint">Type at least 2 letters. ↑ ↓ to move, Enter to open, Esc to close.</p></div>
+  </div>
+</div>
+<div class="sheet" id="sheet" hidden></div>
+
+<script>
+(() => {
+"use strict";
+const KEY = "sde2guide.v1";
+const $ = (s, el = document) => el.querySelector(s);
+const $$ = (s, el = document) => [...el.querySelectorAll(s)];
+const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const DAY = 864e5;
+const today = () => { const d = new Date(); return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); };
+const dnum = s => Math.round(new Date(s+"T00:00:00").getTime()/DAY);
+const fmt = s => new Date(s+"T00:00:00").toLocaleDateString(undefined,{day:"numeric",month:"short"});
+const INTERVALS = [1, 3, 7, 14, 30, 60];
+
+/* ---------------- state ---------------- */
+let S = {read:{}, rev:{}, tasks:{}, notes:{}, last:null, prefs:{quiz:false, size:16, theme:null}, v:0, nv:0};
+try { const raw = JSON.parse(localStorage.getItem(KEY) || "null"); if (raw && typeof raw === "object") S = Object.assign(S, raw); } catch(e) {}
+S.prefs = Object.assign({quiz:false, size:16, theme:null}, S.prefs || {});
+if (S.done && !Object.keys(S.read).length) delete S.done;
+function saveLocal(){ try { localStorage.setItem(KEY, JSON.stringify(S)); } catch(e) {} }
+function applyPrefs(){
+  if (S.prefs.theme) document.documentElement.dataset.theme = S.prefs.theme; else delete document.documentElement.dataset.theme;
+  document.documentElement.style.setProperty("--read-size", (S.prefs.size||16) + "px");
+}
+applyPrefs();
+
+/* ---------------- cloud sync (your Claude account, private to you) ---------------- */
+const cloud = {pref:null, nref:null, on:false};
+function setSync(s){
+  const txt = {local:"Saved in this browser", cloud:"Synced to your account", saving:"Saving…"}[s];
+  for (const el of [$("#sync"), $("#sync2")]) { if (!el) continue; el.dataset.s = s; const sp = el.querySelector("span"); if (sp) sp.textContent = txt; el.title = txt; }
+}
+const writer = (getRef, payload) => {
+  let busy = false, dirty = false, timer = null;
+  async function flush(){
+    const ref = getRef(); if (!ref || busy) return;
+    busy = true; setSync("saving");
+    while (dirty) {
+      dirty = false;
+      try { await ref.set(payload()); }
+      catch (e) {
+        if (e && e.code === "unavailable") { await new Promise(r => setTimeout(r, 1200 + Math.random()*800)); try { await ref.set(payload()); } catch(_) { dirty = true; break; } }
+        else { if (e && e.code === "quota_exceeded") toast("Cloud storage is full. Your progress is still saved in this browser."); else if (e && e.code === "invalid_argument") toast("That note is too large to sync. Shorten it a little."); break; }
+      }
+    }
+    busy = false; setSync(cloud.on ? "cloud" : "local");
+  }
+  return { mark(delay = 700){ dirty = true; clearTimeout(timer); timer = setTimeout(flush, delay); } };
+};
+const pW = writer(() => cloud.pref, () => ({read:S.read, rev:S.rev, tasks:S.tasks, last:S.last, prefs:S.prefs, v:S.v}));
+const nW = writer(() => cloud.nref, () => ({notes:S.notes, nv:S.nv}));
+function changed(kind = "p", delay){
+  if (kind === "n") S.nv = Date.now(); else S.v = Date.now();
+  saveLocal();
+  if (cloud.on) (kind === "n" ? nW : pW).mark(delay);
+}
+async function initCloud(){
+  if (!window.claude || !window.claude.use) return;
+  try {
+    const [user, db] = await Promise.all([window.claude.use("user"), window.claude.use("db")]);
+    if (!user || !db) return;
+    const uid = await user.id(); if (!uid) return;
+    cloud.pref = db.doc("data/users/" + uid + "/progress");
+    cloud.nref = db.doc("data/users/" + uid + "/notes");
+    cloud.on = true; setSync("cloud");
+    cloud.pref.onSnapshot(snap => {
+      if (snap.metadata.hasPendingWrites) return;
+      if (!snap.exists) { if (S.v) pW.mark(10); return; }
+      const d = snap.data() || {};
+      if ((d.v||0) > (S.v||0)) {
+        S.read = Object.assign({}, d.read||{}); S.rev = JSON.parse(JSON.stringify(d.rev||{})); S.tasks = Object.assign({}, d.tasks||{});
+        S.last = d.last || null; S.prefs = Object.assign(S.prefs, d.prefs||{}); S.v = d.v; saveLocal(); applyPrefs(); refresh();
+      } else if ((d.v||0) < (S.v||0)) pW.mark(10);
+    }, () => { cloud.on = false; setSync("local"); });
+    cloud.nref.onSnapshot(snap => {
+      if (snap.metadata.hasPendingWrites) return;
+      if (!snap.exists) { if (S.nv) nW.mark(10); return; }
+      const d = snap.data() || {};
+      if ((d.nv||0) > (S.nv||0)) {
+        S.notes = JSON.parse(JSON.stringify(d.notes||{})); S.nv = d.nv; saveLocal();
+        if (!document.activeElement || document.activeElement.tagName !== "TEXTAREA") refresh();
+      } else if ((d.nv||0) < (S.nv||0)) nW.mark(10);
+    }, () => {});
+  } catch(e) { cloud.on = false; setSync("local"); }
+}
+
+/* ---------------- data ---------------- */
+let D = null, SEC = {}, ORDER = [], CH = {};
+const content = new Map();
+async function loadData(){
+  const r = await fetch("data.json"); D = await r.json();
+  for (const c of D.chapters) {
+    CH[c.n] = c;
+    for (const [num, id, title] of c.secs) if (num) { SEC[num] = {num, id, title, ch:c.n}; ORDER.push(num); }
+  }
+}
+const isRead = n => !!S.read[n];
+function dueInfo(n){
+  if (!S.read[n]) return null;
+  const r = S.rev[n] || {n:0, last:S.read[n]};
+  const due = dnum(r.last) + INTERVALS[Math.min(r.n, INTERVALS.length-1)];
+  return {due, overdue: dnum(today()) - due, count:r.n, last:r.last};
+}
+const isDue = n => { const d = dueInfo(n); return !!d && d.overdue >= 0; };
+function weekItems(w){
+  const items = [];
+  for (const g of w.groups) { for (const n of g.secs) items.push({sec:n}); for (const t of g.tasks) items.push({task:t.k}); }
+  for (const t of w.out) items.push({task:t.k});
+  if (w.gate) for (const t of w.gate.items) items.push({task:t.k});
+  return items;
+}
+const itemDone = it => it.sec ? isRead(it.sec) : !!S.tasks[it.task];
+function weekStats(w){ const its = weekItems(w); const got = its.filter(itemDone).length; return {got, tot:its.length, done: its.length > 0 && got === its.length}; }
+function weekDates(w){ const s = new Date(D.planStart+"T00:00:00").getTime() + (w.n-1)*7*DAY; return [s, s + 6*DAY]; }
+function currentWeekNo(){
+  const t = dnum(today()), s = dnum(D.planStart);
+  if (t < s) return 0;
+  return Math.min(16, Math.floor((t - s)/7) + 1);
+}
+function nextNew(){
+  for (const w of D.weeks) for (const g of w.groups) for (const n of g.secs) if (!isRead(n)) return n;
+  return ORDER.find(n => !isRead(n)) || null;
+}
+function dueList(){
+  return ORDER.filter(n => S.read[n]).map(n => ({n, ...dueInfo(n)})).filter(x => x.overdue >= 0).sort((a,b) => b.overdue - a.overdue || a.count - b.count);
+}
+
+/* ---------------- views ---------------- */
+const main = $("#main");
+let view = "today", viewArg = null;
+
+function stats(){
+  const read = ORDER.filter(isRead).length;
+  const revs = Object.values(S.rev).reduce((a,r) => a + (r.n||0), 0);
+  const notes = Object.values(S.notes).filter(x => x && x.t && x.t.trim()).length;
+  const weeks = D.weeks.filter(w => weekStats(w).done).length;
+  return {read, revs, notes, weeks, pct: Math.round(read / ORDER.length * 100)};
+}
+function headerBlock(eyebrow, title, lede){
+  const st = stats();
+  return `<div class="eyebrow">${eyebrow}</div><h1 class="h">${title}</h1>${lede ? `<p class="lede">${lede}</p>` : ""}
+  <div class="meter"><div class="bar"><i style="width:${st.pct}%"></i></div><span class="pct">${st.pct}%</span></div>
+  <div class="tiles">
+    <div class="tile"><b>${st.weeks}<small>/16</small></b><span>Weeks done</span></div>
+    <div class="tile"><b>${st.read}<small>/${ORDER.length}</small></b><span>Sections read</span></div>
+    <div class="tile"><b>${st.revs}</b><span>Revisions</span></div>
+    <div class="tile"><b>${st.notes}</b><span>Notes written</span></div>
+  </div>`;
+}
+const secLink = n => "#s" + n.replace(".", "-");
+const secLabel = n => `<span class="sn">${n}</span>${esc(SEC[n].title)}`;
+
+function renderToday(){
+  const cw = currentWeekNo();
+  const w = D.weeks[Math.max(0, cw-1)];
+  const [ws] = weekDates(D.weeks[0]);
+  const startTxt = new Date(ws).toLocaleDateString(undefined,{weekday:"short", day:"numeric", month:"short"});
+  const eyebrow = cw === 0 ? `Plan starts ${startTxt}` : `Week ${cw} of 16 · ${esc(w.dates)}`;
+  const nn = nextNew(), dl = dueList();
+  let cards = "";
+  if (nn) { const s = SEC[nn]; cards += `<a class="tcard new" href="${secLink(nn)}"><span class="k">New · 1 section</span><span class="t">${secLabel(nn)}</span><span class="m">Chapter ${s.ch} · ${esc(CH[s.ch].title)}</span><span class="go">Start reading →</span></a>`; }
+  else cards += `<div class="tcard none"><span class="k">New</span><span class="t">Every section is read.</span><span class="m">Spend the time on mocks and revision.</span></div>`;
+  const rv = dl.slice(0, 2);
+  rv.forEach(x => { cards += `<a class="tcard rev" href="${secLink(x.n)}"><span class="k">Revise · ${x.overdue > 0 ? x.overdue + " day" + (x.overdue>1?"s":"") + " overdue" : "due today"}</span><span class="t">${secLabel(x.n)}</span><span class="m">Revised ${x.count} time${x.count===1?"":"s"} · last ${fmt(x.last)}</span><span class="go">Revise now →</span></a>`; });
+  for (let i = rv.length; i < 2; i++) cards += `<div class="tcard none"><span class="k">Revise</span><span class="t">${ORDER.some(isRead) ? "Nothing due yet." : "Nothing to revise yet."}</span><span class="m">${ORDER.some(isRead) ? "Sections come back here 1, 3, 7, 14 and 30 days after you read them." : "Read your first section; it comes back here tomorrow."}</span></div>`;
+  let cont = "";
+  if (S.last && SEC[S.last]) cont = `<a class="continue" href="${secLink(S.last)}"><span>Continue where you stopped</span><b>${secLabel(S.last)}</b><span class="go">Open →</span></a>`;
+  const wk = cw ? D.weeks[cw-1] : D.weeks[0];
+  main.innerHTML = `<div class="page">${headerBlock(eyebrow, "Today’s study set", "One new section and two revisions a day. Tick sections as you read them; everything else follows.")}
+    <div class="phase"><h2>1 new + 2 revise</h2><div class="rule"></div><span class="cnt">${dl.length} due in total</span></div>
+    <div class="todayset">${cards}</div>${cont}
+    <div class="phase"><h2>${cw ? "This week" : "Week 1"}</h2><div class="rule"></div><span class="cnt"><a href="#plan">Open the plan →</a></span></div>
+    ${weekCard(wk, true)}
+    <p class="howto"><b>How a section works:</b> read it, then press <b>Mark as read</b>. When it shows up under Revise, open it, answer its interview questions aloud with Quiz mode on, and press <b>Revised</b>. Write anything you want to remember in <b>Notes</b>.</p>
+    ${backupPanel()}</div>`;
+  bindWeekCards(); bindBackup();
+}
+
+const PHASES = [["Java foundations", 1, 4], ["Concurrency, JVM, Spring core", 5, 8], ["Spring, databases, project", 9, 12], ["Interview mode", 13, 16]];
+let planFilter = "all", hideDone = false;
+function weekCard(w, open){
+  const st = weekStats(w), cw = currentWeekNo(), pct = st.tot ? Math.round(st.got/st.tot*100) : 0;
+  let body = "";
+  for (const g of w.groups) {
+    if (!g.secs.length && !g.tasks.length) continue;
+    body += `<div class="secttl">${esc(g.label)}</div><ul class="check">`;
+    for (const n of g.secs) {
+      const on = isRead(n), du = isDue(n);
+      body += `<li class="${on?"on":""}"><input type="checkbox" data-sec="${n}" ${on?"checked":""} aria-label="Mark ${n} as read"><a class="lab" href="${secLink(n)}">${secLabel(n)}</a>${du?'<span class="tag due">REVISE</span>':""}</li>`;
+    }
+    for (const t of g.tasks) {
+      const on = !!S.tasks[t.k];
+      const lab = t.ch != null && CH[t.ch] ? `<a class="lab" href="#c${t.ch}">${esc(t.t)}</a>` : `<span class="lab">${esc(t.t)}</span>`;
+      body += `<li class="${on?"on":""}"><input type="checkbox" data-task="${t.k}" ${on?"checked":""} aria-label="Mark task done">${lab}</li>`;
+    }
+    body += `</ul>`;
+  }
+  if (w.out.length) {
+    body += `<div class="secttl">End-of-week output</div><ul class="check">`;
+    for (const t of w.out) { const on = !!S.tasks[t.k]; body += `<li class="${on?"on":""}"><input type="checkbox" data-task="${t.k}" ${on?"checked":""} aria-label="Mark output done"><span class="lab">${esc(t.t)}</span></li>`; }
+    body += `</ul>`;
+  }
+  if (w.gate) {
+    body += `<div class="gatebox"><div class="secttl">Gate ${w.gate.n} · pass before moving on</div><ul class="check">`;
+    for (const t of w.gate.items) { const on = !!S.tasks[t.k]; body += `<li class="${on?"on":""}"><input type="checkbox" data-task="${t.k}" ${on?"checked":""} aria-label="Mark gate item passed"><span class="lab">${esc(t.t)}</span></li>`; }
+    body += `</ul></div>`;
+  }
+  return `<details class="day" data-w="${w.n}" data-done="${st.done?1:0}" data-now="${w.n===cw?1:0}"${open?" open":""}>
+    <summary><span class="dnum">W${String(w.n).padStart(2,"0")}</span>
+    <span class="dtop"><span class="t">${esc(w.topic)}${w.n===cw?'<span class="pill now">This week</span>':""}${w.gate?`<span class="pill gate">Gate ${w.gate.n}</span>`:""}</span>
+    <span class="m">${esc(w.dates)} · ${st.got}/${st.tot} done</span></span>
+    <span class="mini"><i style="width:${pct}%"></i></span><span class="caret">&#9654;</span></summary>
+    <div class="wbody">${body}</div></details>`;
+}
+function renderPlan(openWeek){
+  const cw = currentWeekNo();
+  let html = `<div class="page">${headerBlock("16 weeks · Oct 5 → Jan 24", "The plan", "Weekdays: one hour of Java, Spring or databases. Saturday: LLD. Sunday: HLD. Ticking a section here also marks it read in the chapter.")}
+    <div class="controls">
+      <button class="chip" data-f="all" aria-pressed="${planFilter==="all"}">All weeks</button>
+      ${PHASES.map((p,i) => `<button class="chip" data-f="${i}" aria-pressed="${planFilter===String(i)}">${p[0]}</button>`).join("")}
+      <span class="spacer"></span>
+      <button class="btn" id="gonow" type="button">Go to this week</button>
+      <button class="chip" id="hide" aria-pressed="${hideDone}">Hide done</button>
+    </div><div id="weeks">`;
+  let shown = 0;
+  PHASES.forEach((p, i) => {
+    if (planFilter !== "all" && planFilter !== String(i)) return;
+    const ws = D.weeks.filter(w => w.n >= p[1] && w.n <= p[2]);
+    const vis = ws.filter(w => !(hideDone && weekStats(w).done));
+    if (!vis.length) return;
+    html += `<div class="phase"><h2>${p[0]}</h2><div class="rule"></div><span class="cnt">Weeks ${p[1]}–${p[2]} · ${ws.filter(w => weekStats(w).done).length}/${ws.length} done</span></div>`;
+    for (const w of vis) { html += weekCard(w, openWeek ? w.n === openWeek : w.n === (cw || 1)); shown++; }
+  });
+  if (!shown) html += `<p class="empty">Nothing left under this filter. Every week here is done.</p>`;
+  html += `</div>${backupPanel()}</div>`;
+  main.innerHTML = html;
+  $$(".chip[data-f]").forEach(b => b.onclick = () => { planFilter = b.dataset.f; renderPlan(); });
+  $("#hide").onclick = () => { hideDone = !hideDone; renderPlan(); };
+  $("#gonow").onclick = () => { planFilter = "all"; hideDone = false; renderPlan(cw || 1); const el = $(`.day[data-w="${cw||1}"]`); if (el) el.scrollIntoView({behavior:"smooth", block:"center"}); };
+  bindWeekCards(); bindBackup();
+  if (openWeek) { const el = $(`.day[data-w="${openWeek}"]`); if (el) setTimeout(() => el.scrollIntoView({block:"center"}), 30); }
+}
+function bindWeekCards(){
+  main.onchange = e => {
+    const cb = e.target.closest("input[type=checkbox]"); if (!cb) return;
+    if (cb.dataset.sec) { const n = cb.dataset.sec; if (cb.checked) S.read[n] = S.read[n] || today(); else { delete S.read[n]; delete S.rev[n]; } }
+    if (cb.dataset.task) { if (cb.checked) S.tasks[cb.dataset.task] = 1; else delete S.tasks[cb.dataset.task]; }
+    changed("p");
+    cb.closest("li").classList.toggle("on", cb.checked);
+    const det = cb.closest(".day");
+    if (det) {
+      const w = D.weeks.find(x => x.n === +det.dataset.w), st = weekStats(w);
+      det.dataset.done = st.done ? 1 : 0;
+      det.querySelector(".mini>i").style.width = Math.round(st.got/st.tot*100) + "%";
+      det.querySelector(".dtop .m").textContent = `${w.dates} · ${st.got}/${st.tot} done`;
+      if (st.done) toast(`Week ${w.n} complete.`);
+    }
+    updateHeader();
+  };
+}
+function updateHeader(){
+  const st = stats();
+  const bar = $(".page > .meter .bar>i"); if (bar) bar.style.width = st.pct + "%";
+  const pct = $(".page > .meter .pct"); if (pct) pct.textContent = st.pct + "%";
+  const t = $$(".page > .tiles .tile b");
+  if (t.length === 4) { t[0].innerHTML = `${st.weeks}<small>/16</small>`; t[1].innerHTML = `${st.read}<small>/${ORDER.length}</small>`; t[2].textContent = st.revs; t[3].textContent = st.notes; }
+}
+
+function renderChapters(){
+  let html = `<div class="page">${headerBlock("17 chapters · 5 parts", "Chapters", "Every topic follows the same steps: Why, what happens inside, how it works, an example, when to use it, what can go wrong, and interview questions.")}`;
+  for (const p of D.parts) {
+    const chs = D.chapters.filter(c => c.part === p.n);
+    const secs = chs.flatMap(c => c.secs.filter(s => s[0]).map(s => s[0]));
+    html += `<div class="phase"><h2>Part ${p.n} · ${esc(p.title)}</h2><div class="rule"></div><span class="cnt">${secs.filter(isRead).length}/${secs.length} read</span></div><div class="chgrid">`;
+    for (const c of chs) {
+      const ns = c.secs.filter(s => s[0]).map(s => s[0]);
+      const got = ns.filter(isRead).length, due = ns.filter(isDue).length;
+      const pct = ns.length ? Math.round(got/ns.length*100) : 0;
+      html += `<a class="chcard${ns.length && got===ns.length?" done":""}" href="#c${c.n}"><span class="top"><span class="n">${String(c.n).padStart(2,"0")}</span><span class="t">${esc(c.title)}</span></span>
+        <span class="row"><span class="bar"><i style="width:${pct}%"></i></span>${ns.length ? `${got}/${ns.length}` : "guide"}${due ? ` · <span style="color:var(--due)">${due} to revise</span>` : ""}</span></a>`;
+    }
+    html += `</div>`;
+  }
+  main.innerHTML = html + backupPanel() + `</div>`;
+  bindBackup();
+}
+
+function renderNotes(){
+  const keys = ORDER.filter(n => S.notes[n] && S.notes[n].t && S.notes[n].t.trim());
+  let html = `<div class="page"><div class="eyebrow">${keys.length} note${keys.length===1?"":"s"}</div><h1 class="h">My notes</h1><p class="lede">Notes you write under any section collect here, in book order.</p>
+    <div class="controls"><span class="spacer"></span><button class="btn" id="exportnotes" type="button" ${keys.length?"":"disabled"}>Save notes as Markdown</button></div><div style="margin-top:14px">`;
+  if (!keys.length) html += `<p class="empty">No notes yet. Open any section and press <b>Notes</b> to write one, for example the interview line you keep forgetting.</p>`;
+  for (const n of keys) {
+    const s = SEC[n];
+    html += `<div class="nitem"><a href="${secLink(n)}"><span class="sn">${n}</span>${esc(s.title)}</a> <small>· Chapter ${s.ch} · ${S.notes[n].u ? fmt(S.notes[n].u) : ""}</small><p>${esc(S.notes[n].t)}</p></div>`;
+  }
+  main.innerHTML = html + `</div></div>`;
+  const ex = $("#exportnotes");
+  if (ex) ex.onclick = async () => {
+    const md = "# My SDE2 study notes\n\n" + keys.map(n => `## ${n} ${SEC[n].title}\n\n${S.notes[n].t.trim()}\n`).join("\n");
+    await saveFile("sde2-study-notes.md", md);
+  };
+}
+
+/* ---------------- reader ---------------- */
+let io = null;
+async function renderReader(chn, secId){
+  const c = CH[chn]; if (!c) { location.hash = "chapters"; return; }
+  if (view !== "reader" || viewArg !== chn) {
+    main.innerHTML = `<div class="page reader"><p class="loading">Opening chapter ${chn}…</p></div>`;
+    let html = content.get(chn);
+    if (!html) { const r = await fetch(`content/ch${String(chn).padStart(2,"0")}.html`); html = await r.text(); content.set(chn, html); }
+    const i = D.chapters.indexOf(c), prev = D.chapters[i-1], next = D.chapters[i+1];
+    const part = D.parts.find(p => p.n === c.part);
+    main.innerHTML = `<div class="page reader${S.prefs.quiz?" quiz":""}" id="rd">
+      <div class="rtools">
+        <span class="where"><b>Ch ${c.n}</b> · ${esc(c.title)}</span>
+        <span class="bar"><i id="chbar"></i></span><span class="pct" id="chpct"></span>
+        <button class="btn mobonly" id="tocbtn" type="button">Sections</button>
+        <div class="seg fs" role="group" aria-label="Text size"><button type="button" data-fs="-1" aria-label="Smaller text">A−</button><button type="button" data-fs="1" aria-label="Larger text">A+</button></div>
+        <div class="seg"><button type="button" id="quiz" aria-pressed="${!!S.prefs.quiz}" title="Blur interview answers until you tap them">Quiz mode</button></div>
+      </div>
+      <div class="chhead"><span class="chn">Part ${c.part} · ${esc(part ? part.title : "")}</span><h1 class="h">${c.n}. ${esc(c.title)}</h1></div>
+      <article class="prose" id="prose">${html}</article>
+      <nav class="pn">${prev ? `<a href="#c${prev.n}"><span>← Previous</span>${prev.n}. ${esc(prev.title)}</a>` : "<span></span>"}${next ? `<a class="next" href="#c${next.n}"><span>Next →</span>${next.n}. ${esc(next.title)}</a>` : ""}</nav>
+    </div>`;
+    view = "reader"; viewArg = chn;
+    enhanceReader(c);
+    railCtx(c);
+  }
+  if (secId) { const el = document.getElementById(secId); if (el) el.scrollIntoView({block:"start"}); }
+  else window.scrollTo(0, 0);
+}
+function enhanceReader(c){
+  const prose = $("#prose");
+  for (const h of $$("h2[id^='s']", prose)) {
+    const m = h.id.match(/^s(\d+)-(\d+)$/); if (!m) continue;
+    const n = m[1] + "." + m[2];
+    const tool = document.createElement("div");
+    tool.className = "stool"; tool.dataset.n = n;
+    h.after(tool);
+    const nb = document.createElement("div");
+    nb.className = "notebox"; nb.hidden = !(S.notes[n] && S.notes[n].t);
+    nb.innerHTML = `<textarea id="note-${n.replace(".","-")}" placeholder="Your note for ${n}: what clicked, what you forgot, the line to say in the interview…"></textarea><small></small>`;
+    nb.querySelector("textarea").value = (S.notes[n] && S.notes[n].t) || "";
+    tool.after(nb);
+    paintTool(tool);
+  }
+  for (const p of $$("p", prose)) {
+    const s = p.firstElementChild;
+    if (s && s.tagName === "STRONG" && p.firstChild === s && /^Q\d+\./.test(s.textContent)) {
+      p.classList.add("qa");
+      const ans = document.createElement("span"); ans.className = "ans";
+      while (s.nextSibling) ans.appendChild(s.nextSibling);
+      p.appendChild(ans);
+    }
+  }
+  prose.onclick = e => {
+    const qa = e.target.closest("p.qa"); if (qa && S.prefs.quiz) { qa.classList.toggle("shown"); return; }
+    const b = e.target.closest(".tbtn"); if (!b) return;
+    const tool = b.closest(".stool"), n = tool.dataset.n;
+    if (b.classList.contains("read")) {
+      if (S.read[n]) { delete S.read[n]; delete S.rev[n]; } else { S.read[n] = today(); toast(`${n} marked as read. It comes back for revision tomorrow.`); }
+      changed("p");
+    } else if (b.classList.contains("rev")) {
+      const r = S.rev[n] || {n:0, last:null};
+      if (r.last === today() && r.n > 0) { r.n -= 1; r.last = r.prev || S.read[n] || null; delete r.prev; if (!r.n) delete S.rev[n]; else S.rev[n] = r; }
+      else { if (!S.read[n]) S.read[n] = today(); S.rev[n] = {n: r.n + 1, last: today(), prev: r.last}; const nx = INTERVALS[Math.min(r.n+1, INTERVALS.length-1)]; toast(`Revision logged. Next one in ${nx} days.`); }
+      changed("p");
+    } else if (b.classList.contains("note")) {
+      const nb = tool.nextElementSibling; nb.hidden = !nb.hidden;
+      if (!nb.hidden) nb.querySelector("textarea").focus();
+    }
+    paintTool(tool); paintProgress(); railCtx(CH[viewArg]);
+  };
+  let nt = null;
+  prose.oninput = e => {
+    const ta = e.target.closest(".notebox textarea"); if (!ta) return;
+    const n = ta.closest(".notebox").previousElementSibling.dataset.n;
+    const t = ta.value;
+    if (t.trim()) S.notes[n] = {t, u: today()}; else delete S.notes[n];
+    const sm = ta.nextElementSibling; sm.textContent = "Saving…";
+    clearTimeout(nt); nt = setTimeout(() => { changed("n", 200); sm.textContent = cloud.on ? "Saved to your account" : "Saved in this browser"; paintTool(ta.closest(".notebox").previousElementSibling); }, 600);
+  };
+  $("#quiz").onclick = e => { S.prefs.quiz = !S.prefs.quiz; e.currentTarget.setAttribute("aria-pressed", S.prefs.quiz); $("#rd").classList.toggle("quiz", S.prefs.quiz); changed("p"); };
+  $$("[data-fs]").forEach(b => b.onclick = () => { S.prefs.size = Math.max(14, Math.min(20, (S.prefs.size||16) + (+b.dataset.fs))); applyPrefs(); changed("p", 1500); });
+  const tb = $("#tocbtn"); if (tb) tb.onclick = () => openSheet(c);
+  paintProgress();
+  if (io) io.disconnect();
+  let lastSeen = null, lt = null;
+  io = new IntersectionObserver(ents => {
+    for (const en of ents) if (en.isIntersecting) {
+      const m = en.target.id.match(/^s(\d+)-(\d+)$/); if (!m) continue;
+      const n = m[1] + "." + m[2]; if (n === lastSeen) continue; lastSeen = n;
+      $$("#railctx .toc a").forEach(a => a.classList.toggle("here", a.dataset.n === n));
+      clearTimeout(lt); lt = setTimeout(() => { if (S.last !== n) { S.last = n; changed("p", 4000); } }, 2500);
+    }
+  }, {rootMargin: "-10% 0px -75% 0px"});
+  $$("h2[id^='s']", prose).forEach(h => io.observe(h));
+}
+function paintTool(tool){
+  const n = tool.dataset.n, rd = S.read[n], r = S.rev[n], di = dueInfo(n), hasNote = S.notes[n] && S.notes[n].t;
+  let due = "";
+  if (di) due = di.overdue >= 0 ? `<span class="due now">Revision due${di.overdue>0?` (${di.overdue}d late)`:" today"}</span>` : `<span class="due">Next revision ${fmt(new Date((di.due)*DAY).toISOString().slice(0,10))}</span>`;
+  const revToday = r && r.last === today();
+  tool.innerHTML = `<button type="button" class="tbtn read" aria-pressed="${!!rd}">${rd ? "✓ Read · " + fmt(rd) : "Mark as read"}</button>
+    <button type="button" class="tbtn rev" aria-pressed="${!!revToday}" title="${revToday ? "Press again to undo today’s revision" : "Log a revision of this section"}">${revToday ? "✓ Revised today" : "Revised"}${r && r.n ? " · " + r.n : ""}</button>
+    <button type="button" class="tbtn note" aria-pressed="${!!hasNote}">${hasNote ? "✎ Note" : "Notes"}</button>${due}`;
+}
+function paintProgress(){
+  const c = CH[viewArg]; if (!c) return;
+  const ns = c.secs.filter(s => s[0]).map(s => s[0]);
+  const pct = ns.length ? Math.round(ns.filter(isRead).length / ns.length * 100) : 0;
+  const b = $("#chbar"), p = $("#chpct"); if (b) b.style.width = pct + "%"; if (p) p.textContent = ns.length ? pct + "%" : "";
+}
+function tocHtml(c){
+  return `<ul class="toc">` + c.secs.map(([num, id, title]) => {
+    const cls = num ? (isDue(num) ? "due" : isRead(num) ? "read" : "") : "";
+    return `<li><a href="#${id.startsWith("s") ? id : "c" + c.n}" data-n="${num||""}" data-id="${id}"><span class="dot ${cls}"></span><span class="sn">${num||""}</span><span>${esc(title)}</span></a></li>`;
+  }).join("") + `</ul>`;
+}
+function railCtx(c){
+  const el = $("#railctx");
+  if (!c) { el.innerHTML = ""; return; }
+  el.innerHTML = `<div class="railsec">Chapter ${c.n} sections</div>` + tocHtml(c);
+  el.onclick = e => { const a = e.target.closest("a[data-id]"); if (!a) return; if (!a.dataset.id.startsWith("s")) { e.preventDefault(); const t = document.getElementById(a.dataset.id); if (t) t.scrollIntoView({block:"start"}); } };
+}
+function openSheet(c){
+  const sh = $("#sheet");
+  sh.innerHTML = `<div class="controls" style="margin:0 0 10px"><span class="railsec" style="margin:0">Chapter ${c.n} sections</span><span class="spacer"></span><div class="seg" role="group" aria-label="Text size"><button type="button" data-sfs="-1" aria-label="Smaller text">A−</button><button type="button" data-sfs="1" aria-label="Larger text">A+</button></div></div>` + tocHtml(c);
+  sh.hidden = false;
+  $$("[data-sfs]", sh).forEach(b => b.onclick = ev => { ev.stopPropagation(); S.prefs.size = Math.max(14, Math.min(20, (S.prefs.size||16) + (+b.dataset.sfs))); applyPrefs(); changed("p", 1500); });
+  sh.onclick = e => { if (e.target.closest("[data-sfs]")) return; const a = e.target.closest("a[data-id]"); sh.hidden = true; if (a && !a.dataset.id.startsWith("s")) { e.preventDefault(); const t = document.getElementById(a.dataset.id); if (t) t.scrollIntoView({block:"start"}); } };
+}
+document.addEventListener("click", e => { const sh = $("#sheet"); if (!sh.hidden && !sh.contains(e.target) && !e.target.closest("#tocbtn")) sh.hidden = true; });
+
+/* ---------------- search ---------------- */
+let IDX = null, sel = 0;
+async function openSearch(){
+  $("#sdlg").hidden = false; const q = $("#sq"); q.value = ""; q.focus();
+  $("#sres").innerHTML = `<p class="shint">Type at least 2 letters. ↑ ↓ to move, Enter to open, Esc to close.</p>`;
+  if (!IDX) { try { IDX = await (await fetch("search.json")).json(); IDX.forEach(x => { x.lt = x.t.toLowerCase(); x.lx = x.x.toLowerCase(); }); } catch(e) { IDX = []; } }
+}
+function closeSearch(){ $("#sdlg").hidden = true; }
+function runSearch(){
+  const q = $("#sq").value.trim().toLowerCase(), out = $("#sres");
+  if (q.length < 2 || !IDX) { out.innerHTML = `<p class="shint">Type at least 2 letters. ↑ ↓ to move, Enter to open, Esc to close.</p>`; return; }
+  const terms = q.split(/\s+/).filter(Boolean);
+  const hits = [];
+  for (const x of IDX) {
+    let score = 0, ok = true;
+    for (const t of terms) { const inT = x.lt.includes(t), inX = x.lx.includes(t); if (!inT && !inX) { ok = false; break; } score += inT ? 10 : 1; }
+    if (ok) { if (x.lt.includes(q)) score += 20; hits.push([score, x]); }
+  }
+  hits.sort((a,b) => b[0] - a[0]);
+  sel = 0;
+  if (!hits.length) { out.innerHTML = `<p class="shint">No section mentions “${esc(q)}”. Try a shorter word.</p>`; return; }
+  const re = new RegExp("(" + terms.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|") + ")", "gi");
+  out.innerHTML = hits.slice(0, 30).map(([, x], i) => {
+    const pos = Math.max(0, x.lx.indexOf(terms[0]) - 60);
+    const snip = (pos ? "…" : "") + x.x.slice(pos, pos + 180) + "…";
+    const href = x.id.startsWith("s") ? "#" + x.id : "#c" + x.ch;
+    return `<a href="${href}" aria-selected="${i===0}"><b>${esc(x.t).replace(re, "<mark>$1</mark>")}</b><small>Chapter ${x.ch} · ${esc(snip).replace(re, "<mark>$1</mark>")}</small></a>`;
+  }).join("");
+}
+$("#sq").addEventListener("input", runSearch);
+$("#sq").addEventListener("keydown", e => {
+  const items = $$("#sres a");
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); if (!items.length) return; sel = (sel + (e.key === "ArrowDown" ? 1 : -1) + items.length) % items.length; items.forEach((a,i) => a.setAttribute("aria-selected", i === sel)); items[sel].scrollIntoView({block:"nearest"}); }
+  else if (e.key === "Enter") { if (items[sel]) { location.hash = items[sel].getAttribute("href").slice(1); closeSearch(); } }
+  else if (e.key === "Escape") closeSearch();
+});
+$("#sres").addEventListener("click", e => { if (e.target.closest("a")) closeSearch(); });
+$("#sdlg").addEventListener("click", e => { if (e.target.id === "sdlg") closeSearch(); });
+document.addEventListener("keydown", e => {
+  const typing = /INPUT|TEXTAREA/.test((document.activeElement||{}).tagName || "");
+  if (!typing && (e.key === "/" || ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k"))) { e.preventDefault(); openSearch(); }
+  if (e.key === "Escape" && !$("#sdlg").hidden) closeSearch();
+});
+
+/* ---------------- backup, downloads, toast ---------------- */
+function backupPanel(){
+  return `<div class="panel" id="backup"><h3>Backup and offline copies</h3>
+    <p>${cloud.on ? "Your progress and notes are saved to your Claude account, privately, and sync to any device where you open this page signed in. A copy is also kept in this browser." : "Your progress and notes are saved in this browser. Copy a backup code to move them to another browser or device."}</p>
+    <div class="io"><button class="btn" id="bk-copy" type="button">Copy backup code</button><button class="btn" id="bk-restore" type="button">Restore from code</button><button class="btn danger" id="bk-reset" type="button">Reset all progress</button></div>
+    <textarea id="code" placeholder="The backup code appears here. To restore, paste a code and press Restore from code." spellcheck="false"></textarea>
+    <div class="io"><button class="btn" data-dl="downloads/SDE2_Java_Study_Guide.pdf" type="button">Save the PDF (with bookmarks)</button><button class="btn" data-dl="downloads/SDE2_Study_Guide_Flashcards.csv" type="button">Save Anki flashcards (.csv)</button></div></div>`;
+}
+function bindBackup(){
+  const cp = $("#bk-copy"); if (!cp) return;
+  cp.onclick = async () => {
+    const t = $("#code"); t.value = btoa(unescape(encodeURIComponent(JSON.stringify({read:S.read, rev:S.rev, tasks:S.tasks, notes:S.notes, last:S.last}))));
+    t.select();
+    try { await navigator.clipboard.writeText(t.value); toast("Backup code copied."); } catch(_) { toast("Select the code in the box and copy it."); }
+  };
+  $("#bk-restore").onclick = () => {
+    const v = $("#code").value.trim();
+    if (!v) { toast("Paste a backup code into the box first."); return; }
+    try {
+      const o = JSON.parse(decodeURIComponent(escape(atob(v))));
+      if (!o || typeof o !== "object" || !o.read) throw 0;
+      S.read = o.read || {}; S.rev = o.rev || {}; S.tasks = o.tasks || {}; S.notes = o.notes || {}; S.last = o.last || null;
+      changed("p"); changed("n"); refresh(); toast("Progress restored.");
+    } catch(_) { toast("That code is not valid. Copy the whole code and try again."); }
+  };
+  $("#bk-reset").onclick = e => {
+    const b = e.currentTarget;
+    if (b.dataset.armed !== "1") { b.dataset.armed = "1"; b.textContent = "Press again to erase everything"; setTimeout(() => { b.dataset.armed = ""; b.textContent = "Reset all progress"; }, 4000); return; }
+    S.read = {}; S.rev = {}; S.tasks = {}; S.notes = {}; S.last = null; changed("p"); changed("n"); refresh(); toast("All progress erased.");
+  };
+  $$("[data-dl]").forEach(b => b.onclick = async () => {
+    b.disabled = true; const old = b.textContent; b.textContent = "Preparing…";
+    try { const blob = await (await fetch(b.dataset.dl)).blob(); await saveFile(b.dataset.dl.split("/").pop(), blob); } finally { b.disabled = false; b.textContent = old; }
+  });
+}
+async function saveFile(name, data){
+  const dl = window.claude && window.claude.use ? await window.claude.use("downloads") : null;
+  if (!dl) {
+    const url = URL.createObjectURL(data instanceof Blob ? data : new Blob([data], {type:"text/plain"}));
+    const a = document.createElement("a"); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000); return;
+  }
+  try { const r = await dl.save({filename: name, data}); if (r && r.status === "saved") toast("Saved " + name); }
+  catch(e) { if (!e || e.code !== "cancelled") toast("The file wasn’t saved."); }
+}
+let tt = null;
+function toast(msg){
+  let t = $(".toast"); if (!t) { t = document.createElement("div"); t.className = "toast"; t.setAttribute("role","status"); document.body.appendChild(t); }
+  t.textContent = msg; t.hidden = false; clearTimeout(tt); tt = setTimeout(() => t.hidden = true, 2600);
+}
+
+/* ---------------- routing ---------------- */
+function setNav(v){ $$("[data-v]").forEach(a => a.setAttribute("aria-current", a.dataset.v === v ? "page" : "false")); }
+function route(){
+  const h = location.hash.slice(1) || "today";
+  let m;
+  $("#sheet").hidden = true;
+  if ((m = h.match(/^s(\d+)-(\d+)$/))) { setNav("chapters"); renderReader(+m[1], h); return; }
+  if ((m = h.match(/^c(\d+)$/))) { setNav("chapters"); renderReader(+m[1]); return; }
+  view = h; viewArg = null; railCtx(null); if (io) io.disconnect();
+  if ((m = h.match(/^w(\d+)$/))) { setNav("plan"); view = "plan"; renderPlan(+m[1]); return; }
+  setNav(h);
+  if (h === "plan") renderPlan();
+  else if (h === "chapters") renderChapters();
+  else if (h === "notes") renderNotes();
+  else { setNav("today"); view = "today"; renderToday(); }
+  window.scrollTo(0, 0);
+}
+function refresh(){
+  if (view === "reader") { $$(".stool").forEach(paintTool); paintProgress(); railCtx(CH[viewArg]); return; }
+  const y = window.scrollY; const openW = $$(".day[open]").map(d => +d.dataset.w);
+  if (view === "plan") renderPlan(openW[0]); else if (view === "chapters") renderChapters(); else if (view === "notes") renderNotes(); else renderToday();
+  window.scrollTo(0, y);
+}
+document.addEventListener("click", e => {
+  const a = e.target.closest("[data-act]"); if (!a) return;
+  const act = a.dataset.act;
+  if (act === "search") { e.preventDefault(); openSearch(); }
+  if (act === "theme") {
+    const cur = document.documentElement.dataset.theme || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+    S.prefs.theme = cur === "dark" ? "light" : "dark"; applyPrefs(); changed("p", 1500);
+  }
+  if (act === "backup") { e.preventDefault(); if (view !== "today") location.hash = "today"; setTimeout(() => { const b = $("#backup"); if (b) b.scrollIntoView({behavior:"smooth"}); }, 60); }
+});
+window.addEventListener("hashchange", route);
+
+loadData().then(() => { route(); initCloud(); }).catch(() => { main.innerHTML = `<div class="page"><p class="empty">The guide’s data didn’t load. Reload the page to try again.</p></div>`; });
+})();
+</script>
+
+</body>
+</html>

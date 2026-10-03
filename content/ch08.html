@@ -1,0 +1,1153 @@
+<h2 id="s8-1">8.1 Spring Security architecture</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> Spring Security is a security guard that stands in front of your code. It checks who the caller is and what they may do, before your controller ever runs.</p>
+<p>Every endpoint must answer two questions:</p>
+<ul>
+<li><strong>Who is calling?</strong> This is called <em>authentication</em>.</li>
+<li><strong>Are they allowed to do this?</strong> This is called <em>authorisation</em>.</li>
+</ul>
+<p>In a multi-tenant SaaS there is a third question. A <em>tenant</em> is one customer company that shares the platform with others. So you also ask: <strong>can this caller touch this tenant's data?</strong></p>
+<p>If you write these checks by hand in every controller, someone will forget one. One missed check can leak data. Spring Security puts all these checks in one place. It is a configurable chain of filters that runs before your code.</p>
+<p>Think of a company office. The guard at the gate checks your ID card (authentication). The lift only takes you to the floors your card allows (authorisation). You do not ask each desk to check your ID again.</p>
+<h4>What is happening internally?</h4>
+<div class="hl"><pre><span></span><code>Request → DelegatingFilterProxy (a servlet filter registered with Tomcat)
+        → FilterChainProxy → picks the first SecurityFilterChain whose matcher fits the URL
+            ├─ CorsFilter
+            ├─ CsrfFilter (for browser/cookie sessions)
+            ├─ authentication filters: BearerTokenAuthenticationFilter (JWT), UsernamePasswordAuthenticationFilter, BasicAuthenticationFilter …
+            │     → AuthenticationManager → AuthenticationProvider(s) → Authentication object
+            │     → stored in SecurityContextHolder (ThreadLocal) for this request
+            ├─ ExceptionTranslationFilter: AuthenticationException → 401 (entry point); AccessDeniedException → 403
+            └─ AuthorizationFilter: checks URL rules (requestMatchers … hasAuthority …)
+        → DispatcherServlet → controller → method security (@PreAuthorize) via AOP proxy
+</code></pre></div>
+
+<p>Here is the same flow as steps:</p>
+<ol>
+<li>Tomcat receives the request. It passes it to <code>DelegatingFilterProxy</code>, a normal servlet filter.</li>
+<li>That filter hands over to <code>FilterChainProxy</code>. It picks the first <code>SecurityFilterChain</code> whose URL matcher fits the request.</li>
+<li>The chain runs its filters in order: CORS, CSRF, then the authentication filters.</li>
+<li>An authentication filter (for example, the JWT one) asks the <code>AuthenticationManager</code> to check the credentials. The manager uses one or more <code>AuthenticationProvider</code>s. If the check passes, you get an <code>Authentication</code> object.</li>
+<li>This object is stored in <code>SecurityContextHolder</code>. That is a <code>ThreadLocal</code> — a per-thread storage box — so it lives only for this request.</li>
+<li><code>ExceptionTranslationFilter</code> catches security errors. An <code>AuthenticationException</code> becomes 401. An <code>AccessDeniedException</code> becomes 403.</li>
+<li><code>AuthorizationFilter</code> checks your URL rules (<code>requestMatchers … hasAuthority …</code>).</li>
+<li>The request reaches <code>DispatcherServlet</code> and then your controller.</li>
+<li>If a service method has <code>@PreAuthorize</code>, an AOP proxy (a wrapper object Spring puts around your bean) checks it before the method runs.</li>
+</ol>
+<p>Key objects you should know:</p>
+<ul>
+<li><code>Authentication</code> — holds the principal (who the user is), the credentials and the authorities (what they may do).</li>
+<li><code>SecurityContextHolder</code> — where the current <code>Authentication</code> is kept for this request.</li>
+<li><code>AuthenticationManager</code> / <code>AuthenticationProvider</code> — the classes that actually check credentials.</li>
+<li><code>UserDetailsService</code> — loads a user from your store for username/password login.</li>
+<li><code>PasswordEncoder</code> — hashes passwords with BCrypt or Argon2. Never store plain text or MD5.</li>
+<li><code>GrantedAuthority</code> — one permission. It can be a role like <code>ROLE_ADMIN</code> or a scope like <code>SCOPE_points.redeem</code>.</li>
+</ul>
+<p><strong>401 vs 403</strong>:</p>
+<ul>
+<li>401 Unauthorized means "I don't know who you are". Credentials are missing or invalid. The name is confusing — it really means <em>not authenticated</em>.</li>
+<li>403 Forbidden means "I know who you are, but you are not allowed to do this".</li>
+</ul>
+<h4>How does it work?</h4>
+<p>You define one or more <code>SecurityFilterChain</code> beans. You write them with the lambda DSL — the <code>http.csrf(...).authorizeHttpRequests(...)</code> style shown below. Spring Boot auto-configures everything else.</p>
+<p>You protect at two levels:</p>
+<ul>
+<li><strong>URL rules</strong> give coarse protection. For example, "everything under <code>/admin</code> needs ADMIN".</li>
+<li><strong>Method security</strong> (<code>@PreAuthorize</code>) gives fine-grained checks. It sits close to the business logic, so it can look at method arguments like <code>tenantId</code>.</li>
+</ul>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="nd">@Configuration</span>
+<span class="nd">@EnableMethodSecurity</span>
+<span class="kd">class</span> <span class="nc">SecurityConfig</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nd">@Bean</span>
+<span class="w">    </span><span class="n">SecurityFilterChain</span><span class="w"> </span><span class="nf">api</span><span class="p">(</span><span class="n">HttpSecurity</span><span class="w"> </span><span class="n">http</span><span class="p">)</span><span class="w"> </span><span class="kd">throws</span><span class="w"> </span><span class="n">Exception</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="n">http</span>
+<span class="w">            </span><span class="p">.</span><span class="na">csrf</span><span class="p">(</span><span class="n">csrf</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">csrf</span><span class="p">.</span><span class="na">disable</span><span class="p">())</span><span class="w">                                      </span><span class="c1">// stateless bearer-token API</span>
+<span class="w">            </span><span class="p">.</span><span class="na">sessionManagement</span><span class="p">(</span><span class="n">s</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">s</span><span class="p">.</span><span class="na">sessionCreationPolicy</span><span class="p">(</span><span class="n">SessionCreationPolicy</span><span class="p">.</span><span class="na">STATELESS</span><span class="p">))</span>
+<span class="w">            </span><span class="p">.</span><span class="na">authorizeHttpRequests</span><span class="p">(</span><span class="n">auth</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">auth</span>
+<span class="w">                </span><span class="p">.</span><span class="na">requestMatchers</span><span class="p">(</span><span class="s">"/actuator/health/**"</span><span class="p">).</span><span class="na">permitAll</span><span class="p">()</span>
+<span class="w">                </span><span class="p">.</span><span class="na">requestMatchers</span><span class="p">(</span><span class="n">HttpMethod</span><span class="p">.</span><span class="na">POST</span><span class="p">,</span><span class="w"> </span><span class="s">"/api/v1/accounts/*/redemptions"</span><span class="p">).</span><span class="na">hasAuthority</span><span class="p">(</span><span class="s">"SCOPE_points.redeem"</span><span class="p">)</span>
+<span class="w">                </span><span class="p">.</span><span class="na">requestMatchers</span><span class="p">(</span><span class="s">"/api/v1/admin/**"</span><span class="p">).</span><span class="na">hasRole</span><span class="p">(</span><span class="s">"ADMIN"</span><span class="p">)</span>
+<span class="w">                </span><span class="p">.</span><span class="na">anyRequest</span><span class="p">().</span><span class="na">authenticated</span><span class="p">())</span>
+<span class="w">            </span><span class="p">.</span><span class="na">oauth2ResourceServer</span><span class="p">(</span><span class="n">o</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">o</span><span class="p">.</span><span class="na">jwt</span><span class="p">(</span><span class="n">Customizer</span><span class="p">.</span><span class="na">withDefaults</span><span class="p">()))</span><span class="w">      </span><span class="c1">// validate JWTs (8.2)</span>
+<span class="w">            </span><span class="p">.</span><span class="na">build</span><span class="p">();</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+
+<span class="nd">@Service</span>
+<span class="kd">class</span> <span class="nc">CampaignService</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nd">@PreAuthorize</span><span class="p">(</span><span class="s">"hasRole('ADMIN') and #tenantId == authentication.token.claims['tenant_id']"</span><span class="p">)</span>
+<span class="w">    </span><span class="kd">public</span><span class="w"> </span><span class="n">Campaign</span><span class="w"> </span><span class="nf">create</span><span class="p">(</span><span class="n">String</span><span class="w"> </span><span class="n">tenantId</span><span class="p">,</span><span class="w"> </span><span class="n">CreateCampaignRequest</span><span class="w"> </span><span class="n">req</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="cm">/* ... */</span><span class="w"> </span><span class="k">return</span><span class="w"> </span><span class="kc">null</span><span class="p">;</span><span class="w"> </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h4>When would I use it?</h4>
+<p>In every service that exposes HTTP. Use three layers together:</p>
+<ol>
+<li><strong>URL rules</strong> — coarse checks.</li>
+<li><strong>Method security</strong> — fine checks near the business logic.</li>
+<li><strong>Data-level tenant filtering</strong> — every query is scoped by tenant. You can use a Hibernate filter or an explicit <code>WHERE tenant_id = ?</code> condition.</li>
+</ol>
+<p>Why all three? Because in a multi-tenant system, one authorisation bug can show one customer's data to another customer. That is the worst kind of bug in SaaS.</p>
+<h4>What can go wrong?</h4>
+<ul>
+<li>When you add the security starter, every endpoint suddenly needs login. Spring prints a generated password at startup. This surprises people, but it is the safe default.</li>
+<li>Rule order matters. Rules are matched from top to bottom. If you put <code>anyRequest().permitAll()</code> before the specific rules, everything is open.</li>
+<li>Trusting a tenant ID from a request header without checking it against the token's tenant claim. A user can just change the header and read another tenant's data. This is called an <strong>IDOR</strong>: insecure direct object reference.</li>
+<li>Disabling CSRF for a browser app that uses cookie sessions. CSRF protection is needed there. (It is only safe to disable for stateless bearer-token APIs.)</li>
+<li>The SecurityContext does not move to <code>@Async</code> threads on its own, because it is stored in a ThreadLocal. Use <code>DelegatingSecurityContextExecutor</code> to carry it over.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. How does Spring Security process a request?</strong> A FilterChainProxy runs the matching SecurityFilterChain. First, authentication filters check the credentials, build an Authentication object and store it in the SecurityContextHolder. Then authorisation filters check the URL rules. Security exceptions are turned into 401 or 403 responses. Finally, method security checks like @PreAuthorize run at the service proxy.</p>
+<p><strong>Q2. Authentication vs authorisation?</strong> Authentication checks who you are; if it fails, you get 401. Authorisation decides what an already-authenticated user may do; if it fails, you get 403.</p>
+<p><strong>Q3. How do you enforce tenant isolation?</strong> Take the tenant from the verified token, not only from a header the client sends. Check it in method security. And apply a mandatory tenant filter to every data query, so even a missed check cannot return another tenant's rows.</p>
+<h2 id="s8-2">8.2 JWT, OAuth2 and OpenID Connect</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> A JWT is a signed pass that the caller carries with every request. Any service can check the signature by itself, so nobody needs to call a central session store. OAuth2 is the set of rules for how you get that pass.</p>
+<p>In microservices, you don't want every service to call a central session store on every request. That store becomes slow and a single point of failure.</p>
+<ul>
+<li>A <strong>JWT</strong> (JSON Web Token) is a self-contained, signed token. Any service can verify it locally, without a network call.</li>
+<li><strong>OAuth2</strong> is the standard for how clients get tokens.</li>
+<li><strong>OpenID Connect (OIDC)</strong> sits on top of OAuth2 and adds the user's identity.</li>
+</ul>
+<p>Different callers use different OAuth2 flows. Your mobile apps use one flow, partner integrations another, and service-to-service calls another.</p>
+<p>Think of a railway ticket with an official stamp. The TT on any coach can check the stamp himself. He does not phone the booking office for every passenger.</p>
+<h4>What is happening internally?</h4>
+<p>A JWT has three parts joined by dots: <code>base64url(header).base64url(payload).signature</code>. Base64url is just a text encoding, not encryption.</p>
+<div class="hl"><pre><span></span><code>header:  {"alg":"RS256","kid":"2026-key-1"}
+payload: {"iss":"https://login.example.com","sub":"user-123","aud":"loyalty-api","exp":1790000000,
+          "iat":1789999100,"scope":"points.read points.redeem","tenant_id":"t-42","roles":["RETAILER"]}
+signature: RSA-SHA256(header.payload, issuer's PRIVATE key)
+</code></pre></div>
+
+<p>What this means:</p>
+<ul>
+<li><strong>Signed, not encrypted.</strong> Anyone can decode and read the payload. So never put secrets or sensitive PII (personal data like phone numbers) inside it. The signature only proves that nobody changed it.</li>
+<li><strong>Asymmetric signing (RS256/ES256).</strong> The identity provider (Keycloak, Azure AD/Entra ID, Auth0, Cognito) signs with its <strong>private</strong> key. Your services verify with the matching <strong>public</strong> keys. These public keys are published at the provider's <strong>JWKS</strong> endpoint (JSON Web Key Set). Services cache them. When keys rotate, the <code>kid</code> (key ID) in the header tells which key to use.</li>
+<li><strong>What a resource server checks.</strong> A <em>resource server</em> is your API that receives the token. It checks:
+  1. the signature;
+  2. <code>exp</code> (expiry) and <code>nbf</code> (not-before), allowing a small clock skew;
+  3. <code>iss</code> — who issued it;
+  4. <code>aud</code> — which API it was made for.</li>
+</ul>
+<p>Then it maps <code>scope</code> and roles to Spring authorities.
+- <strong>Stateless — but revocation is hard.</strong> There is no server-side session to look up. The downside: you cannot easily cancel a token before it expires. So keep <strong>access tokens</strong> short-lived (5–15 min). Pair them with <strong>refresh tokens</strong>. Refresh tokens live longer, are rotated on use, can be revoked, and must be stored securely.</p>
+<p>OAuth2 flows:</p>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>Flow</th>
+<th>Who uses it</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Authorization Code + <strong>PKCE</strong></td>
+<td>Mobile and web apps acting for a user (no client secret is stored on the device)</td>
+</tr>
+<tr>
+<td><strong>Client Credentials</strong></td>
+<td>Service-to-service calls (a machine identity, no user)</td>
+</tr>
+<tr>
+<td>Refresh Token</td>
+<td>Getting new access tokens without logging in again</td>
+</tr>
+<tr>
+<td>Device Code</td>
+<td>TVs and CLIs</td>
+</tr>
+<tr>
+<td>(Implicit, Password — deprecated)</td>
+<td>Don't use them</td>
+</tr>
+</tbody>
+</table></div>
+<p>PKCE (Proof Key for Code Exchange) is a one-time secret the app creates for each login. It stops a stolen authorisation code from being used by another app.</p>
+<p><strong>OIDC</strong> adds two things: an <strong>ID token</strong> (it says who the user is) and a <code>userinfo</code> endpoint. The <strong>access token</strong> is still the one your APIs check.</p>
+<h4>How does it work?</h4>
+<p>You point Spring at the identity provider. From the <code>issuer-uri</code>, Spring discovers the JWKS URL and also validates <code>iss</code>. You list the expected audience.</p>
+<div class="hl"><pre><span></span><code><span class="nt">spring.security.oauth2.resourceserver.jwt</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">issuer-uri</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">https://login.example.com/realms/fieldassist</span><span class="w">     </span><span class="c1"># discovers JWKS, validates iss</span>
+<span class="w">  </span><span class="nt">audiences</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">loyalty-api</span>
+</code></pre></div>
+
+<p>Often your provider puts roles in a custom claim, like <code>roles</code>. Spring does not know about it by default. This converter maps that claim to <code>ROLE_</code> authorities:</p>
+<div class="hl"><pre><span></span><code><span class="nd">@Bean</span>
+<span class="n">JwtAuthenticationConverter</span><span class="w"> </span><span class="nf">jwtAuthConverter</span><span class="p">()</span><span class="w"> </span><span class="p">{</span><span class="w">                  </span><span class="c1">// map a custom "roles" claim to ROLE_ authorities</span>
+<span class="w">    </span><span class="kd">var</span><span class="w"> </span><span class="n">roles</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">JwtGrantedAuthoritiesConverter</span><span class="p">();</span>
+<span class="w">    </span><span class="n">roles</span><span class="p">.</span><span class="na">setAuthoritiesClaimName</span><span class="p">(</span><span class="s">"roles"</span><span class="p">);</span>
+<span class="w">    </span><span class="n">roles</span><span class="p">.</span><span class="na">setAuthorityPrefix</span><span class="p">(</span><span class="s">"ROLE_"</span><span class="p">);</span>
+<span class="w">    </span><span class="kd">var</span><span class="w"> </span><span class="n">conv</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">JwtAuthenticationConverter</span><span class="p">();</span>
+<span class="w">    </span><span class="n">conv</span><span class="p">.</span><span class="na">setJwtGrantedAuthoritiesConverter</span><span class="p">(</span><span class="n">roles</span><span class="p">);</span>
+<span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="n">conv</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h4>Example</h4>
+<p>A service-to-service call using client credentials (loyalty service → voucher partner gateway). The interceptor gets a token, attaches it to each request and refreshes it when it expires:</p>
+<div class="hl"><pre><span></span><code><span class="nd">@Bean</span>
+<span class="n">RestClient</span><span class="w"> </span><span class="nf">voucherClient</span><span class="p">(</span><span class="n">RestClient</span><span class="p">.</span><span class="na">Builder</span><span class="w"> </span><span class="n">b</span><span class="p">,</span><span class="w"> </span><span class="n">OAuth2AuthorizedClientManager</span><span class="w"> </span><span class="n">mgr</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">var</span><span class="w"> </span><span class="n">interceptor</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">OAuth2ClientHttpRequestInterceptor</span><span class="p">(</span><span class="n">mgr</span><span class="p">);</span><span class="w">       </span><span class="c1">// Spring Security 6.4+: attaches and refreshes tokens</span>
+<span class="w">    </span><span class="n">interceptor</span><span class="p">.</span><span class="na">setClientRegistrationIdResolver</span><span class="p">(</span><span class="n">req</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="s">"voucher-gateway"</span><span class="p">);</span>
+<span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="n">b</span><span class="p">.</span><span class="na">baseUrl</span><span class="p">(</span><span class="s">"https://vouchers.internal"</span><span class="p">).</span><span class="na">requestInterceptor</span><span class="p">(</span><span class="n">interceptor</span><span class="p">).</span><span class="na">build</span><span class="p">();</span>
+<span class="p">}</span>
+<span class="c1">// application.yml: spring.security.oauth2.client.registration.voucher-gateway.authorization-grant-type=client_credentials …</span>
+</code></pre></div>
+
+<h4>When would I use it?</h4>
+<ul>
+<li><strong>JWT resource server</strong> — for every API behind an identity provider.</li>
+<li><strong>Client credentials</strong> — for calls between services.</li>
+<li><strong>Authorization Code + PKCE</strong> — for mobile app login.</li>
+<li><strong>mTLS or service-mesh identity</strong> — for internal calls in high-security setups. mTLS means both sides show certificates to each other.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li>Accepting <code>alg: none</code> (no signature at all), or HS256 with a secret that can be guessed. Good libraries block this if you configure them correctly.</li>
+<li>Not checking <code>aud</code>. Then a token made for some other API is accepted by yours.</li>
+<li>Long-lived access tokens that cannot be revoked.</li>
+<li>Storing tokens in browser <code>localStorage</code>. An XSS attack (injected script) can steal them. Use secure cookies or keep them in memory instead.</li>
+<li>Huge tokens with too many claims. They can hit HTTP header size limits.</li>
+<li>Clocks on servers that differ slightly (clock skew). This causes random "token expired" errors.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. How does JWT authentication work?</strong> The client sends a signed token with the request. The service checks the signature using the issuer's public key from the JWKS endpoint. It then checks expiry, issuer and audience, and builds the security context from the claims. There is no session lookup.</p>
+<p><strong>Q2. How do you revoke a JWT?</strong> You cannot revoke it directly. So you keep access tokens short-lived and revoke the refresh tokens instead. For sensitive actions, use token introspection (ask the provider if the token is still valid) or keep a deny-list of token IDs (<code>jti</code>).</p>
+<p><strong>Q3. OAuth2 vs OpenID Connect?</strong> OAuth2 is delegated authorisation — it gives access tokens for calling APIs. OIDC is an identity layer on top of it — it adds ID tokens and user info, so you know who the user is.</p>
+<p><strong>Q4. Which flow for a mobile app, and which for service-to-service?</strong> Authorization Code with PKCE for a mobile app. Client Credentials for service-to-service.</p>
+<h2 id="s8-3">8.3 Unit testing with JUnit 5 and Mockito</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> Unit tests are small, fast checks of one class at a time. You replace its neighbours with fakes, so you test only your logic. They let you change code later without fear.</p>
+<p>Tests let you change code without fear. Unit tests give the fastest feedback — they run in milliseconds. They are also the cheapest way to lock down business rules, such as redemption limits, rule evaluation and idempotency behaviour. (<em>Idempotent</em> means doing the same thing twice has the same effect as doing it once.)</p>
+<p>Interviewers also judge your code quality by asking: can you test what you design?</p>
+<h4>What is happening internally?</h4>
+<ul>
+<li><strong>JUnit 5 (Jupiter)</strong> finds methods marked <code>@Test</code> and runs them. It gives you:</li>
+<li>lifecycle hooks such as <code>@BeforeEach</code> and <code>@AfterEach</code> (run before/after each test);</li>
+<li><strong>parameterised tests</strong> (<code>@ParameterizedTest</code> + <code>@CsvSource</code>/<code>@MethodSource</code>) — one test method run with many inputs;</li>
+<li>extensions (<code>@ExtendWith</code>) that plug in extra behaviour.</li>
+<li><strong>Mockito</strong> creates fake objects:</li>
+<li><strong>Mocks</strong> are generated subclasses or proxies. They record the calls they get and return the answers you stubbed.</li>
+<li><strong>Spies</strong> wrap a real object.</li>
+<li><code>@InjectMocks</code> builds the class under test and passes the mocks into it.</li>
+<li><strong>AssertJ</strong> gives fluent, readable assertions, like <code>assertThat(x).isEqualTo(…)</code> and <code>assertThatThrownBy(…)</code>.</li>
+</ul>
+<p>The test pyramid tells you the mix: many fast unit tests at the bottom, fewer slice and integration tests in the middle (8.4), and only a handful of end-to-end tests at the top.</p>
+<p>Think of a car-mechanic testing an engine on a stand. He does not fit the whole car. He feeds fake fuel and fake signals and checks what the engine does.</p>
+<h4>How does it work?</h4>
+<p>Every test has three parts:</p>
+<ol>
+<li><strong>Arrange</strong> — set up data and stubs.</li>
+<li><strong>Act</strong> — call the method.</li>
+<li><strong>Assert</strong> — check the result and the important interactions.</li>
+</ol>
+<p>Mock only <strong>collaborators at the boundaries</strong>: repositories, HTTP clients, clocks. Never mock the class under test, and never mock value objects (simple data holders).</p>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="nd">@ExtendWith</span><span class="p">(</span><span class="n">MockitoExtension</span><span class="p">.</span><span class="na">class</span><span class="p">)</span>
+<span class="kd">class</span> <span class="nc">RedemptionServiceTest</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nd">@Mock</span><span class="w"> </span><span class="n">AccountRepository</span><span class="w"> </span><span class="n">accounts</span><span class="p">;</span>
+<span class="w">    </span><span class="nd">@Mock</span><span class="w"> </span><span class="n">LedgerRepository</span><span class="w"> </span><span class="n">ledger</span><span class="p">;</span>
+<span class="w">    </span><span class="nd">@Mock</span><span class="w"> </span><span class="n">OutboxRepository</span><span class="w"> </span><span class="n">outbox</span><span class="p">;</span>
+<span class="w">    </span><span class="nd">@InjectMocks</span><span class="w"> </span><span class="n">RedemptionService</span><span class="w"> </span><span class="n">service</span><span class="p">;</span>
+
+<span class="w">    </span><span class="nd">@Test</span>
+<span class="w">    </span><span class="kt">void</span><span class="w"> </span><span class="nf">rejectsWhenBalanceIsInsufficient</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="n">when</span><span class="p">(</span><span class="n">ledger</span><span class="p">.</span><span class="na">findByTenantIdAndIdempotencyKey</span><span class="p">(</span><span class="s">"t1"</span><span class="p">,</span><span class="w"> </span><span class="s">"k1"</span><span class="p">)).</span><span class="na">thenReturn</span><span class="p">(</span><span class="n">Optional</span><span class="p">.</span><span class="na">empty</span><span class="p">());</span>
+<span class="w">        </span><span class="n">when</span><span class="p">(</span><span class="n">accounts</span><span class="p">.</span><span class="na">debitIfSufficient</span><span class="p">(</span><span class="s">"a1"</span><span class="p">,</span><span class="w"> </span><span class="mi">500</span><span class="p">)).</span><span class="na">thenReturn</span><span class="p">(</span><span class="mi">0</span><span class="p">);</span><span class="w">           </span><span class="c1">// conditional update failed</span>
+<span class="w">        </span><span class="n">when</span><span class="p">(</span><span class="n">accounts</span><span class="p">.</span><span class="na">balance</span><span class="p">(</span><span class="s">"a1"</span><span class="p">)).</span><span class="na">thenReturn</span><span class="p">(</span><span class="mi">120L</span><span class="p">);</span>
+
+<span class="w">        </span><span class="n">assertThatThrownBy</span><span class="p">(()</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">service</span><span class="p">.</span><span class="na">redeem</span><span class="p">(</span><span class="s">"t1"</span><span class="p">,</span><span class="w"> </span><span class="s">"a1"</span><span class="p">,</span><span class="w"> </span><span class="s">"k1"</span><span class="p">,</span><span class="w"> </span><span class="mi">500</span><span class="p">))</span>
+<span class="w">                </span><span class="p">.</span><span class="na">isInstanceOf</span><span class="p">(</span><span class="n">InsufficientPointsException</span><span class="p">.</span><span class="na">class</span><span class="p">)</span>
+<span class="w">                </span><span class="p">.</span><span class="na">hasMessageContaining</span><span class="p">(</span><span class="s">"has 120"</span><span class="p">);</span>
+<span class="w">        </span><span class="n">verify</span><span class="p">(</span><span class="n">ledger</span><span class="p">,</span><span class="w"> </span><span class="n">never</span><span class="p">()).</span><span class="na">save</span><span class="p">(</span><span class="n">any</span><span class="p">());</span>
+<span class="w">        </span><span class="n">verifyNoInteractions</span><span class="p">(</span><span class="n">outbox</span><span class="p">);</span>
+<span class="w">    </span><span class="p">}</span>
+
+<span class="w">    </span><span class="nd">@Test</span>
+<span class="w">    </span><span class="kt">void</span><span class="w"> </span><span class="nf">replayingSameIdempotencyKeyDoesNotDebitAgain</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="kd">var</span><span class="w"> </span><span class="n">prior</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">LedgerEntry</span><span class="p">(</span><span class="s">"t1"</span><span class="p">,</span><span class="w"> </span><span class="s">"a1"</span><span class="p">,</span><span class="w"> </span><span class="n">EntryType</span><span class="p">.</span><span class="na">REDEMPTION</span><span class="p">,</span><span class="w"> </span><span class="o">-</span><span class="mi">50</span><span class="p">,</span><span class="w"> </span><span class="s">"k1"</span><span class="p">,</span><span class="w"> </span><span class="n">Instant</span><span class="p">.</span><span class="na">EPOCH</span><span class="p">);</span>
+<span class="w">        </span><span class="n">when</span><span class="p">(</span><span class="n">ledger</span><span class="p">.</span><span class="na">findByTenantIdAndIdempotencyKey</span><span class="p">(</span><span class="s">"t1"</span><span class="p">,</span><span class="w"> </span><span class="s">"k1"</span><span class="p">)).</span><span class="na">thenReturn</span><span class="p">(</span><span class="n">Optional</span><span class="p">.</span><span class="na">of</span><span class="p">(</span><span class="n">prior</span><span class="p">));</span>
+
+<span class="w">        </span><span class="n">service</span><span class="p">.</span><span class="na">redeem</span><span class="p">(</span><span class="s">"t1"</span><span class="p">,</span><span class="w"> </span><span class="s">"a1"</span><span class="p">,</span><span class="w"> </span><span class="s">"k1"</span><span class="p">,</span><span class="w"> </span><span class="mi">50</span><span class="p">);</span>
+
+<span class="w">        </span><span class="n">verify</span><span class="p">(</span><span class="n">accounts</span><span class="p">,</span><span class="w"> </span><span class="n">never</span><span class="p">()).</span><span class="na">debitIfSufficient</span><span class="p">(</span><span class="n">anyString</span><span class="p">(),</span><span class="w"> </span><span class="n">anyLong</span><span class="p">());</span>
+<span class="w">    </span><span class="p">}</span>
+
+<span class="w">    </span><span class="nd">@ParameterizedTest</span>
+<span class="w">    </span><span class="nd">@CsvSource</span><span class="p">({</span><span class="s">"SILVER,100,100"</span><span class="p">,</span><span class="w"> </span><span class="s">"GOLD,100,150"</span><span class="p">,</span><span class="w"> </span><span class="s">"PLATINUM,100,200"</span><span class="p">})</span>
+<span class="w">    </span><span class="kt">void</span><span class="w"> </span><span class="nf">tierMultiplier</span><span class="p">(</span><span class="n">Tier</span><span class="w"> </span><span class="n">tier</span><span class="p">,</span><span class="w"> </span><span class="kt">long</span><span class="w"> </span><span class="n">base</span><span class="p">,</span><span class="w"> </span><span class="kt">long</span><span class="w"> </span><span class="n">expected</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="n">assertThat</span><span class="p">(</span><span class="n">tier</span><span class="p">.</span><span class="na">apply</span><span class="p">(</span><span class="n">base</span><span class="p">)).</span><span class="na">isEqualTo</span><span class="p">(</span><span class="n">expected</span><span class="p">);</span>
+<span class="w">    </span><span class="p">}</span>
+
+<span class="w">    </span><span class="nd">@Test</span>
+<span class="w">    </span><span class="kt">void</span><span class="w"> </span><span class="nf">capturesPublishedEvent</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="n">when</span><span class="p">(</span><span class="n">ledger</span><span class="p">.</span><span class="na">findByTenantIdAndIdempotencyKey</span><span class="p">(</span><span class="n">any</span><span class="p">(),</span><span class="w"> </span><span class="n">any</span><span class="p">())).</span><span class="na">thenReturn</span><span class="p">(</span><span class="n">Optional</span><span class="p">.</span><span class="na">empty</span><span class="p">());</span>
+<span class="w">        </span><span class="n">when</span><span class="p">(</span><span class="n">accounts</span><span class="p">.</span><span class="na">debitIfSufficient</span><span class="p">(</span><span class="s">"a1"</span><span class="p">,</span><span class="w"> </span><span class="mi">50</span><span class="p">)).</span><span class="na">thenReturn</span><span class="p">(</span><span class="mi">1</span><span class="p">);</span>
+<span class="w">        </span><span class="n">when</span><span class="p">(</span><span class="n">ledger</span><span class="p">.</span><span class="na">save</span><span class="p">(</span><span class="n">any</span><span class="p">())).</span><span class="na">thenAnswer</span><span class="p">(</span><span class="n">inv</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">inv</span><span class="p">.</span><span class="na">getArgument</span><span class="p">(</span><span class="mi">0</span><span class="p">));</span><span class="w">       </span><span class="c1">// return what was saved</span>
+<span class="w">        </span><span class="n">service</span><span class="p">.</span><span class="na">redeem</span><span class="p">(</span><span class="s">"t1"</span><span class="p">,</span><span class="w"> </span><span class="s">"a1"</span><span class="p">,</span><span class="w"> </span><span class="s">"k2"</span><span class="p">,</span><span class="w"> </span><span class="mi">50</span><span class="p">);</span>
+<span class="w">        </span><span class="n">ArgumentCaptor</span><span class="o">&lt;</span><span class="n">OutboxEvent</span><span class="o">&gt;</span><span class="w"> </span><span class="n">captor</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ArgumentCaptor</span><span class="p">.</span><span class="na">forClass</span><span class="p">(</span><span class="n">OutboxEvent</span><span class="p">.</span><span class="na">class</span><span class="p">);</span>
+<span class="w">        </span><span class="n">verify</span><span class="p">(</span><span class="n">outbox</span><span class="p">).</span><span class="na">save</span><span class="p">(</span><span class="n">captor</span><span class="p">.</span><span class="na">capture</span><span class="p">());</span>
+<span class="w">        </span><span class="n">assertThat</span><span class="p">(</span><span class="n">captor</span><span class="p">.</span><span class="na">getValue</span><span class="p">().</span><span class="na">type</span><span class="p">()).</span><span class="na">isEqualTo</span><span class="p">(</span><span class="s">"PointsRedeemed"</span><span class="p">);</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p>What each test shows:</p>
+<ul>
+<li><code>rejectsWhenBalanceIsInsufficient</code> — a failed debit throws the right exception, and nothing is saved to the ledger or outbox.</li>
+<li><code>replayingSameIdempotencyKeyDoesNotDebitAgain</code> — the same key sent twice does not debit twice.</li>
+<li><code>tierMultiplier</code> — one parameterised test covers three tiers.</li>
+<li><code>capturesPublishedEvent</code> — an <code>ArgumentCaptor</code> grabs the object passed to <code>outbox.save</code>, so you can check its contents.</li>
+</ul>
+<h4>When would I use it?</h4>
+<p>For all domain logic and service orchestration (services that call other services in order).</p>
+<p>Inject <code>Clock</code>, ID generators and random sources instead of calling them directly. Then tests can control them, and results are deterministic — the same every run.</p>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Over-mocking.</strong> Tests copy the implementation line by line. They break on every refactor and prove nothing. Check behaviour — outputs and important interactions — not every single call.</li>
+<li>Mocking value objects or the class under test.</li>
+<li>Unused stubs. Mockito's strict stubs fail the test when a stub is never used. This is good: it catches outdated tests.</li>
+<li>Tests that depend on time, randomness, HashMap ordering or the state left by other tests. They pass sometimes and fail sometimes (flaky tests).</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. Mock vs stub vs spy?</strong> A stub just returns canned answers. A mock also lets you verify which calls were made. A spy wraps a real object and calls the real methods unless you stub them.</p>
+<p><strong>Q2. What should you mock?</strong> External boundaries and collaborators — repositories, HTTP clients, clocks and message publishers. Do not mock value objects or the logic you are testing.</p>
+<p><strong>Q3. How do you test time-dependent code?</strong> Inject a <code>Clock</code> into the class. In tests, pass <code>Clock.fixed</code> so "now" is always the same.</p>
+<h2 id="s8-4">8.4 Slice tests and integration tests with Testcontainers</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> Mocks can't tell you if your SQL is wrong or your JSON mapping is broken. So you also run tests with real Spring wiring and a real database in Docker. Testcontainers starts that database for you inside the test.</p>
+<p>Unit tests with mocks cannot catch:</p>
+<ul>
+<li>a wrong JPQL query;</li>
+<li>a broken JSON mapping;</li>
+<li>a missing index;</li>
+<li>a Postgres-specific SQL feature;</li>
+<li>a misconfigured Kafka listener.</li>
+</ul>
+<p>You need tests that run the real Spring wiring against <strong>real infrastructure</strong>. These tests must still be fast and give the same result on every laptop and every CI run.</p>
+<h4>What is happening internally?</h4>
+<ul>
+<li><strong>Slice tests</strong> start only <em>part</em> of the application context — one layer:</li>
+<li><code>@WebMvcTest(Controller.class)</code> loads the MVC setup, the controller, its advice and Jackson. Services are replaced by <code>@MockitoBean</code>s. <code>MockMvc</code> sends fake requests without starting a real server.</li>
+<li><code>@DataJpaTest</code> loads JPA and your repositories. Each test runs in a transaction that is rolled back at the end.</li>
+<li>There are others too, like <code>@JsonTest</code> and <code>@RestClientTest</code>.</li>
+<li><strong><code>@SpringBootTest</code></strong> starts the full context. It can also start a real server on a random port.</li>
+<li><strong>Testcontainers</strong> starts real Docker containers (PostgreSQL, Kafka, Redis) from inside the test. With <code>@ServiceConnection</code> (Boot 3.1+), Spring automatically picks up their dynamic URLs and ports. Containers can be reused across test classes.</li>
+<li>The <strong>context cache</strong>: Spring keeps an application context and reuses it for other test classes with the same configuration. But each different set of <code>@MockitoBean</code>s creates a new context. That slows the suite.</li>
+</ul>
+<p>Think of a dress rehearsal for a wedding. Practising each dance alone is a unit test. The rehearsal on the real stage, with the real sound system, is the integration test.</p>
+<h4>How does it work?</h4>
+<p>A web-slice test. It checks that bad input gives a 400 with two field errors, without any real service:</p>
+<div class="hl"><pre><span></span><code><span class="nd">@WebMvcTest</span><span class="p">(</span><span class="n">RedemptionController</span><span class="p">.</span><span class="na">class</span><span class="p">)</span>
+<span class="kd">class</span> <span class="nc">RedemptionControllerTest</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nd">@Autowired</span><span class="w"> </span><span class="n">MockMvc</span><span class="w"> </span><span class="n">mvc</span><span class="p">;</span>
+<span class="w">    </span><span class="nd">@MockitoBean</span><span class="w"> </span><span class="n">RedemptionService</span><span class="w"> </span><span class="n">service</span><span class="p">;</span><span class="w">                    </span><span class="c1">// Spring Framework 6.2+ (older: @MockBean)</span>
+
+<span class="w">    </span><span class="nd">@Test</span>
+<span class="w">    </span><span class="kt">void</span><span class="w"> </span><span class="nf">returns400WithFieldErrors</span><span class="p">()</span><span class="w"> </span><span class="kd">throws</span><span class="w"> </span><span class="n">Exception</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="n">mvc</span><span class="p">.</span><span class="na">perform</span><span class="p">(</span><span class="n">post</span><span class="p">(</span><span class="s">"/api/v1/accounts/a1/redemptions"</span><span class="p">)</span>
+<span class="w">                </span><span class="p">.</span><span class="na">header</span><span class="p">(</span><span class="s">"Idempotency-Key"</span><span class="p">,</span><span class="w"> </span><span class="s">"k1"</span><span class="p">)</span>
+<span class="w">                </span><span class="p">.</span><span class="na">contentType</span><span class="p">(</span><span class="n">MediaType</span><span class="p">.</span><span class="na">APPLICATION_JSON</span><span class="p">)</span>
+<span class="w">                </span><span class="p">.</span><span class="na">content</span><span class="p">(</span><span class="s">"{\"points\": -5, \"rewardCode\": \"\"}"</span><span class="p">))</span>
+<span class="w">           </span><span class="p">.</span><span class="na">andExpect</span><span class="p">(</span><span class="n">status</span><span class="p">().</span><span class="na">isBadRequest</span><span class="p">())</span>
+<span class="w">           </span><span class="p">.</span><span class="na">andExpect</span><span class="p">(</span><span class="n">jsonPath</span><span class="p">(</span><span class="s">"$.errors.length()"</span><span class="p">).</span><span class="na">value</span><span class="p">(</span><span class="mi">2</span><span class="p">));</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h4>Example</h4>
+<p>A full integration test against real Postgres. Twenty threads try to redeem 100 points each from an account holding 1,000:</p>
+<div class="hl"><pre><span></span><code><span class="nd">@SpringBootTest</span>
+<span class="nd">@Testcontainers</span>
+<span class="kd">class</span> <span class="nc">RedemptionConcurrencyIT</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nd">@Container</span><span class="w"> </span><span class="nd">@ServiceConnection</span>
+<span class="w">    </span><span class="kd">static</span><span class="w"> </span><span class="n">PostgreSQLContainer</span><span class="o">&lt;?&gt;</span><span class="w"> </span><span class="n">pg</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">PostgreSQLContainer</span><span class="o">&lt;&gt;</span><span class="p">(</span><span class="s">"postgres:16-alpine"</span><span class="p">);</span>
+
+<span class="w">    </span><span class="nd">@Autowired</span><span class="w"> </span><span class="n">RedemptionService</span><span class="w"> </span><span class="n">service</span><span class="p">;</span>
+<span class="w">    </span><span class="nd">@Autowired</span><span class="w"> </span><span class="n">AccountRepository</span><span class="w"> </span><span class="n">accounts</span><span class="p">;</span>
+
+<span class="w">    </span><span class="nd">@Test</span>
+<span class="w">    </span><span class="kt">void</span><span class="w"> </span><span class="nf">twentyConcurrentRedemptionsNeverOverdraw</span><span class="p">()</span><span class="w"> </span><span class="kd">throws</span><span class="w"> </span><span class="n">Exception</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="n">accounts</span><span class="p">.</span><span class="na">save</span><span class="p">(</span><span class="k">new</span><span class="w"> </span><span class="n">Account</span><span class="p">(</span><span class="s">"a1"</span><span class="p">,</span><span class="w"> </span><span class="s">"t1"</span><span class="p">,</span><span class="w"> </span><span class="mi">1_000</span><span class="p">));</span>
+<span class="w">        </span><span class="k">try</span><span class="w"> </span><span class="p">(</span><span class="n">ExecutorService</span><span class="w"> </span><span class="n">pool</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Executors</span><span class="p">.</span><span class="na">newFixedThreadPool</span><span class="p">(</span><span class="mi">20</span><span class="p">))</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="n">List</span><span class="o">&lt;</span><span class="n">Future</span><span class="o">&lt;?&gt;&gt;</span><span class="w"> </span><span class="n">fs</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">ArrayList</span><span class="o">&lt;&gt;</span><span class="p">();</span>
+<span class="w">            </span><span class="k">for</span><span class="w"> </span><span class="p">(</span><span class="kt">int</span><span class="w"> </span><span class="n">i</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="p">;</span><span class="w"> </span><span class="n">i</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="mi">20</span><span class="p">;</span><span class="w"> </span><span class="n">i</span><span class="o">++</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                </span><span class="n">String</span><span class="w"> </span><span class="n">key</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"k"</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">i</span><span class="p">;</span>
+<span class="w">                </span><span class="n">fs</span><span class="p">.</span><span class="na">add</span><span class="p">(</span><span class="n">pool</span><span class="p">.</span><span class="na">submit</span><span class="p">(()</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                    </span><span class="k">try</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">service</span><span class="p">.</span><span class="na">redeem</span><span class="p">(</span><span class="s">"t1"</span><span class="p">,</span><span class="w"> </span><span class="s">"a1"</span><span class="p">,</span><span class="w"> </span><span class="n">key</span><span class="p">,</span><span class="w"> </span><span class="mi">100</span><span class="p">);</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="k">catch</span><span class="w"> </span><span class="p">(</span><span class="n">InsufficientPointsException</span><span class="w"> </span><span class="n">ignored</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="p">}</span>
+<span class="w">                </span><span class="p">}));</span>
+<span class="w">            </span><span class="p">}</span>
+<span class="w">            </span><span class="k">for</span><span class="w"> </span><span class="p">(</span><span class="n">Future</span><span class="o">&lt;?&gt;</span><span class="w"> </span><span class="n">f</span><span class="w"> </span><span class="p">:</span><span class="w"> </span><span class="n">fs</span><span class="p">)</span><span class="w"> </span><span class="n">f</span><span class="p">.</span><span class="na">get</span><span class="p">();</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">        </span><span class="n">assertThat</span><span class="p">(</span><span class="n">accounts</span><span class="p">.</span><span class="na">findById</span><span class="p">(</span><span class="s">"a1"</span><span class="p">).</span><span class="na">orElseThrow</span><span class="p">().</span><span class="na">balance</span><span class="p">()).</span><span class="na">isZero</span><span class="p">();</span><span class="w">   </span><span class="c1">// exactly 10 succeeded, never negative</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p>Exactly 10 redemptions should succeed and the balance must end at zero — never negative. This concurrency test against real Postgres is the single most convincing thing to show in your Java project (8.11).</p>
+<h4>When would I use it?</h4>
+<ul>
+<li><code>@WebMvcTest</code> — for request mapping, validation, error format and security rules.</li>
+<li><code>@DataJpaTest</code> + Testcontainers — for custom queries and constraints.</li>
+<li><code>@SpringBootTest</code> + Testcontainers — for end-to-end flows (API → DB → Kafka) and concurrency guarantees.</li>
+</ul>
+<p>Run all of them in CI on every pull request.</p>
+<h4>What can go wrong?</h4>
+<ul>
+<li>Using H2 (an in-memory database) instead of your real database. H2 has a different SQL dialect, different locking, different JSONB and constraint behaviour. Tests pass and production breaks.</li>
+<li>Slow suites because of many unique contexts. Each different mock set or property set builds a new context. Standardise your test configurations so they share one.</li>
+<li>Tests that share data and don't clean up. Then a test passes or fails depending on run order.</li>
+<li><code>@Transactional</code> on integration tests can hide bugs. The data never really commits. Lazy loading works only because the test's transaction is still open — in production it would fail.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. @WebMvcTest vs @DataJpaTest vs @SpringBootTest?</strong> @WebMvcTest is a web-layer slice with mocked services. @DataJpaTest is a JPA slice with repositories, each test in a rolled-back transaction. @SpringBootTest loads the full application context.</p>
+<p><strong>Q2. Why use Testcontainers instead of H2?</strong> Your tests run against the same database engine and version as production. So they catch differences in SQL dialect, locking, constraints and features that H2 would hide.</p>
+<p><strong>Q3. How would you test that concurrent redemptions never overdraw?</strong> Write an integration test against real Postgres. Fire N concurrent redemptions, each with a different idempotency key. Then assert the final balance and the exact number of successes.</p>
+<h2 id="s8-5">8.5 Kafka with Spring: producers, consumers, idempotency and dead letters</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> Kafka is a durable notice board of events. One service pins up "order completed", and other services read it whenever they are ready — even if they were down for an hour. Spring Kafka makes writing and reading these events easy.</p>
+<p>Services must react to each other's events. For example: order completed → accrue points → notify the retailer → update analytics.</p>
+<p>But they should not depend on each other synchronously (waiting for a direct reply):</p>
+<ul>
+<li>If the loyalty service is down, ordering must still work.</li>
+<li>When loyalty comes back, it must process everything it missed.</li>
+</ul>
+<p>Kafka gives you an event log that is durable (survives crashes), ordered and replayable (you can read it again). Spring Kafka makes producing and consuming events simple. The Kafka concepts are in 11.12–11.13; this section covers the Spring side.</p>
+<h4>What is happening internally?</h4>
+<ul>
+<li><strong>Producer side.</strong> <code>KafkaTemplate</code> wraps a thread-safe <code>KafkaProducer</code>. The producer groups records per partition into batches and sends them asynchronously. With <code>acks=all</code> plus producer idempotence (on by default since Kafka 3.0), producer retries cause neither lost nor duplicate records.</li>
+<li><strong>Consumer side.</strong> <code>@KafkaListener</code> creates a <em>listener container</em>:
+  1. It starts one or more consumer threads (set by <code>concurrency</code>).
+  2. Each thread owns a <code>KafkaConsumer</code> in the consumer group.
+  3. Each consumer polls records from the partitions assigned to it and calls your method.
+  4. After your method returns, the container commits the offset (the "read up to here" bookmark). The default is <code>AckMode.BATCH</code>.</li>
+<li><strong>So delivery is at-least-once.</strong> If the app crashes after processing but before the commit, the same record comes again. Your code must handle duplicates.</li>
+<li><strong>Error handling.</strong> <code>DefaultErrorHandler</code> retries a failed record with a backoff (wait) by seeking back to it. After the retries run out, it gives the record to a <em>recoverer</em>. Usually that is <code>DeadLetterPublishingRecoverer</code>. It publishes the record to <code>&lt;topic&gt;.DLT</code> (dead-letter topic) with headers explaining the error.</li>
+<li><strong>Ordering is only per partition.</strong> If you use <code>accountId</code> as the key, all events of one account go to the same partition, so they stay in order.</li>
+</ul>
+<p>Think of the railway parcel office register. Each parcel is noted down. Every godown clerk marks the last entry he handled. If he goes on leave, he restarts from his mark — and may handle one parcel twice, so he must check before acting.</p>
+<h4>How does it work?</h4>
+<div class="hl"><pre><span></span><code><span class="nt">spring.kafka</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">bootstrap-servers</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">kafka:9092</span>
+<span class="w">  </span><span class="nt">producer</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">acks</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">all</span>
+<span class="w">    </span><span class="nt">key-serializer</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">org.apache.kafka.common.serialization.StringSerializer</span>
+<span class="w">    </span><span class="nt">value-serializer</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">org.springframework.kafka.support.serializer.JsonSerializer</span>
+<span class="w">  </span><span class="nt">consumer</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">group-id</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">loyalty-accrual</span>
+<span class="w">    </span><span class="nt">auto-offset-reset</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">earliest</span>
+<span class="w">    </span><span class="nt">key-deserializer</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">org.apache.kafka.common.serialization.StringDeserializer</span>
+<span class="w">    </span><span class="nt">value-deserializer</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">org.springframework.kafka.support.serializer.JsonDeserializer</span>
+<span class="w">    </span><span class="nt">properties.spring.json.trusted.packages</span><span class="p">:</span><span class="w"> </span><span class="s">"com.fa.events"</span>
+</code></pre></div>
+
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="kd">public</span><span class="w"> </span><span class="kd">record</span> <span class="nc">OrderCompleted</span><span class="p">(</span><span class="n">String</span><span class="w"> </span><span class="n">eventId</span><span class="p">,</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="n">tenantId</span><span class="p">,</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="n">outletId</span><span class="p">,</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="n">orderId</span><span class="p">,</span><span class="w"> </span><span class="kt">long</span><span class="w"> </span><span class="n">amountPaise</span><span class="p">,</span><span class="w"> </span><span class="n">Instant</span><span class="w"> </span><span class="n">at</span><span class="p">)</span><span class="w"> </span><span class="p">{}</span>
+
+<span class="nd">@Component</span>
+<span class="kd">class</span> <span class="nc">AccrualConsumer</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">private</span><span class="w"> </span><span class="kd">final</span><span class="w"> </span><span class="n">ProcessedEventRepository</span><span class="w"> </span><span class="n">processed</span><span class="p">;</span>
+<span class="w">    </span><span class="kd">private</span><span class="w"> </span><span class="kd">final</span><span class="w"> </span><span class="n">AccrualService</span><span class="w"> </span><span class="n">accrual</span><span class="p">;</span>
+<span class="w">    </span><span class="n">AccrualConsumer</span><span class="p">(</span><span class="n">ProcessedEventRepository</span><span class="w"> </span><span class="n">processed</span><span class="p">,</span><span class="w"> </span><span class="n">AccrualService</span><span class="w"> </span><span class="n">accrual</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="k">this</span><span class="p">.</span><span class="na">processed</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">processed</span><span class="p">;</span><span class="w"> </span><span class="k">this</span><span class="p">.</span><span class="na">accrual</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">accrual</span><span class="p">;</span><span class="w"> </span><span class="p">}</span>
+
+<span class="w">    </span><span class="nd">@KafkaListener</span><span class="p">(</span><span class="n">topics</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"order-completed"</span><span class="p">,</span><span class="w"> </span><span class="n">concurrency</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"3"</span><span class="p">)</span>
+<span class="w">    </span><span class="nd">@Transactional</span>
+<span class="w">    </span><span class="kd">public</span><span class="w"> </span><span class="kt">void</span><span class="w"> </span><span class="nf">on</span><span class="p">(</span><span class="n">OrderCompleted</span><span class="w"> </span><span class="n">evt</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">processed</span><span class="p">.</span><span class="na">existsById</span><span class="p">(</span><span class="n">evt</span><span class="p">.</span><span class="na">eventId</span><span class="p">()))</span><span class="w"> </span><span class="k">return</span><span class="p">;</span><span class="w">                       </span><span class="c1">// duplicate delivery → no-op</span>
+<span class="w">        </span><span class="n">accrual</span><span class="p">.</span><span class="na">accrue</span><span class="p">(</span><span class="n">evt</span><span class="p">.</span><span class="na">tenantId</span><span class="p">(),</span><span class="w"> </span><span class="n">evt</span><span class="p">.</span><span class="na">outletId</span><span class="p">(),</span><span class="w"> </span><span class="n">evt</span><span class="p">.</span><span class="na">orderId</span><span class="p">(),</span><span class="w"> </span><span class="n">evt</span><span class="p">.</span><span class="na">amountPaise</span><span class="p">());</span>
+<span class="w">        </span><span class="n">processed</span><span class="p">.</span><span class="na">save</span><span class="p">(</span><span class="k">new</span><span class="w"> </span><span class="n">ProcessedEvent</span><span class="p">(</span><span class="n">evt</span><span class="p">.</span><span class="na">eventId</span><span class="p">(),</span><span class="w"> </span><span class="n">Instant</span><span class="p">.</span><span class="na">now</span><span class="p">()));</span><span class="w">      </span><span class="c1">// same DB transaction as the effect</span>
+<span class="w">        </span><span class="c1">// PK on event_id also protects against two consumers racing on a redelivered record</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+
+<span class="nd">@Configuration</span>
+<span class="kd">class</span> <span class="nc">KafkaErrorConfig</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nd">@Bean</span>
+<span class="w">    </span><span class="n">DefaultErrorHandler</span><span class="w"> </span><span class="nf">errorHandler</span><span class="p">(</span><span class="n">KafkaTemplate</span><span class="o">&lt;</span><span class="n">Object</span><span class="p">,</span><span class="w"> </span><span class="n">Object</span><span class="o">&gt;</span><span class="w"> </span><span class="n">template</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="kd">var</span><span class="w"> </span><span class="n">backoff</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">ExponentialBackOffWithMaxRetries</span><span class="p">(</span><span class="mi">3</span><span class="p">);</span>
+<span class="w">        </span><span class="n">backoff</span><span class="p">.</span><span class="na">setInitialInterval</span><span class="p">(</span><span class="mi">500</span><span class="p">);</span><span class="w"> </span><span class="n">backoff</span><span class="p">.</span><span class="na">setMultiplier</span><span class="p">(</span><span class="mf">2.0</span><span class="p">);</span>
+<span class="w">        </span><span class="kd">var</span><span class="w"> </span><span class="n">handler</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">DefaultErrorHandler</span><span class="p">(</span><span class="k">new</span><span class="w"> </span><span class="n">DeadLetterPublishingRecoverer</span><span class="p">(</span><span class="n">template</span><span class="p">),</span><span class="w"> </span><span class="n">backoff</span><span class="p">);</span>
+<span class="w">        </span><span class="n">handler</span><span class="p">.</span><span class="na">addNotRetryableExceptions</span><span class="p">(</span><span class="n">ValidationException</span><span class="p">.</span><span class="na">class</span><span class="p">,</span><span class="w"> </span><span class="n">DeserializationException</span><span class="p">.</span><span class="na">class</span><span class="p">);</span><span class="w">   </span><span class="c1">// poison → DLT now</span>
+<span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="n">handler</span><span class="p">;</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+
+<span class="nd">@Service</span>
+<span class="kd">class</span> <span class="nc">PointsEventPublisher</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">private</span><span class="w"> </span><span class="kd">final</span><span class="w"> </span><span class="n">KafkaTemplate</span><span class="o">&lt;</span><span class="n">String</span><span class="p">,</span><span class="w"> </span><span class="n">Object</span><span class="o">&gt;</span><span class="w"> </span><span class="n">kafka</span><span class="p">;</span>
+<span class="w">    </span><span class="n">PointsEventPublisher</span><span class="p">(</span><span class="n">KafkaTemplate</span><span class="o">&lt;</span><span class="n">String</span><span class="p">,</span><span class="w"> </span><span class="n">Object</span><span class="o">&gt;</span><span class="w"> </span><span class="n">kafka</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="k">this</span><span class="p">.</span><span class="na">kafka</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">kafka</span><span class="p">;</span><span class="w"> </span><span class="p">}</span>
+<span class="w">    </span><span class="kt">void</span><span class="w"> </span><span class="nf">publish</span><span class="p">(</span><span class="n">PointsEvent</span><span class="w"> </span><span class="n">e</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="n">kafka</span><span class="p">.</span><span class="na">send</span><span class="p">(</span><span class="s">"points-events"</span><span class="p">,</span><span class="w"> </span><span class="n">e</span><span class="p">.</span><span class="na">accountId</span><span class="p">(),</span><span class="w"> </span><span class="n">e</span><span class="p">)</span><span class="w">                           </span><span class="c1">// key → partition → per-account order</span>
+<span class="w">             </span><span class="p">.</span><span class="na">whenComplete</span><span class="p">((</span><span class="n">res</span><span class="p">,</span><span class="w"> </span><span class="n">ex</span><span class="p">)</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">ex</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="kc">null</span><span class="p">)</span><span class="w"> </span><span class="n">log</span><span class="p">.</span><span class="na">error</span><span class="p">(</span><span class="s">"publish failed {}"</span><span class="p">,</span><span class="w"> </span><span class="n">e</span><span class="p">.</span><span class="na">eventId</span><span class="p">(),</span><span class="w"> </span><span class="n">ex</span><span class="p">);</span><span class="w"> </span><span class="p">});</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p>How the consumer stays safe against duplicates:</p>
+<ol>
+<li>It checks if this <code>eventId</code> was already processed. If yes, it returns and does nothing.</li>
+<li>It applies the accrual.</li>
+<li>It saves the <code>eventId</code> in <code>processed_event</code> — in the <strong>same</strong> database transaction as the accrual.</li>
+<li>The primary key on <code>event_id</code> blocks two consumers that race on the same redelivered record.</li>
+</ol>
+<p>The error handler retries 3 times with exponential backoff (500 ms, then doubling). Validation and deserialisation errors skip the retries — those records are <em>poison</em> (they will never succeed), so they go to the DLT at once.</p>
+<p>For <strong>non-blocking retries</strong>, use <code>@RetryableTopic</code>. It sends failed records through separate retry topics with delays, and finally to the DLT. This way one failing record does not stall its whole partition.</p>
+<h4>When would I use it?</h4>
+<ul>
+<li>Event-driven integration between services.</li>
+<li>Asynchronous processing of high-volume events: accruals, notifications, analytics.</li>
+<li>CDC pipelines (Change Data Capture — streaming every database change as an event).</li>
+<li>Audit streams.</li>
+</ul>
+<p>When the event must not be lost, publish from the <strong>outbox relay</strong> (11.15), not directly inside the business transaction.</p>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Non-idempotent consumers</strong> apply the effect twice when a record is redelivered. This is the root cause of "duplicate reward postings under retries".</li>
+<li><strong>Dual writes</strong>: <code>repo.save(); kafka.send();</code> — two separate systems. The DB may commit while the send fails, or the reverse. Use the outbox pattern.</li>
+<li><strong>Poison messages</strong> retried forever, blocking the partition. Classify exceptions as retryable or not, and use a DLT.</li>
+<li><strong>Slow processing.</strong> If one poll takes longer than <code>max.poll.interval.ms</code>, Kafka kicks the consumer out of the group. This causes rebalance storms and redeliveries. Keep handlers fast, or reduce <code>max.poll.records</code>.</li>
+<li><strong>Hot keys.</strong> If one huge tenant is the key, all its events land in one partition. So one consumer does all the work.</li>
+<li><strong>Schema changes</strong> that break consumers. Use a schema registry, or allow only additive JSON changes (add fields, never remove or rename).</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. How does Spring Kafka deliver messages — exactly once?</strong> No — by default it is at-least-once. Offsets are committed after the listener returns, so a failure causes redelivery. So you make consumers idempotent. Kafka transactions give exactly-once only for Kafka-to-Kafka processing.</p>
+<p><strong>Q2. How do you make a consumer idempotent?</strong> Store the processed event ID, with a unique constraint, in the same DB transaction as the business effect. Or make the effect itself idempotent, for example an upsert by business key.</p>
+<p><strong>Q3. What is a dead-letter topic and when do you send to it?</strong> It is a separate topic for records that failed after all retries, or that can never succeed (validation or deserialisation errors). Moving them out stops them from blocking the partition. The DLT is monitored; records are fixed and replayed.</p>
+<p><strong>Q4. How do you preserve ordering per account?</strong> Use the account ID as the record key. All of that account's events then go to one partition and are processed by one consumer thread, in order.</p>
+<h2 id="s8-6">8.6 Caching with Spring Cache and Redis</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> A cache keeps a copy of often-read data in fast memory. Next time, you read the copy instead of asking the database again.</p>
+<p>Some data is read far more often than it changes: scheme definitions, SKU catalogues, tenant settings, computed balances.</p>
+<p>Reading it from the database every time wastes DB capacity and adds latency. A cache serves repeated reads from memory:</p>
+<ul>
+<li>a local in-process cache answers in microseconds;</li>
+<li>Redis answers in about a millisecond.</li>
+</ul>
+<p>Think of a shopkeeper who keeps the 20 most-sold items on the counter. He only goes to the godown for the rest.</p>
+<h4>What is happening internally?</h4>
+<ul>
+<li><code>@EnableCaching</code> makes Spring wrap beans that use caching annotations in a <strong>proxy</strong> (6.7). A proxy is a wrapper object that runs extra logic before and after your method.</li>
+<li><code>@Cacheable</code> works like this:
+  1. Build the key. By default it comes from the method arguments. You can customise it with SpEL (Spring's expression language).
+  2. Look up the key in the <code>CacheManager</code>.
+  3. <strong>Hit</strong> (found): return the cached value. Your method is not called.
+  4. <strong>Miss</strong> (not found): call your method and store the result.</li>
+<li><code>@CacheEvict</code> removes entries. <code>@CachePut</code> always calls the method and updates the cache.</li>
+<li>The <code>CacheManager</code> implementation decides where data is stored:</li>
+<li><strong>Caffeine</strong> — in-process, one copy per instance, nanosecond access, bounded by size and TTL (time to live).</li>
+<li><strong>Redis</strong> — shared by all instances, one network hop away, values are serialised, TTL per cache.</li>
+<li><code>sync = true</code>: if many requests miss the same key at once on one instance, only one loads it; the others wait. This is local protection against a <em>stampede</em> (many requests hitting the DB together).</li>
+</ul>
+<h4>How does it work?</h4>
+<p>The pattern is called <strong>cache-aside</strong>:</p>
+<ol>
+<li>On a read, look in the cache first. On a miss, load from the DB and store it.</li>
+<li>On a write, update the DB, then <strong>evict</strong> (delete) the key.</li>
+</ol>
+<p>Why delete instead of writing the new value into the cache? Because writing can race with a concurrent reader. That reader may put the old, stale value back in after your update. Deleting forces the next read to load fresh data.</p>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="nd">@Configuration</span>
+<span class="nd">@EnableCaching</span>
+<span class="kd">class</span> <span class="nc">CacheConfig</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nd">@Bean</span>
+<span class="w">    </span><span class="n">RedisCacheManager</span><span class="w"> </span><span class="nf">cacheManager</span><span class="p">(</span><span class="n">RedisConnectionFactory</span><span class="w"> </span><span class="n">cf</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="kd">var</span><span class="w"> </span><span class="n">defaults</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">RedisCacheConfiguration</span><span class="p">.</span><span class="na">defaultCacheConfig</span><span class="p">()</span>
+<span class="w">                </span><span class="p">.</span><span class="na">entryTtl</span><span class="p">(</span><span class="n">Duration</span><span class="p">.</span><span class="na">ofMinutes</span><span class="p">(</span><span class="mi">10</span><span class="p">))</span>
+<span class="w">                </span><span class="p">.</span><span class="na">serializeValuesWith</span><span class="p">(</span><span class="n">RedisSerializationContext</span><span class="p">.</span><span class="na">SerializationPair</span>
+<span class="w">                        </span><span class="p">.</span><span class="na">fromSerializer</span><span class="p">(</span><span class="k">new</span><span class="w"> </span><span class="n">GenericJackson2JsonRedisSerializer</span><span class="p">()));</span>
+<span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="n">RedisCacheManager</span><span class="p">.</span><span class="na">builder</span><span class="p">(</span><span class="n">cf</span><span class="p">)</span>
+<span class="w">                </span><span class="p">.</span><span class="na">cacheDefaults</span><span class="p">(</span><span class="n">defaults</span><span class="p">)</span>
+<span class="w">                </span><span class="p">.</span><span class="na">withCacheConfiguration</span><span class="p">(</span><span class="s">"balances"</span><span class="p">,</span><span class="w"> </span><span class="n">defaults</span><span class="p">.</span><span class="na">entryTtl</span><span class="p">(</span><span class="n">Duration</span><span class="p">.</span><span class="na">ofSeconds</span><span class="p">(</span><span class="mi">60</span><span class="p">)))</span>
+<span class="w">                </span><span class="p">.</span><span class="na">build</span><span class="p">();</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+
+<span class="nd">@Service</span>
+<span class="kd">class</span> <span class="nc">SchemeService</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nd">@Cacheable</span><span class="p">(</span><span class="n">cacheNames</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"schemes"</span><span class="p">,</span><span class="w"> </span><span class="n">key</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"#tenantId + ':' + #outletId"</span><span class="p">,</span><span class="w"> </span><span class="n">sync</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span><span class="p">)</span>
+<span class="w">    </span><span class="kd">public</span><span class="w"> </span><span class="n">List</span><span class="o">&lt;</span><span class="n">SchemeDto</span><span class="o">&gt;</span><span class="w"> </span><span class="nf">eligible</span><span class="p">(</span><span class="n">String</span><span class="w"> </span><span class="n">tenantId</span><span class="p">,</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="n">outletId</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="k">return</span><span class="w"> </span><span class="n">repo</span><span class="p">.</span><span class="na">findEligible</span><span class="p">(</span><span class="n">tenantId</span><span class="p">,</span><span class="w"> </span><span class="n">outletId</span><span class="p">);</span><span class="w"> </span><span class="p">}</span>
+
+<span class="w">    </span><span class="nd">@CacheEvict</span><span class="p">(</span><span class="n">cacheNames</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"schemes"</span><span class="p">,</span><span class="w"> </span><span class="n">allEntries</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span><span class="p">)</span>
+<span class="w">    </span><span class="kd">public</span><span class="w"> </span><span class="kt">void</span><span class="w"> </span><span class="nf">onSchemesChanged</span><span class="p">(</span><span class="n">String</span><span class="w"> </span><span class="n">tenantId</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="p">}</span>
+<span class="p">}</span>
+
+<span class="nd">@Service</span>
+<span class="kd">class</span> <span class="nc">BalanceService</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nd">@Cacheable</span><span class="p">(</span><span class="n">cacheNames</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"balances"</span><span class="p">,</span><span class="w"> </span><span class="n">key</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"#accountId"</span><span class="p">)</span>
+<span class="w">    </span><span class="kd">public</span><span class="w"> </span><span class="kt">long</span><span class="w"> </span><span class="nf">balance</span><span class="p">(</span><span class="n">String</span><span class="w"> </span><span class="n">accountId</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="k">return</span><span class="w"> </span><span class="n">ledger</span><span class="p">.</span><span class="na">balance</span><span class="p">(</span><span class="n">accountId</span><span class="p">);</span><span class="w"> </span><span class="p">}</span>
+
+<span class="w">    </span><span class="nd">@CacheEvict</span><span class="p">(</span><span class="n">cacheNames</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"balances"</span><span class="p">,</span><span class="w"> </span><span class="n">key</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"#accountId"</span><span class="p">)</span>
+<span class="w">    </span><span class="nd">@Transactional</span>
+<span class="w">    </span><span class="kd">public</span><span class="w"> </span><span class="kt">void</span><span class="w"> </span><span class="nf">redeem</span><span class="p">(</span><span class="n">String</span><span class="w"> </span><span class="n">accountId</span><span class="p">,</span><span class="w"> </span><span class="kt">long</span><span class="w"> </span><span class="n">pts</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="cm">/* ... */</span><span class="w"> </span><span class="p">}</span><span class="w">      </span><span class="c1">// evict after the change</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p>Redis is useful for much more than caching (11.5, 13.x):</p>
+<ul>
+<li>atomic counters (<code>INCR</code>);</li>
+<li>rate limiting (a token bucket written in Lua);</li>
+<li>distributed locks (<code>SET key value NX PX 30000</code>, or Redisson);</li>
+<li>leaderboards (sorted sets);</li>
+<li>idempotency keys with a TTL;</li>
+<li>pub/sub and streams.</li>
+</ul>
+<h4>When would I use it?</h4>
+<p>For read-heavy, change-light data, expensive computations and per-tenant configuration.</p>
+<ul>
+<li><strong>Caffeine</strong> — for small reference data where brief per-instance staleness is fine.</li>
+<li><strong>Redis</strong> — when instances must share results, or the data set is large.</li>
+<li><strong>Both together</strong> — a two-level cache: Caffeine first, then Redis, then the DB.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Stale data.</strong> Two common causes:</li>
+<li>You evict before the transaction commits. Another request then caches the old value again.</li>
+<li>You evict on only one instance, while others still hold local copies.</li>
+</ul>
+<p>Fix: evict after commit (<code>@TransactionalEventListener</code>), and keep TTLs as a safety net.
+- <strong>Self-invocation.</strong> <code>@Cacheable</code> on a method called from the same class does not cache. The call skips the proxy.
+- <strong>Stampede.</strong> A hot key expires and thousands of requests hit the DB at once. See 11.5: single-flight, jitter, early refresh.
+- <strong>Unbounded caches.</strong> The default <code>ConcurrentMapCacheManager</code> has no limits, so memory keeps growing — a memory leak. Always set a size limit and a TTL.
+- <strong>Caching mutable objects locally.</strong> Callers change the shared cached object, and everyone sees the change. Cache immutable DTOs or records.
+- <strong>Serialisation changes.</strong> After a deploy, old Redis entries may no longer be readable. Version your cache keys, or clear the cache on deploy.</p>
+<h4>Interview questions</h4>
+<p><strong>Q1. How does @Cacheable work?</strong> A proxy builds a key from the method arguments. On a hit, it returns the cached value without calling the method. On a miss, it calls the method and stores the result.</p>
+<p><strong>Q2. Why evict on write instead of updating the cache?</strong> Updating can race with a concurrent read that reloads old data and writes it to the cache last, leaving stale data. Deleting forces the next read to load fresh data.</p>
+<p><strong>Q3. Local cache vs Redis?</strong> A local cache (Caffeine) is fastest, but each instance has its own copy and they can drift apart. Redis is shared and consistent across instances, but costs a network hop and serialisation.</p>
+<h2 id="s8-7">8.7 Resilience: timeouts, retries, circuit breakers and bulkheads (Resilience4j)</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> Other services will sometimes be slow or down. These patterns make sure one sick dependency doesn't drag your whole service down with it — you stop waiting, stop calling it for a while, and show a sensible fallback.</p>
+<p>In a distributed system, dependencies <strong>will</strong> be slow or down. Without protection, this happens:</p>
+<ol>
+<li>One partner API becomes slow.</li>
+<li>Your threads wait on it, and your thread pool fills up.</li>
+<li>Your service stops responding to anyone.</li>
+<li>Your callers' thread pools fill up too.</li>
+<li>The outage <strong>cascades</strong> across the whole platform.</li>
+</ol>
+<p>Resilience patterns contain the failure:</p>
+<ul>
+<li>fail fast instead of waiting;</li>
+<li>retry only what is safe to retry;</li>
+<li>isolate what is slow;</li>
+<li>degrade gracefully (give a reduced but useful answer).</li>
+</ul>
+<p>Think of the electrical circuit breaker (MCB) in your house. When there is a short circuit, it trips and cuts power to that line, so the whole house doesn't catch fire. After the fault is fixed, you switch it back on.</p>
+<h4>What is happening internally?</h4>
+<p><strong>Resilience4j</strong> wraps (decorates) your calls. You use it with annotations and Spring AOP, or in functional style.</p>
+<ul>
+<li><strong>TimeLimiter / client timeouts</strong> — limit how long you wait. Always set this first.</li>
+<li><strong>Retry</strong> — calls again on the transient exceptions you list. It waits longer each time (exponential backoff), plus some randomness (jitter) so clients don't retry together.</li>
+<li><strong>CircuitBreaker</strong> — keeps a <em>sliding window</em> of recent results (by call count or by time).</li>
+<li>If the failure rate or slow-call rate goes above a threshold, the breaker <strong>opens</strong>.</li>
+<li>While open, calls fail at once with <code>CallNotPermittedException</code>. The dependency is not touched.</li>
+<li>After a wait, it becomes <strong>half-open</strong> and lets a few trial calls through.</li>
+<li>If they succeed, it closes. If they fail, it opens again.</li>
+<li><strong>Bulkhead</strong> — caps how many calls can run at once (with a semaphore), or gives the dependency its own thread pool. So one dependency cannot use up all your threads. (The name comes from the walls inside a ship that stop one leak from sinking the whole ship.)</li>
+<li><strong>RateLimiter</strong> — caps the number of calls per time unit, to respect a partner's quota.</li>
+</ul>
+<div class="hl"><pre><span></span><code>CLOSED ──(failure rate ≥ 50% over last 50 calls)──► OPEN ──(after 30 s)──► HALF_OPEN
+   ▲                                                  ▲                          │
+   └──────────────(trial calls succeed)───────────────┴──(trial calls fail)──────┘
+</code></pre></div>
+
+<p>Order of decorators with annotations, outermost first: Retry → CircuitBreaker → RateLimiter → TimeLimiter → Bulkhead → your call.</p>
+<p>Because Retry is outside the CircuitBreaker:</p>
+<ul>
+<li>every retry attempt is recorded by the breaker; and</li>
+<li>once the breaker opens, the retries fail fast too, so they stop quickly.</li>
+</ul>
+<h4>How does it work?</h4>
+<p>With this config, the breaker looks at the last 50 calls (and needs at least 20 before it decides). It opens if 50% fail, or if 60% take longer than 2 s. It stays open for 30 s, then allows 5 trial calls. Retry tries up to 3 times, starting at 200 ms and doubling, only for I/O and timeout errors. The bulkhead allows 20 calls at once and waits at most 50 ms for a free slot.</p>
+<div class="hl"><pre><span></span><code><span class="nt">resilience4j</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">circuitbreaker.instances.voucherPartner</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">sliding-window-type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">COUNT_BASED</span>
+<span class="w">    </span><span class="nt">sliding-window-size</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">50</span>
+<span class="w">    </span><span class="nt">minimum-number-of-calls</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">20</span>
+<span class="w">    </span><span class="nt">failure-rate-threshold</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">50</span>
+<span class="w">    </span><span class="nt">slow-call-duration-threshold</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2s</span>
+<span class="w">    </span><span class="nt">slow-call-rate-threshold</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">60</span>
+<span class="w">    </span><span class="nt">wait-duration-in-open-state</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">30s</span>
+<span class="w">    </span><span class="nt">permitted-number-of-calls-in-half-open-state</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">5</span>
+<span class="w">  </span><span class="nt">retry.instances.voucherPartner</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">max-attempts</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3</span>
+<span class="w">    </span><span class="nt">wait-duration</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">200ms</span>
+<span class="w">    </span><span class="nt">enable-exponential-backoff</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<span class="w">    </span><span class="nt">exponential-backoff-multiplier</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
+<span class="w">    </span><span class="nt">retry-exceptions</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">java.io.IOException</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">java.net.SocketTimeoutException</span><span class="p p-Indicator">]</span>
+<span class="w">    </span><span class="nt">ignore-exceptions</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">com.fa.voucher.InvalidVoucherRequestException</span><span class="p p-Indicator">]</span>
+<span class="w">  </span><span class="nt">bulkhead.instances.voucherPartner</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">max-concurrent-calls</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">20</span>
+<span class="w">    </span><span class="nt">max-wait-duration</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">50ms</span>
+</code></pre></div>
+
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="nd">@Service</span>
+<span class="kd">class</span> <span class="nc">VoucherClient</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">private</span><span class="w"> </span><span class="kd">final</span><span class="w"> </span><span class="n">RestClient</span><span class="w"> </span><span class="n">client</span><span class="p">;</span>
+<span class="w">    </span><span class="n">VoucherClient</span><span class="p">(</span><span class="n">RestClient</span><span class="w"> </span><span class="n">voucherClient</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="k">this</span><span class="p">.</span><span class="na">client</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">voucherClient</span><span class="p">;</span><span class="w"> </span><span class="p">}</span>
+
+<span class="w">    </span><span class="nd">@Retry</span><span class="p">(</span><span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"voucherPartner"</span><span class="p">)</span>
+<span class="w">    </span><span class="nd">@CircuitBreaker</span><span class="p">(</span><span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"voucherPartner"</span><span class="p">,</span><span class="w"> </span><span class="n">fallbackMethod</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"queueForLater"</span><span class="p">)</span>
+<span class="w">    </span><span class="nd">@Bulkhead</span><span class="p">(</span><span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"voucherPartner"</span><span class="p">)</span>
+<span class="w">    </span><span class="kd">public</span><span class="w"> </span><span class="n">VoucherResult</span><span class="w"> </span><span class="nf">issue</span><span class="p">(</span><span class="n">IssueVoucher</span><span class="w"> </span><span class="n">cmd</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="n">client</span><span class="p">.</span><span class="na">post</span><span class="p">().</span><span class="na">uri</span><span class="p">(</span><span class="s">"/v1/vouchers"</span><span class="p">)</span>
+<span class="w">                </span><span class="p">.</span><span class="na">header</span><span class="p">(</span><span class="s">"Idempotency-Key"</span><span class="p">,</span><span class="w"> </span><span class="n">cmd</span><span class="p">.</span><span class="na">redemptionId</span><span class="p">())</span><span class="w">          </span><span class="c1">// makes the retried POST safe</span>
+<span class="w">                </span><span class="p">.</span><span class="na">body</span><span class="p">(</span><span class="n">cmd</span><span class="p">).</span><span class="na">retrieve</span><span class="p">().</span><span class="na">body</span><span class="p">(</span><span class="n">VoucherResult</span><span class="p">.</span><span class="na">class</span><span class="p">);</span>
+<span class="w">    </span><span class="p">}</span>
+
+<span class="w">    </span><span class="n">VoucherResult</span><span class="w"> </span><span class="nf">queueForLater</span><span class="p">(</span><span class="n">IssueVoucher</span><span class="w"> </span><span class="n">cmd</span><span class="p">,</span><span class="w"> </span><span class="n">Throwable</span><span class="w"> </span><span class="n">t</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w">          </span><span class="c1">// graceful degradation</span>
+<span class="w">        </span><span class="n">pendingVouchers</span><span class="p">.</span><span class="na">enqueue</span><span class="p">(</span><span class="n">cmd</span><span class="p">);</span><span class="w">                                     </span><span class="c1">// a job retries later; user sees "processing"</span>
+<span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="n">VoucherResult</span><span class="p">.</span><span class="na">pending</span><span class="p">(</span><span class="n">cmd</span><span class="p">.</span><span class="na">redemptionId</span><span class="p">());</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p>Two points to notice:</p>
+<ul>
+<li>The <code>Idempotency-Key</code> header makes the retried POST safe. The partner sees the same key and does not issue a second voucher.</li>
+<li><code>queueForLater</code> is the fallback. When the breaker is open, the request goes into a queue, a background job retries it later, and the user sees "processing". This is graceful degradation.</li>
+</ul>
+<h4>When would I use it?</h4>
+<p>Around every remote dependency: partner APIs, other microservices, even the database for non-critical reads.</p>
+<p>Combine it with:</p>
+<ul>
+<li>client timeouts (7.6);</li>
+<li>idempotency keys on any write that may be retried;</li>
+<li>fallbacks that keep core flows working — cached prices, "processing" states, hiding optional widgets.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Retrying non-idempotent operations</strong> creates duplicates — double vouchers, double payments.</li>
+<li><strong>Retry storms.</strong> If every layer retries 3 times, three layers multiply the load 27 times (3 × 3 × 3) on a dependency that is already struggling. Retry at one layer only, with backoff, jitter and a retry budget (a cap on total retries).</li>
+<li><strong>No timeout.</strong> Calls just hang, so the circuit breaker never sees a failure.</li>
+<li>Fallbacks that hide real outages and raise no alert.</li>
+<li>Breaker windows that are too small, so the breaker keeps flipping open and closed (flapping). Or thresholds so high that it never opens.</li>
+<li>Self-invocation again: the annotations only work when the call goes through the proxy.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. Explain the circuit breaker states.</strong> Closed: calls flow normally and results are recorded. It moves to Open when the failure or slow-call rate crosses a threshold; now calls fail fast. After a wait, it moves to Half-open and allows a few trial calls. If they succeed, it goes back to Closed; if they fail, it goes back to Open.</p>
+<p><strong>Q2. Which calls should you retry?</strong> Only idempotent operations that fail with transient errors — timeouts, 503s, connection resets. Use exponential backoff with jitter, a limited number of attempts, and ideally retry at one layer only.</p>
+<p><strong>Q3. What is a bulkhead?</strong> It isolates resources per dependency, using a semaphore or a thread-pool limit. So one slow dependency cannot use up all your threads.</p>
+<p><strong>Q4. How do these patterns prevent cascading failures?</strong> Timeouts limit how long you wait. Circuit breakers stop calling a failing dependency. Bulkheads limit how many resources one dependency can use. Fallbacks keep the caller responsive.</p>
+<h2 id="s8-8">8.8 Async execution and scheduled jobs</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> <code>@Async</code> runs a task in the background so the user doesn't wait for it. <code>@Scheduled</code> runs a task at fixed times. The big catch: with many pods, every pod runs the scheduled job unless you add a lock.</p>
+<p>Some work should not make the request wait: sending an SMS after a redemption, generating a report, warming a cache.</p>
+<p>Other work runs on a timetable: daily point expiry at 02:00, hourly reconciliation, retrying pending vouchers.</p>
+<p>Spring gives you <code>@Async</code> and <code>@Scheduled</code> for these. Both have pitfalls that matter when you run many instances.</p>
+<h4>What is happening internally?</h4>
+<ul>
+<li><strong><code>@Async</code>.</strong> Add <code>@EnableAsync</code>. Then a proxy intercepts every <code>@Async</code> method. It hands the call to a <code>TaskExecutor</code> (a thread pool) and returns at once. The method returns <code>void</code> or a <code>CompletableFuture</code>. If you configure nothing, Boot gives you a <code>ThreadPoolTaskExecutor</code> — or virtual threads when <code>spring.threads.virtual.enabled=true</code>.</li>
+<li><strong><code>@Scheduled</code>.</strong> Add <code>@EnableScheduling</code>. A <code>TaskScheduler</code> then triggers <code>@Scheduled</code> methods by <code>fixedRate</code>, <code>fixedDelay</code> or <code>cron</code>. Note: by default it has only <strong>one thread</strong>!</li>
+<li><strong>Many instances.</strong> If you run several pods, <strong>every</strong> pod runs every <code>@Scheduled</code> method. So a daily job runs N times unless you coordinate.</li>
+</ul>
+<p>Think of a society with three watchmen and one rule: "lock the main gate at 10 pm". If nobody coordinates, all three walk to the gate. ShedLock is the register at the gate — the first one to sign does the job.</p>
+<h4>How does it work?</h4>
+<p>This config sets up a dedicated pool for notifications and a DB-based lock for jobs:</p>
+<ul>
+<li>4 core threads, up to 8, and a queue of 500 tasks.</li>
+<li>When the queue is full, <code>CallerRunsPolicy</code> makes the caller run the task itself. This slows the caller down instead of dropping work.</li>
+<li>A <code>TaskDecorator</code> copies MDC and tenant context into the worker thread (4.15).</li>
+<li>ShedLock stores its locks in a <code>shedlock</code> table in your DB, so only one instance runs each job.</li>
+</ul>
+<div class="hl"><pre><span></span><code><span class="nd">@Configuration</span>
+<span class="nd">@EnableAsync</span>
+<span class="nd">@EnableScheduling</span>
+<span class="nd">@EnableSchedulerLock</span><span class="p">(</span><span class="n">defaultLockAtMostFor</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"PT30M"</span><span class="p">)</span><span class="w">         </span><span class="c1">// ShedLock: one instance per job run</span>
+<span class="kd">class</span> <span class="nc">AsyncConfig</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nd">@Bean</span><span class="p">(</span><span class="s">"notificationExecutor"</span><span class="p">)</span>
+<span class="w">    </span><span class="n">ThreadPoolTaskExecutor</span><span class="w"> </span><span class="nf">notificationExecutor</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="kd">var</span><span class="w"> </span><span class="n">ex</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">ThreadPoolTaskExecutor</span><span class="p">();</span>
+<span class="w">        </span><span class="n">ex</span><span class="p">.</span><span class="na">setCorePoolSize</span><span class="p">(</span><span class="mi">4</span><span class="p">);</span><span class="w"> </span><span class="n">ex</span><span class="p">.</span><span class="na">setMaxPoolSize</span><span class="p">(</span><span class="mi">8</span><span class="p">);</span><span class="w"> </span><span class="n">ex</span><span class="p">.</span><span class="na">setQueueCapacity</span><span class="p">(</span><span class="mi">500</span><span class="p">);</span>
+<span class="w">        </span><span class="n">ex</span><span class="p">.</span><span class="na">setThreadNamePrefix</span><span class="p">(</span><span class="s">"notify-"</span><span class="p">);</span>
+<span class="w">        </span><span class="n">ex</span><span class="p">.</span><span class="na">setRejectedExecutionHandler</span><span class="p">(</span><span class="k">new</span><span class="w"> </span><span class="n">ThreadPoolExecutor</span><span class="p">.</span><span class="na">CallerRunsPolicy</span><span class="p">());</span>
+<span class="w">        </span><span class="n">ex</span><span class="p">.</span><span class="na">setTaskDecorator</span><span class="p">(</span><span class="k">new</span><span class="w"> </span><span class="n">MdcTaskDecorator</span><span class="p">());</span><span class="w">           </span><span class="c1">// your TaskDecorator copying MDC/tenant context (4.15)</span>
+<span class="w">        </span><span class="n">ex</span><span class="p">.</span><span class="na">initialize</span><span class="p">();</span>
+<span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="n">ex</span><span class="p">;</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">    </span><span class="nd">@Bean</span>
+<span class="w">    </span><span class="n">LockProvider</span><span class="w"> </span><span class="nf">lockProvider</span><span class="p">(</span><span class="n">DataSource</span><span class="w"> </span><span class="n">ds</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="k">return</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">JdbcTemplateLockProvider</span><span class="p">(</span><span class="n">ds</span><span class="p">);</span><span class="w"> </span><span class="p">}</span><span class="w">   </span><span class="c1">// shedlock table in the DB</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="nd">@Service</span>
+<span class="kd">class</span> <span class="nc">Notifier</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nd">@Async</span><span class="p">(</span><span class="s">"notificationExecutor"</span><span class="p">)</span>
+<span class="w">    </span><span class="kd">public</span><span class="w"> </span><span class="n">CompletableFuture</span><span class="o">&lt;</span><span class="n">Void</span><span class="o">&gt;</span><span class="w"> </span><span class="nf">sms</span><span class="p">(</span><span class="n">String</span><span class="w"> </span><span class="n">phone</span><span class="p">,</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="n">text</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="n">gateway</span><span class="p">.</span><span class="na">send</span><span class="p">(</span><span class="n">phone</span><span class="p">,</span><span class="w"> </span><span class="n">text</span><span class="p">);</span>
+<span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="n">CompletableFuture</span><span class="p">.</span><span class="na">completedFuture</span><span class="p">(</span><span class="kc">null</span><span class="p">);</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+
+<span class="nd">@Component</span>
+<span class="kd">class</span> <span class="nc">ExpiryJob</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nd">@Scheduled</span><span class="p">(</span><span class="n">cron</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"0 0 2 * * *"</span><span class="p">,</span><span class="w"> </span><span class="n">zone</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"Asia/Kolkata"</span><span class="p">)</span><span class="w">          </span><span class="c1">// 02:00 IST daily</span>
+<span class="w">    </span><span class="nd">@SchedulerLock</span><span class="p">(</span><span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"pointsExpiry"</span><span class="p">,</span><span class="w"> </span><span class="n">lockAtMostFor</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"PT2H"</span><span class="p">,</span><span class="w"> </span><span class="n">lockAtLeastFor</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"PT5M"</span><span class="p">)</span>
+<span class="w">    </span><span class="kd">public</span><span class="w"> </span><span class="kt">void</span><span class="w"> </span><span class="nf">expirePoints</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="k">for</span><span class="w"> </span><span class="p">(</span><span class="n">String</span><span class="w"> </span><span class="n">tenant</span><span class="w"> </span><span class="p">:</span><span class="w"> </span><span class="n">tenants</span><span class="p">.</span><span class="na">active</span><span class="p">())</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="n">expiryService</span><span class="p">.</span><span class="na">expireDueLots</span><span class="p">(</span><span class="n">tenant</span><span class="p">);</span><span class="w">                      </span><span class="c1">// chunked, resumable, idempotent per lot</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p>The expiry job runs at 02:00 IST every day. ShedLock holds the lock for at least 5 minutes and at most 2 hours. The work is chunked, resumable and idempotent per lot, so a crash in the middle is safe to restart.</p>
+<h4>When would I use it?</h4>
+<ul>
+<li><strong><code>@Async</code></strong> — for fire-and-forget side effects where losing one on a crash is acceptable (or a later job will fix it).</li>
+<li><strong>Durable queue (Kafka/outbox)</strong> — for work that must not be lost.</li>
+<li><strong><code>@Scheduled</code> + ShedLock</strong> — for periodic maintenance.</li>
+<li><strong>Kubernetes CronJobs or a workflow engine</strong> — for heavy or long batch jobs.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li>Self-invocation and private methods. Proxy rules again — these calls skip the proxy, so they run synchronously.</li>
+<li>An exception in a <code>void @Async</code> method disappears silently, unless you configure an <code>AsyncUncaughtExceptionHandler</code>.</li>
+<li>ThreadLocal context (tenant, security, MDC) is lost in async threads. Use a TaskDecorator to copy it.</li>
+<li>The default single scheduler thread. One slow job delays all the others. Configure a pool (<code>spring.task.scheduling.pool.size</code>).</li>
+<li>Jobs running on every pod — duplicate expiry or duplicate payouts — when there is no ShedLock or leader election. Also, jobs that are not idempotent and cannot resume after a crash.</li>
+<li>Time zones and DST (daylight-saving time changes) in cron expressions. Always set the <code>zone</code>.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. How does @Async work and what are its limits?</strong> A proxy hands the call to an executor and returns immediately. Limits: it does not work on self-invocation or private methods; it loses ThreadLocal context unless you propagate it; and the work is lost if the app crashes.</p>
+<p><strong>Q2. How do you ensure a scheduled job runs once across multiple instances?</strong> Use a distributed lock (ShedLock on a DB or Redis), or leader election. Or run the job outside the app — a Kubernetes CronJob, or Quartz in clustered mode.</p>
+<h2 id="s8-9">8.9 Observability: health, metrics, logs and traces</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> In production you can't debug line by line. So the service must report on itself: numbers that say something is wrong, traces that show where, and logs that explain why.</p>
+<p>In production you cannot attach a debugger. You find problems only through what the system emits:</p>
+<ul>
+<li><strong>Metrics</strong> tell you <em>that</em> something is wrong — for example, the error rate went up.</li>
+<li><strong>Traces</strong> tell you <em>where</em> — which hop in the request is slow.</li>
+<li><strong>Logs</strong> tell you <em>why</em> — the exception and its context.</li>
+</ul>
+<p>Health endpoints let Kubernetes send traffic only to healthy instances.</p>
+<p>Think of a car dashboard. The warning light (metric) says something is wrong. The mechanic's diagnostic scan (trace) finds which part. The service record (logs) explains what happened.</p>
+<h4>What is happening internally?</h4>
+<ul>
+<li><strong>Actuator</strong> adds management endpoints:</li>
+<li><code>/actuator/health</code>, with <code>liveness</code> and <code>readiness</code> groups for Kubernetes probes;</li>
+<li><code>/info</code>, <code>/metrics</code>, <code>/prometheus</code>;</li>
+<li><code>/loggers</code> — change log levels at runtime;</li>
+<li><code>/threaddump</code>, <code>/heapdump</code>, <code>/conditions</code>, <code>/startup</code>.</li>
+<li><strong>Micrometer</strong> is the metrics facade — like SLF4J, but for metrics. You write counters, gauges, timers and distribution summaries, each with <strong>tags</strong> (labels). It exports them to Prometheus, Azure Monitor or Datadog. Boot measures many things for you automatically: HTTP server and client requests, JVM memory/GC/threads, Hikari connection pools, Kafka clients and caches.</li>
+<li><strong>Micrometer Tracing + OpenTelemetry</strong> work like this:
+  1. Each request gets a trace ID.
+  2. A <em>span</em> (one timed step) is created for each HTTP call, DB query and Kafka message.
+  3. The trace context travels to the next service in W3C <code>traceparent</code> HTTP headers and in Kafka headers.
+  4. Spans are exported to Jaeger, Tempo, Zipkin or Application Insights.</li>
+<li><strong>Structured logging</strong> means logs written as JSON. It is built into Boot 3.4+. Put the trace ID and tenant ID in every line using MDC (a per-thread map of log fields). Then logs are searchable and you can join them with traces.</li>
+</ul>
+<h4>How does it work?</h4>
+<p>What to measure:</p>
+<ul>
+<li><strong>RED</strong> for each endpoint and dependency: <strong>R</strong>ate (requests per second), <strong>E</strong>rrors, <strong>D</strong>uration (p50/p95/p99). p95 means 95% of requests were faster than this.</li>
+<li><strong>USE</strong> for each resource: <strong>U</strong>tilisation, <strong>S</strong>aturation (queue lengths, waits for a pool), <strong>E</strong>rrors. Apply it to thread pools, connection pools, Kafka consumer lag and GC.</li>
+<li><strong>Business KPIs</strong>: redemptions per minute, accrual lag, failed vouchers.</li>
+</ul>
+<p>Alert on <strong>symptoms measured against SLOs</strong>, not on every CPU blip. An SLO (service level objective) is a target such as "99.9% of redemptions succeed in &lt; 500 ms". The <em>error budget</em> is the 0.1% you are allowed to fail. Alert when you are burning that budget too fast (the burn rate).</p>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="nd">@Component</span>
+<span class="kd">class</span> <span class="nc">RedemptionMetrics</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">private</span><span class="w"> </span><span class="kd">final</span><span class="w"> </span><span class="n">MeterRegistry</span><span class="w"> </span><span class="n">registry</span><span class="p">;</span>
+<span class="w">    </span><span class="kd">private</span><span class="w"> </span><span class="kd">final</span><span class="w"> </span><span class="n">Timer</span><span class="w"> </span><span class="n">latency</span><span class="p">;</span>
+<span class="w">    </span><span class="n">RedemptionMetrics</span><span class="p">(</span><span class="n">MeterRegistry</span><span class="w"> </span><span class="n">registry</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="k">this</span><span class="p">.</span><span class="na">registry</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">registry</span><span class="p">;</span>
+<span class="w">        </span><span class="k">this</span><span class="p">.</span><span class="na">latency</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Timer</span><span class="p">.</span><span class="na">builder</span><span class="p">(</span><span class="s">"loyalty.redemption.latency"</span><span class="p">)</span>
+<span class="w">                </span><span class="p">.</span><span class="na">publishPercentileHistogram</span><span class="p">()</span><span class="w">                       </span><span class="c1">// enables p95/p99 in Prometheus</span>
+<span class="w">                </span><span class="p">.</span><span class="na">register</span><span class="p">(</span><span class="n">registry</span><span class="p">);</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">    </span><span class="o">&lt;</span><span class="n">T</span><span class="o">&gt;</span><span class="w"> </span><span class="n">T</span><span class="w"> </span><span class="nf">timed</span><span class="p">(</span><span class="n">Supplier</span><span class="o">&lt;</span><span class="n">T</span><span class="o">&gt;</span><span class="w"> </span><span class="n">op</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="k">return</span><span class="w"> </span><span class="n">latency</span><span class="p">.</span><span class="na">record</span><span class="p">(</span><span class="n">op</span><span class="p">);</span><span class="w"> </span><span class="p">}</span>
+<span class="w">    </span><span class="kt">void</span><span class="w"> </span><span class="nf">outcome</span><span class="p">(</span><span class="n">String</span><span class="w"> </span><span class="n">tenant</span><span class="p">,</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="n">result</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="n">registry</span><span class="p">.</span><span class="na">counter</span><span class="p">(</span><span class="s">"loyalty.redemptions"</span><span class="p">,</span><span class="w"> </span><span class="s">"result"</span><span class="p">,</span><span class="w"> </span><span class="n">result</span><span class="p">).</span><span class="na">increment</span><span class="p">();</span><span class="w">   </span><span class="c1">// low-cardinality tags only</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<div class="hl"><pre><span></span><code><span class="nt">management</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">endpoints.web.exposure.include</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">health,info,prometheus</span>
+<span class="w">  </span><span class="nt">endpoint.health.probes.enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span><span class="w">          </span><span class="c1"># /actuator/health/liveness and /readiness</span>
+<span class="w">  </span><span class="nt">tracing.sampling.probability</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.1</span><span class="w">             </span><span class="c1"># sample 10% of traces in prod</span>
+<span class="nt">logging.structured.format.console</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ecs</span><span class="w">          </span><span class="c1"># Boot 3.4+: JSON logs</span>
+</code></pre></div>
+
+<p>This config exposes only health, info and prometheus. It turns on the liveness and readiness probes, samples 10% of traces in production, and writes JSON logs.</p>
+<h4>When would I use it?</h4>
+<p>From day one, in every service:</p>
+<ul>
+<li>a dashboard per service (RED + USE);</li>
+<li>alerts on SLO burn;</li>
+<li>traces to investigate slow requests;</li>
+<li>logs linked to traces by trace ID.</li>
+</ul>
+<p>In interviews, the question "how would you know it's working in production?" is answered with exactly these.</p>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>High-cardinality tags.</strong> <em>Cardinality</em> means how many different values a tag can have. User IDs, order IDs or raw URLs as tags create millions of series. This blows up the metrics backend's memory and cost. Use tags with a small, fixed set of values: status, endpoint template, tenant tier.</li>
+<li>Exposing <code>/heapdump</code> or <code>/env</code> to the public. They can leak data. Keep management endpoints on an internal port or network.</li>
+<li>Liveness probes that check the database. If the DB has a short blip, Kubernetes restarts every pod. Liveness should reflect only the app process itself. Put dependency checks in readiness — and carefully.</li>
+<li>Logging PII or secrets. Logging at DEBUG in production. Logging the same exception in many layers.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. Metrics vs logs vs traces?</strong> Metrics are aggregated numbers, used to detect problems and alert. Traces follow one request across services to find where the latency or error is. Logs are detailed events that explain what happened.</p>
+<p><strong>Q2. Liveness vs readiness probes?</strong> Liveness asks: is the process healthy, or should Kubernetes restart it? Readiness asks: can it serve traffic right now — is it warmed up and are its dependencies reachable? A failing readiness probe takes the pod out of load balancing without restarting it.</p>
+<p><strong>Q3. What are RED and USE?</strong> RED (rate, errors, duration) is for request-driven services. USE (utilisation, saturation, errors) is for resources such as pools, queues and CPU.</p>
+<h2 id="s8-10">8.10 Microservices patterns in the Spring ecosystem</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> Breaking an app into many small services gives teams freedom, but brings new problems — network calls fail, data is spread out. Each common problem has a well-known pattern and a well-known tool.</p>
+<p>Splitting a system into services gives you:</p>
+<ul>
+<li>independent deployment;</li>
+<li>independent scaling;</li>
+<li>clear team ownership.</li>
+</ul>
+<p>The price is network calls, partial failures, data spread across services, and more operational work.</p>
+<p>A set of well-known patterns solves the recurring problems. Interviewers expect you to:</p>
+<ol>
+<li>name the patterns;</li>
+<li>know the Spring or Kubernetes tool for each;</li>
+<li>say when <em>not</em> to use microservices.</li>
+</ol>
+<h4>What is happening internally?</h4>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>Concern</th>
+<th>Pattern</th>
+<th>Typical implementation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>One entry point for all calls: routing, auth, rate limits</td>
+<td>API Gateway / BFF (Backend for Frontend)</td>
+<td>Spring Cloud Gateway, Azure API Management, Kong, Envoy</td>
+</tr>
+<tr>
+<td>Finding where service instances are running</td>
+<td>Service discovery</td>
+<td>Kubernetes Services + DNS; Eureka outside Kubernetes</td>
+</tr>
+<tr>
+<td>Keeping configuration in one central place</td>
+<td>Externalised config</td>
+<td>ConfigMaps/Secrets, Azure App Configuration, Spring Cloud Config</td>
+</tr>
+<tr>
+<td>One failure spreading to others (cascading failures)</td>
+<td>Timeouts, retries, circuit breakers, bulkheads</td>
+<td>Resilience4j (8.7)</td>
+</tr>
+<tr>
+<td>Who owns which data</td>
+<td>Database per service</td>
+<td>Each service owns its schema; no shared tables</td>
+</tr>
+<tr>
+<td>Keeping data consistent across services</td>
+<td>Saga (choreography/orchestration) + outbox</td>
+<td>Kafka, Temporal/Camunda, outbox relay or Debezium CDC (11.15)</td>
+</tr>
+<tr>
+<td>Queries that need data from many services</td>
+<td>API composition, CQRS read models</td>
+<td>An aggregator service; a read model fed by events</td>
+</tr>
+<tr>
+<td>Moving away from a monolith</td>
+<td>Strangler fig</td>
+<td>Gateway sends new paths to new services, step by step</td>
+</tr>
+<tr>
+<td>Seeing what happens across services</td>
+<td>Correlation IDs, distributed tracing, central logs</td>
+<td>Micrometer Tracing + OpenTelemetry (8.9)</td>
+</tr>
+<tr>
+<td>Deployment</td>
+<td>Containers, orchestration, progressive delivery</td>
+<td>Docker, Kubernetes, Helm/Kustomize, Argo/Flagger canaries</td>
+</tr>
+<tr>
+<td>Security between services</td>
+<td>mTLS, OAuth2 client credentials</td>
+<td>Istio/Linkerd service mesh, Spring Security (8.2)</td>
+</tr>
+</tbody>
+</table></div>
+<p>A few terms from the table:</p>
+<ul>
+<li><strong>Saga</strong> — a long business process split into local steps. Each step has a <em>compensation</em> (an undo step) if a later step fails. In <em>choreography</em>, services react to each other's events. In <em>orchestration</em>, one coordinator tells each service what to do.</li>
+<li><strong>CQRS</strong> — keep separate models for writing and for reading. The read model is built from events.</li>
+<li><strong>Strangler fig</strong> — named after a plant that slowly grows around a tree. You move features out of the monolith one route at a time.</li>
+<li><strong>Canary</strong> — send a small share of traffic to the new version first.</li>
+</ul>
+<h4>How does it work?</h4>
+<p>Draw service boundaries around <strong>business capabilities</strong>, also called <em>bounded contexts</em>: Ordering, Loyalty, Incentives, Notifications, Catalogue.</p>
+<ul>
+<li>Each service owns its own data.</li>
+<li>It publishes events when its data changes.</li>
+<li>Other services keep a local copy of what they need, instead of calling synchronously for everything. The copy may be a little behind for a short time. This is called <em>eventual consistency</em>.</li>
+</ul>
+<p>Think of the departments in a big hospital. Billing, pharmacy and lab each keep their own records. When the lab finishes a test, it sends a slip to billing. Billing does not walk into the lab and read its register.</p>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code>Mobile app ─► API Gateway (JWT validation, rate limits, routing)
+                ├─► Order service ──(OrderCompleted via outbox→Kafka)──► Loyalty service ──► Notification service
+                ├─► Loyalty service (owns ledger DB) ──► Voucher partner (Resilience4j, idempotency key)
+                └─► Catalogue service (read-heavy, cached, CDN for images)
+Each service: own DB, own deploy pipeline, health probes, metrics, traces with a shared trace ID
+</code></pre></div>
+
+<h4>When would I use it?</h4>
+<p>When teams and domains are large enough that independent deployment and scaling pay for the extra complexity.</p>
+<p>For a small team or a new product, a <strong>modular monolith</strong> is often the better senior answer. That means one deployable app with clear internal modules. Extract a module into a service only when its scaling or ownership needs become different from the rest.</p>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Distributed monolith.</strong> Services must be deployed together, and they call each other synchronously in long chains. Latency adds up. Availability multiplies down: 5 services at 99.9% each, called in series, give about 99.5% (0.999⁵).</li>
+<li><strong>Shared database between services.</strong> This is hidden coupling. One team's schema change breaks another team's service.</li>
+<li>Chatty APIs (N calls to render one page), missing timeouts, no idempotency, and data that drifts apart with no reconciliation job.</li>
+<li>Operational load without platform support — no proper CI/CD, observability or on-call setup for each service.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. Monolith vs microservices — how do you decide?</strong> Weigh the benefits — team size, clear domain boundaries, need for independent scaling and deployment — against the costs: operational complexity, network failure modes and data consistency. Start with a modular monolith, and split along bounded contexts when it is justified.</p>
+<p><strong>Q2. How do services stay consistent without distributed transactions?</strong> Use local transactions plus events (the outbox pattern), sagas with compensation steps, idempotent consumers and reconciliation jobs. You accept eventual consistency.</p>
+<p><strong>Q3. What does an API gateway do?</strong> Routing, authentication and token validation, rate limiting, TLS termination, request shaping, CORS, observability and canary routing. It should contain no business logic.</p>
+<h2 id="s8-11">8.11 The Java project — your proof of the switch</h2>
+<p class="simple"><strong>In simple words:</strong> Build one real Spring Boot service from your own loyalty domain. It proves you can write production Java, and it gives you strong stories for every interview round.</p>
+<p>Build this in Weeks 8–12. Use the Sunday 2-hour slots, plus whatever spare time you find.</p>
+<p>It is deliberately taken from your own domain. So every interview question about it lands on ground you already know well.</p>
+<h3>Loyalty Ledger Service — spec</h3>
+<p><strong>Purpose</strong>: a multi-tenant points ledger. It supports:</p>
+<ul>
+<li>accrual (from order events);</li>
+<li>redemption (through the API);</li>
+<li>reversal;</li>
+<li>expiry;</li>
+<li>balance queries.</li>
+</ul>
+<p>It must stay correct under retries and concurrency — no double postings, no negative balances.</p>
+<p><strong>Stack</strong>: Java 21, Spring Boot 3.x, PostgreSQL, Spring Data JPA, Flyway, Kafka, Redis, Resilience4j, Spring Security (JWT resource server), Testcontainers, Docker Compose, GitHub Actions.</p>
+<p><strong>Endpoints</strong></p>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Path</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>POST</td>
+<td><code>/api/v1/accounts</code></td>
+<td>Creates an account for a tenant + outlet</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/api/v1/accounts/{id}/balance</code></td>
+<td>Cached in Redis; evicted when the balance changes</td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/api/v1/accounts/{id}/redemptions</code></td>
+<td><code>Idempotency-Key</code> header is required; returns 201 / 422 / 409</td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/api/v1/accounts/{id}/reversals</code></td>
+<td>Reverses a ledger entry by its id</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/api/v1/accounts/{id}/ledger?after=&lt;cursor&gt;</code></td>
+<td>Keyset pagination (page by "after this id", not by offset)</td>
+</tr>
+<tr>
+<td>—</td>
+<td>Kafka <code>order-completed</code></td>
+<td>Idempotent consumer → accrual</td>
+</tr>
+<tr>
+<td>—</td>
+<td>Kafka <code>points-events</code></td>
+<td>Published through the outbox</td>
+</tr>
+<tr>
+<td>—</td>
+<td>Daily 02:00 IST job</td>
+<td>Expires points older than N months (ShedLock)</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Schema (Flyway V1)</strong></p>
+<p>Key points of the schema:</p>
+<ul>
+<li><code>CHECK (balance &gt;= 0)</code> — the database itself refuses a negative balance.</li>
+<li><code>UNIQUE (tenant_id, idempotency_key)</code> — the same request can never create two ledger entries.</li>
+<li>The index on <code>(account_id, created_at DESC, id DESC)</code> serves the keyset-paginated ledger query.</li>
+<li>The partial index on <code>outbox</code> covers only unpublished rows, so the relay's poll stays fast.</li>
+</ul>
+<div class="hl"><pre><span></span><code><span class="k">CREATE</span><span class="w"> </span><span class="k">TABLE</span><span class="w"> </span><span class="n">account</span><span class="w"> </span><span class="p">(</span>
+<span class="w">  </span><span class="n">id</span><span class="w">            </span><span class="nb">VARCHAR</span><span class="p">(</span><span class="mi">40</span><span class="p">)</span><span class="w"> </span><span class="k">PRIMARY</span><span class="w"> </span><span class="k">KEY</span><span class="p">,</span>
+<span class="w">  </span><span class="n">tenant_id</span><span class="w">     </span><span class="nb">VARCHAR</span><span class="p">(</span><span class="mi">40</span><span class="p">)</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span>
+<span class="w">  </span><span class="n">outlet_id</span><span class="w">     </span><span class="nb">VARCHAR</span><span class="p">(</span><span class="mi">40</span><span class="p">)</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span>
+<span class="w">  </span><span class="n">balance</span><span class="w">       </span><span class="nb">BIGINT</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="w"> </span><span class="k">DEFAULT</span><span class="w"> </span><span class="mi">0</span><span class="w"> </span><span class="k">CHECK</span><span class="w"> </span><span class="p">(</span><span class="n">balance</span><span class="w"> </span><span class="o">&gt;=</span><span class="w"> </span><span class="mi">0</span><span class="p">),</span>
+<span class="w">  </span><span class="k">version</span><span class="w">       </span><span class="nb">BIGINT</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="w"> </span><span class="k">DEFAULT</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
+<span class="w">  </span><span class="n">created_at</span><span class="w">    </span><span class="n">TIMESTAMPTZ</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="w"> </span><span class="k">DEFAULT</span><span class="w"> </span><span class="n">now</span><span class="p">(),</span>
+<span class="w">  </span><span class="k">UNIQUE</span><span class="w"> </span><span class="p">(</span><span class="n">tenant_id</span><span class="p">,</span><span class="w"> </span><span class="n">outlet_id</span><span class="p">)</span>
+<span class="p">);</span>
+<span class="k">CREATE</span><span class="w"> </span><span class="k">TABLE</span><span class="w"> </span><span class="n">ledger_entry</span><span class="w"> </span><span class="p">(</span>
+<span class="w">  </span><span class="n">id</span><span class="w">              </span><span class="n">BIGSERIAL</span><span class="w"> </span><span class="k">PRIMARY</span><span class="w"> </span><span class="k">KEY</span><span class="p">,</span>
+<span class="w">  </span><span class="n">tenant_id</span><span class="w">       </span><span class="nb">VARCHAR</span><span class="p">(</span><span class="mi">40</span><span class="p">)</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span>
+<span class="w">  </span><span class="n">account_id</span><span class="w">      </span><span class="nb">VARCHAR</span><span class="p">(</span><span class="mi">40</span><span class="p">)</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="w"> </span><span class="k">REFERENCES</span><span class="w"> </span><span class="n">account</span><span class="p">(</span><span class="n">id</span><span class="p">),</span>
+<span class="w">  </span><span class="k">type</span><span class="w">            </span><span class="nb">VARCHAR</span><span class="p">(</span><span class="mi">20</span><span class="p">)</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span><span class="w">          </span><span class="c1">-- ACCRUAL, REDEMPTION, REVERSAL, EXPIRY</span>
+<span class="w">  </span><span class="n">points</span><span class="w">          </span><span class="nb">BIGINT</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span><span class="w">               </span><span class="c1">-- signed</span>
+<span class="w">  </span><span class="n">idempotency_key</span><span class="w"> </span><span class="nb">VARCHAR</span><span class="p">(</span><span class="mi">80</span><span class="p">)</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span>
+<span class="w">  </span><span class="n">ref_entry_id</span><span class="w">    </span><span class="nb">BIGINT</span><span class="p">,</span><span class="w">                         </span><span class="c1">-- for reversals</span>
+<span class="w">  </span><span class="n">created_at</span><span class="w">      </span><span class="n">TIMESTAMPTZ</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="w"> </span><span class="k">DEFAULT</span><span class="w"> </span><span class="n">now</span><span class="p">(),</span>
+<span class="w">  </span><span class="k">UNIQUE</span><span class="w"> </span><span class="p">(</span><span class="n">tenant_id</span><span class="p">,</span><span class="w"> </span><span class="n">idempotency_key</span><span class="p">)</span>
+<span class="p">);</span>
+<span class="k">CREATE</span><span class="w"> </span><span class="k">INDEX</span><span class="w"> </span><span class="n">ix_ledger_account_created</span><span class="w"> </span><span class="k">ON</span><span class="w"> </span><span class="n">ledger_entry</span><span class="w"> </span><span class="p">(</span><span class="n">account_id</span><span class="p">,</span><span class="w"> </span><span class="n">created_at</span><span class="w"> </span><span class="k">DESC</span><span class="p">,</span><span class="w"> </span><span class="n">id</span><span class="w"> </span><span class="k">DESC</span><span class="p">);</span>
+<span class="k">CREATE</span><span class="w"> </span><span class="k">TABLE</span><span class="w"> </span><span class="n">outbox</span><span class="w"> </span><span class="p">(</span>
+<span class="w">  </span><span class="n">id</span><span class="w">           </span><span class="n">UUID</span><span class="w"> </span><span class="k">PRIMARY</span><span class="w"> </span><span class="k">KEY</span><span class="p">,</span>
+<span class="w">  </span><span class="n">aggregate_id</span><span class="w"> </span><span class="nb">VARCHAR</span><span class="p">(</span><span class="mi">40</span><span class="p">)</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span>
+<span class="w">  </span><span class="n">topic</span><span class="w">        </span><span class="nb">VARCHAR</span><span class="p">(</span><span class="mi">80</span><span class="p">)</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span>
+<span class="w">  </span><span class="n">payload</span><span class="w">      </span><span class="n">JSONB</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span>
+<span class="w">  </span><span class="n">created_at</span><span class="w">   </span><span class="n">TIMESTAMPTZ</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="w"> </span><span class="k">DEFAULT</span><span class="w"> </span><span class="n">now</span><span class="p">(),</span>
+<span class="w">  </span><span class="n">published_at</span><span class="w"> </span><span class="n">TIMESTAMPTZ</span>
+<span class="p">);</span>
+<span class="k">CREATE</span><span class="w"> </span><span class="k">INDEX</span><span class="w"> </span><span class="n">ix_outbox_unpublished</span><span class="w"> </span><span class="k">ON</span><span class="w"> </span><span class="n">outbox</span><span class="w"> </span><span class="p">(</span><span class="n">created_at</span><span class="p">)</span><span class="w"> </span><span class="k">WHERE</span><span class="w"> </span><span class="n">published_at</span><span class="w"> </span><span class="k">IS</span><span class="w"> </span><span class="k">NULL</span><span class="p">;</span>
+<span class="k">CREATE</span><span class="w"> </span><span class="k">TABLE</span><span class="w"> </span><span class="n">processed_event</span><span class="w"> </span><span class="p">(</span><span class="n">event_id</span><span class="w"> </span><span class="nb">VARCHAR</span><span class="p">(</span><span class="mi">80</span><span class="p">)</span><span class="w"> </span><span class="k">PRIMARY</span><span class="w"> </span><span class="k">KEY</span><span class="p">,</span><span class="w"> </span><span class="n">processed_at</span><span class="w"> </span><span class="n">TIMESTAMPTZ</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">);</span>
+</code></pre></div>
+
+<p><strong>Package layout</strong></p>
+<div class="hl"><pre><span></span><code>com.mayank.ledger
+├── api            controllers, request/response records, GlobalExceptionHandler
+├── application    RedemptionService, AccrualService, ReversalService, ExpiryJob
+├── domain         Account, LedgerEntry, EntryType, domain exceptions, PointsPolicy
+├── infrastructure repositories, Kafka consumer, OutboxRelay, Redis config, security config
+└── config         properties records, executors
+</code></pre></div>
+
+<p><strong>Milestones</strong></p>
+<ol>
+<li>Week 8: create the repo; Docker Compose with Postgres, Kafka and Redis; Flyway V1; the <code>Account</code> + <code>LedgerEntry</code> entities; create/get endpoints; CI running the tests.</li>
+<li>Week 9: redemption with an idempotency key + an atomic conditional debit (one SQL update that subtracts only if the balance is enough); <code>ProblemDetail</code> errors; validation.</li>
+<li>Week 10: reversal; keyset pagination; the concurrency integration test (20 threads); a note in the README comparing optimistic locking with the atomic update.</li>
+<li>Week 11: the Kafka idempotent accrual consumer; the outbox table + relay (a <code>@Scheduled</code> poller that publishes unpublished rows); the DLT.</li>
+<li>Week 12: Redis balance cache; Resilience4j around a fake "rewards catalogue" client; JWT security; Actuator + Prometheus metrics; a k6 load test (record p95 and throughput); a README with an architecture diagram and trade-offs.</li>
+</ol>
+<p><strong>README must contain</strong>:</p>
+<ul>
+<li>an architecture diagram;</li>
+<li>how idempotency works, in both the API and the consumer;</li>
+<li>why you chose an atomic SQL update over <code>@Version</code> for the balance, and when you would choose each;</li>
+<li>the concurrency test;</li>
+<li>the load-test numbers;</li>
+<li>what you would do next at 10× scale — partition the ledger by tenant, add read replicas, use CDC instead of polling the outbox.</li>
+</ul>
+<blockquote class="co saythis">
+<p><strong>Say this:</strong> "At FieldAssist the loyalty workflows run on .NET. To make my Java switch concrete I rebuilt the core of that ledger in Spring Boot — idempotent redemption, an idempotent Kafka consumer, transactional outbox, and a test that fires 20 concurrent redemptions and proves we never overdraw."</p>
+</blockquote>

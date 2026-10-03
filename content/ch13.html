@@ -1,0 +1,1833 @@
+<p>This chapter has nineteen designs. Each one uses the same seven steps, and each step matches a part of the real interview:</p>
+<ul>
+<li><strong>Why?</strong> = the requirements, and what the question is really testing.</li>
+<li><strong>What is happening internally?</strong> = estimates, API, data model and architecture.</li>
+<li><strong>How does it work?</strong> = the write path and the read path.</li>
+<li><strong>Example</strong> = a concrete walkthrough with numbers.</li>
+<li><strong>When would I use it?</strong> = other places where the same design shows up.</li>
+<li><strong>What can go wrong?</strong> = bottlenecks, failure cases and deep dives.</li>
+<li><strong>Interview questions</strong> = the follow-up questions you will get.</li>
+</ul>
+<p>All numbers are assumptions. In the interview, say them out loud. Before reading each design, practise it on a blank page in 45 minutes.</p>
+<h2 id="s13-1">13.1 URL Shortener (TinyURL / bit.ly)</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> You give a long link and get back a short code. When someone opens the short code, you look up the long link and send them there — very fast, millions of times a day.</p>
+<p><strong>Functional</strong> (what it must do):
+- Create a short link for a long URL. Optionally allow a custom alias and an expiry date.
+- Redirect from the short link to the long URL.
+- Basic click analytics.</p>
+<p><strong>Non-functional</strong> (how well it must do it):
+- Redirects must be fast (p99 &lt; 50 ms — 99% of requests finish within 50 ms) and highly available.
+- Reads are about 100 times more than writes (read:write ≈ 100:1).
+- Two links must never get the same code (no collisions).</p>
+<p>What it tests: ID generation, caching a path that is mostly reads, and keeping analytics off the hot path (the path every request takes).</p>
+<h4>What is happening internally?</h4>
+<p><strong>Estimates</strong>:
+- 100M new links/month ≈ 40 writes/s (peak ~120).
+- Reads are ×100 → ~4,000/s (peak ~12,000).
+- Each record is ~500 B. So 100M × 12 × 5 years × 500 B ≈ 3 TB over 5 years.
+- Base62 (digits + lowercase + uppercase = 62 characters) with 7 characters gives 62⁷ ≈ 3.5 trillion codes. That is plenty.</p>
+<p><strong>API</strong>:</p>
+<div class="hl"><pre><span></span><code>POST /api/v1/urls   {longUrl, customAlias?, expiresAt?}  → 201 {shortUrl}
+GET  /{code}         → 302 Location: longUrl   (301 is cached by browsers: less load, but clicks become invisible)
+GET  /api/v1/urls/{code}/stats
+</code></pre></div>
+
+<p><strong>Data model</strong>: <code>url(code PK, long_url, owner_id, created_at, expires_at)</code>. You always look a link up by its code. So a key-value store (DynamoDB/Cassandra) fits well. Postgres split into shards by code also works.</p>
+<p><strong>Architecture</strong>:</p>
+<ul>
+<li>Redirects go through a CDN/edge, then a load balancer, then the redirect service. Redis holds the ~20% of codes that are hot. On a cache miss, you go to the URL store.</li>
+<li>The create service takes IDs from a range allocator and encodes them in base62.</li>
+<li>Clicks are sent to Kafka. Analytics consumers read them and write to ClickHouse.</li>
+</ul>
+<div class="hl"><pre><span></span><code>Client → CDN/edge → LB → Redirect service → Redis (code→url, ~20% hot set) → miss → URL store
+Create service → ID range allocator → base62 encode → URL store
+Redirect service → Kafka "clicks" → analytics consumers → ClickHouse
+</code></pre></div>
+
+<h4>How does it work?</h4>
+<p><strong>Code generation</strong> (the core deep dive). There are four common ways:</p>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>Approach</th>
+<th>How</th>
+<th>Trade-off</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Hash + truncate</td>
+<td>base62(md5(longUrl))[0..7]</td>
+<td>You must detect collisions and retry; the same URL always gets the same code (deduped)</td>
+</tr>
+<tr>
+<td>Global counter + base62</td>
+<td>Sequence → base62</td>
+<td>No collisions; but one central counter for everyone; codes are easy to guess</td>
+</tr>
+<tr>
+<td><strong>Pre-allocated ID ranges</strong></td>
+<td>Each instance leases (borrows) a block of 1M IDs from a coordinator (a DB row or ZooKeeper), then encodes locally</td>
+<td>No coordination per request, no collisions — preferred</td>
+</tr>
+<tr>
+<td>Key generation service</td>
+<td>Random unused keys are generated in advance and handed out in batches</td>
+<td>Codes are hard to guess; but you run one more service</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Write path</strong>:
+1. Validate the URL.
+2. Take the next ID from this instance's local range.
+3. Encode it in base62.
+4. Insert it. For a custom alias, use a conditional insert, so the insert fails if the alias is already taken.
+5. Return the short URL.</p>
+<p><strong>Read path</strong>:
+1. Look up the code at the edge or in Redis.
+2. On a hit, return a 302 redirect.
+3. On a miss, read from the store, put the result into Redis, then return 302.
+4. Publish a click event in the background (asynchronously), so the user does not wait for it.</p>
+<h4>Example</h4>
+<ol>
+<li>Instance A leases IDs 5,000,000–5,999,999.</li>
+<li>Request 1 gets ID 5,000,000. It is encoded in base62 and padded on the left to make a 7-character code. Then it is stored.</li>
+<li>Later, a redirect for that code finds it in Redis in 0.8 ms.</li>
+<li>The click event goes to Kafka. ClickHouse counts it a few seconds later.</li>
+</ol>
+<h4>When would I use it?</h4>
+<ul>
+<li>Link shortening.</li>
+<li>Referral and campaign links.</li>
+<li>QR codes for retail promotions.</li>
+<li>In general, any service that maps "key → value", is mostly reads, and needs keys that are unique everywhere.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Collisions with hashing.</strong> Two URLs can give the same truncated hash. You must detect this and retry.</li>
+<li><strong>Hot links.</strong> One very popular link can overload one cache shard. Fix: copy hot keys to several places, and cache at the edge.</li>
+<li><strong>Slow analytics.</strong> Writing analytics synchronously (while the user waits) slows down redirects.</li>
+<li><strong>Malicious URLs.</strong> Scan URLs when they are created, and rate-limit each user.</li>
+<li><strong>Expired links still in cache.</strong> Set the cache TTL (time to live) so it respects the link's expiry.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. How do you generate short codes without collisions at scale?</strong> Give each instance its own pre-allocated range of IDs and encode them in base62. (Snowflake or UUIDv7 IDs, encoded, also work.) This way, no request needs to coordinate with other machines.</p>
+<p><strong>Q2. 301 or 302?</strong> A 301 is cached by browsers. That means less load on you, but you lose analytics because repeat clicks never reach you. A 302 lets you see every click. Choose based on whether analytics matter.</p>
+<p><strong>Q3. How do you keep redirects fast while counting clicks?</strong> Serve the redirect from the cache. Publish click events in the background to Kafka, and count them there.</p>
+<h2 id="s13-2">13.2 Distributed Rate Limiter</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> A rate limiter counts how many requests each client sends and says "slow down" (HTTP 429) when they cross their limit. The hard part is keeping one shared, correct count when many servers handle the same client.</p>
+<p><strong>Functional</strong> (what it must do):
+- Limit requests per client — by user, API key, IP or tenant.
+- Limits are set per rule, for example 100/min per tenant per endpoint.
+- When the limit is crossed, return 429 with a <code>Retry-After</code> header.
+- Rules can be configured.</p>
+<p><strong>Non-functional</strong> (how well it must do it):
+- Add less than 2 ms of latency.
+- Stay correct across many gateway instances.
+- Have a clear, decided behaviour when the limiter itself fails: <em>fail-open</em> (allow requests) or <em>fail-closed</em> (block requests).</p>
+<p>What it tests: rate-limiting algorithms (10.5), atomic updates in a shared store, and failure handling.</p>
+<h4>What is happening internally?</h4>
+<p><strong>Placement</strong>: Put the limiter at the API gateway, or as a sidecar/middleware next to each service. Cache the rules locally and refresh them from a config service.</p>
+<p><strong>Store</strong>: Use a Redis cluster, with keys split across shards by client ID.</p>
+<p>The check must be <strong>atomic</strong> — read, check and write must happen as one step. Otherwise two servers could both read "99 used" and both allow request 100. Redis <strong>Lua scripts</strong> solve this. The whole script runs in one round trip, and nothing else runs in between. So there is no race between the read and the write.</p>
+<p>Here is a <em>token bucket</em> script. Think of a bucket that holds tokens. Each request takes a token. Tokens refill at a fixed rate. If the bucket is empty, the request is rejected.</p>
+<div class="hl"><pre><span></span><code><span class="c1">-- Token bucket (KEYS[1] = bucket key; ARGV = capacity, refill_per_ms, now_ms, cost)</span>
+<span class="kd">local</span><span class="w"> </span><span class="nv">b</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nv">redis</span><span class="p">.</span><span class="nf">call</span><span class="p">(</span><span class="s1">'HMGET'</span><span class="p">,</span><span class="w"> </span><span class="nv">KEYS</span><span class="p">[</span><span class="mi">1</span><span class="p">],</span><span class="w"> </span><span class="s1">'tokens'</span><span class="p">,</span><span class="w"> </span><span class="s1">'ts'</span><span class="p">)</span>
+<span class="kd">local</span><span class="w"> </span><span class="nv">cap</span><span class="p">,</span><span class="w"> </span><span class="nv">rate</span><span class="p">,</span><span class="w"> </span><span class="nv">now</span><span class="p">,</span><span class="w"> </span><span class="nv">cost</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">tonumber</span><span class="p">(</span><span class="nv">ARGV</span><span class="p">[</span><span class="mi">1</span><span class="p">]),</span><span class="w"> </span><span class="nb">tonumber</span><span class="p">(</span><span class="nv">ARGV</span><span class="p">[</span><span class="mi">2</span><span class="p">]),</span><span class="w"> </span><span class="nb">tonumber</span><span class="p">(</span><span class="nv">ARGV</span><span class="p">[</span><span class="mi">3</span><span class="p">]),</span><span class="w"> </span><span class="nb">tonumber</span><span class="p">(</span><span class="nv">ARGV</span><span class="p">[</span><span class="mi">4</span><span class="p">])</span>
+<span class="kd">local</span><span class="w"> </span><span class="nv">tokens</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">tonumber</span><span class="p">(</span><span class="nv">b</span><span class="p">[</span><span class="mi">1</span><span class="p">])</span><span class="w"> </span><span class="ow">or</span><span class="w"> </span><span class="nv">cap</span>
+<span class="kd">local</span><span class="w"> </span><span class="nv">ts</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">tonumber</span><span class="p">(</span><span class="nv">b</span><span class="p">[</span><span class="mi">2</span><span class="p">])</span><span class="w"> </span><span class="ow">or</span><span class="w"> </span><span class="nv">now</span>
+<span class="nv">tokens</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">math.min</span><span class="p">(</span><span class="nv">cap</span><span class="p">,</span><span class="w"> </span><span class="nv">tokens</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="p">(</span><span class="nv">now</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="nv">ts</span><span class="p">)</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="nv">rate</span><span class="p">)</span>
+<span class="kd">local</span><span class="w"> </span><span class="nv">allowed</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nv">tokens</span><span class="w"> </span><span class="o">&gt;=</span><span class="w"> </span><span class="nv">cost</span>
+<span class="kr">if</span><span class="w"> </span><span class="nv">allowed</span><span class="w"> </span><span class="kr">then</span><span class="w"> </span><span class="nv">tokens</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nv">tokens</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="nv">cost</span><span class="w"> </span><span class="kr">end</span>
+<span class="nv">redis</span><span class="p">.</span><span class="nf">call</span><span class="p">(</span><span class="s1">'HSET'</span><span class="p">,</span><span class="w"> </span><span class="nv">KEYS</span><span class="p">[</span><span class="mi">1</span><span class="p">],</span><span class="w"> </span><span class="s1">'tokens'</span><span class="p">,</span><span class="w"> </span><span class="nv">tokens</span><span class="p">,</span><span class="w"> </span><span class="s1">'ts'</span><span class="p">,</span><span class="w"> </span><span class="nv">now</span><span class="p">)</span>
+<span class="nv">redis</span><span class="p">.</span><span class="nf">call</span><span class="p">(</span><span class="s1">'PEXPIRE'</span><span class="p">,</span><span class="w"> </span><span class="nv">KEYS</span><span class="p">[</span><span class="mi">1</span><span class="p">],</span><span class="w"> </span><span class="nb">math.ceil</span><span class="p">(</span><span class="nv">cap</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="nv">rate</span><span class="p">)</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="mi">2</span><span class="p">)</span>
+<span class="kr">return</span><span class="w"> </span><span class="nv">allowed</span><span class="w"> </span><span class="ow">and</span><span class="w"> </span><span class="mi">1</span><span class="w"> </span><span class="ow">or</span><span class="w"> </span><span class="mi">0</span>
+</code></pre></div>
+
+<p>Alternatives:
+- <strong>Fixed window</strong> (<code>INCR key:minute</code> + <code>EXPIRE</code>): the simplest. But bursts can slip through at window edges (end of one minute + start of the next).
+- <strong>Sliding log</strong> (<code>ZADD</code>, <code>ZREMRANGEBYSCORE</code>, <code>ZCARD</code>): exact, but uses more memory because it stores every request time.
+- <strong>Sliding window counter</strong> (a weighted mix of two buckets): a good balance of accuracy and memory.</p>
+<h4>How does it work?</h4>
+<ol>
+<li>A request arrives and the gateway authenticates it.</li>
+<li>The gateway builds the key, for example <code>t-42:/redemptions</code>.</li>
+<li>It runs the script with <code>EVALSHA</code>, using Redis server time.</li>
+<li>If the result is 1, it forwards the request.</li>
+<li>If the result is 0, it returns 429 with <code>Retry-After</code> and <code>X-RateLimit-Remaining</code>.</li>
+</ol>
+<h4>Example</h4>
+<p>Tenant t-42 is on the GOLD plan: capacity 200, refill 100/s. It sends a burst of 300 requests in one second:</p>
+<ul>
+<li>200 pass immediately (the bucket was full).</li>
+<li>The next ~100 pass as tokens refill.</li>
+<li>The rest get 429 with <code>Retry-After: 1</code>.</li>
+</ul>
+<h4>When would I use it?</h4>
+<ul>
+<li>Public and partner APIs.</li>
+<li>Protecting OTP and login from abuse.</li>
+<li>Fairness between tenants.</li>
+<li>Protecting your outbound calls to partners that give you a quota.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Redis slow or down.</strong> Keep local fallback buckets. Fail open for non-critical APIs; fail closed for OTP/login.</li>
+<li><strong>Hot keys for very large tenants.</strong> One key gets too much traffic. Split it into N sub-keys, each with limit/N.</li>
+<li><strong>Multi-region limits.</strong> Use a quota per region, or sync counts between regions in the background.</li>
+<li><strong>Clock skew.</strong> App servers' clocks may differ. Use Redis <code>TIME</code> so everyone uses one clock.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. How do you make the limiter atomic across instances?</strong> Keep the state in Redis and update it with a Lua script. Then read, check and write all happen in one atomic operation.</p>
+<p><strong>Q2. What happens if Redis is down?</strong> It is a deliberate policy decision. For normal APIs, fail open and use approximate local limits. For sensitive endpoints, fail closed. Either way, raise an alert.</p>
+<p><strong>Q3. Token bucket or sliding window?</strong> Use token bucket when you want to allow controlled bursts while keeping a smooth average rate. Use a sliding window counter for simple, accurate limits per time window.</p>
+<h2 id="s13-3">13.3 Notification System</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> Services say "tell this user X", and the system picks the right channel (SMS, email, push, WhatsApp), respects their preferences, and delivers it — without sending duplicates and without bulk campaigns blocking urgent OTPs.</p>
+<p><strong>Functional</strong> (what it must do):
+- Send notifications by SMS, email, push and WhatsApp/in-app.
+- Triggered by services (order placed, points credited) and by campaigns (bulk sends).
+- Respect user preferences and opt-outs.
+- Templates with localisation (different languages).
+- Scheduling.
+- Delivery tracking.</p>
+<p><strong>Non-functional</strong> (how well it must do it):
+- Transactional messages (like OTPs) arrive within seconds.
+- Millions of campaign messages must not delay OTPs.
+- No duplicates.
+- Switch to a backup provider if one fails (<em>failover</em>).</p>
+<p>What it tests: queue design, prioritisation, idempotency (doing the same request twice has the same effect as once) and third-party integration.</p>
+<h4>What is happening internally?</h4>
+<p><strong>Estimates</strong>: 10M transactional messages/day (~120/s, peaks ~1,000/s). Plus 5M-message campaigns sent within an hour (~1,400/s).</p>
+<p>The flow in the diagram, in plain words:</p>
+<ol>
+<li>Producer services call <code>POST /notify</code>.</li>
+<li>The Notification API validates the request and removes duplicates using the idempotency key. It checks preferences, quiet hours and DND. Then it renders the template in the user's language.</li>
+<li>It puts the message on one of two Kafka topics. <code>notify.high</code> is for transactional messages; <code>notify.bulk</code> is for campaigns. Separate topics keep the priorities apart.</li>
+<li>Channel workers (one consumer group per channel) send through provider adapters. Each adapter has a circuit breaker (stops calling a failing provider for a while), a per-provider rate limit, and failover to a second provider.</li>
+<li>Providers call back through delivery webhooks, and a status updater records the result.</li>
+</ol>
+<div class="hl"><pre><span></span><code>Producers (order, loyalty, campaign service)
+   │  POST /notify {userId, templateId, params, channelHints, idempotencyKey, priority}
+   ▼
+Notification API: validate → dedupe (idempotency key) → preferences, quiet hours, DND → render template (locale)
+   ├─► Kafka "notify.high"  (transactional)        separate topics = priority isolation
+   └─► Kafka "notify.bulk"  (campaigns, rate-shaped)
+Channel workers (SMS / email / push / WhatsApp consumer groups)
+   → provider adapters (Strategy) with circuit breakers, per-provider rate limits, failover to a secondary provider
+   → providers (Gupshup/Twilio, SES, FCM/APNs) ─► delivery webhooks ─► status updater
+Stores: preferences + templates (Postgres + cache), notification log/status (Cassandra or ClickHouse), scheduled sends (DB + scheduler)
+</code></pre></div>
+
+<h4>How does it work?</h4>
+<ol>
+<li>Remove duplicates using an (event, user, channel) key. Render the template. Put the message on the right priority topic.</li>
+<li>Channel workers read the message and apply the provider's rate limit. They call the provider with an idempotency/reference ID, and record SENT.</li>
+<li>Provider webhooks update the status to DELIVERED/FAILED/READ. Each webhook's signature is verified, and the handling is idempotent, so a repeated webhook does no harm.</li>
+<li>Failures are retried with backoff (waiting longer each time). After N attempts, the message goes to a DLQ (dead-letter queue — a parking place for failed messages), and a fallback channel is tried (SMS if push fails).</li>
+</ol>
+<h4>Example</h4>
+<ol>
+<li>A "points credited" event arrives. The template <code>points_credited_hi</code> (Hindi) is chosen.</li>
+<li>Push is tried first. The device is offline for 10 minutes, so no delivery receipt comes back.</li>
+<li>The system falls back to SMS, and the SMS is delivered.</li>
+</ol>
+<p>Meanwhile, a 5M-message Diwali campaign drains through <code>notify.bulk</code>. It runs at the SMS provider's limit of 1,000 msg/s. It does not delay any OTPs, because they travel on <code>notify.high</code>.</p>
+<h4>When would I use it?</h4>
+<ul>
+<li>Any messaging over several channels.</li>
+<li>Alerting.</li>
+<li>Marketing campaigns.</li>
+<li>In general: "spread work out to slow outside providers, with priorities".</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Duplicate sends on retries.</strong> Fix with idempotency keys.</li>
+<li><strong>Campaigns starving transactional messages.</strong> Fix with separate topics and separate worker pools.</li>
+<li><strong>Provider throttling.</strong> Shape the send rate and use more than one provider.</li>
+<li><strong>Regulatory issues.</strong> Respect opt-outs, DND and quiet hours in each user's timezone.</li>
+<li><strong>Template bugs sent to millions.</strong> Preview templates and roll out in stages.</li>
+<li><strong>Webhook storms.</strong> Too many status callbacks at once. Batch the status updates.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. How do you ensure OTPs aren't delayed by a marketing campaign?</strong> Give each priority its own topics, its own consumer pools and its own provider quotas. Also shape (throttle) the rate of bulk traffic.</p>
+<p><strong>Q2. How do you avoid sending duplicate notifications?</strong> Use an idempotency key per (event, user, channel). Store it with a TTL and a unique constraint. Also make the webhook handling idempotent.</p>
+<p><strong>Q3. How do you track delivery?</strong> Keep a status machine for each message, updated by provider callbacks. Store it in a store built for heavy writes, with dashboards showing delivery rates per provider.</p>
+<h2 id="s13-4">13.4 News Feed (Twitter/LinkedIn/Instagram home feed)</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> When you open the app, you see recent posts from people you follow. The main choice is when to build that list: when someone posts (push), or when you open the app (pull) — and celebrities with millions of followers need special handling.</p>
+<p><strong>Functional</strong> (what it must do):
+- Users post.
+- Users follow others.
+- The home feed shows posts from the people you follow, newest first or ranked, page by page.</p>
+<p><strong>Non-functional</strong> (how well it must do it):
+- The feed loads in &lt; 200 ms.
+- New posts may take a few seconds to appear. This is called <em>eventual consistency</em>.
+- 300M DAU (daily active users).
+- Far more reads than writes.</p>
+<p>What it tests: fan-out strategies (how a post is spread to followers), caching at scale, and the celebrity problem.</p>
+<h4>What is happening internally?</h4>
+<p><strong>Estimates</strong>: 300M DAU × 10 feed loads = 3B/day ≈ 35k QPS (peak ~100k). 150M posts/day ≈ 1.7k writes/s.</p>
+<p>There are two ways to build feeds:</p>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th></th>
+<th>Fan-out on write (push)</th>
+<th>Fan-out on read (pull)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>How</td>
+<td>When someone posts, add the post ID to each follower's ready-made feed (a Redis list)</td>
+<td>When someone opens the feed, fetch recent posts from everyone they follow and merge them</td>
+</tr>
+<tr>
+<td>Read cost</td>
+<td>O(1) — read one list</td>
+<td>O(followees) — grows with how many people you follow</td>
+</tr>
+<tr>
+<td>Write cost</td>
+<td>O(followers) — huge for celebrities</td>
+<td>O(1)</td>
+</tr>
+<tr>
+<td>Best for</td>
+<td>Normal users</td>
+<td>Celebrities with millions of followers</td>
+</tr>
+</tbody>
+</table></div>
+<p>The architecture in plain words:</p>
+<ol>
+<li>The post service saves the post in the Posts DB, sends media to blob storage/CDN, and publishes a <code>PostCreated</code> event.</li>
+<li>Fan-out workers ask the social graph service for the followers. They add the post ID to each follower's <code>feed:{userId}</code> list in Redis (capped at ~800 IDs).</li>
+<li>The feed service reads the user's list, merges in recent celebrity posts, fills in the full post details (<em>hydrates</em> the IDs), ranks them, and returns one page using a cursor.</li>
+</ol>
+<div class="hl"><pre><span></span><code>Post service → Posts DB (Cassandra/sharded, by post_id) + media to blob/CDN → PostCreated event
+Fan-out workers → Social graph service (followers) → feed:{userId} lists in Redis (capped ~800 IDs)
+Feed service: read feed:{userId} + merge recent posts of followed celebrities → hydrate IDs from post cache → rank → cursor page
+</code></pre></div>
+
+<h4>How does it work?</h4>
+<p><strong>Hybrid</strong> — use both methods:
+- <strong>Normal authors:</strong> push their posts to followers' feeds.
+- <strong>Celebrities</strong> (above a follower threshold): skip fan-out. Merge their recent posts in when a follower reads the feed.
+- <strong>Inactive users:</strong> do not precompute their feeds. Build the feed on their next login.</p>
+<h4>Example</h4>
+<ul>
+<li>A user with 300 followers posts. Fan-out workers do 300 <code>LPUSH</code> + <code>LTRIM</code> operations within ~1 s.</li>
+<li>A celebrity with 20M followers posts. No fan-out happens. When their followers load the feed, it includes "recent posts from followed celebrities" — a small cached list. It is merged in by timestamp or score.</li>
+</ul>
+<h4>When would I use it?</h4>
+<ul>
+<li>Activity feeds.</li>
+<li>Notification inboxes.</li>
+<li>"What's new" panels.</li>
+<li>B2B feeds, such as new schemes shown to an outlet.</li>
+<li>Any problem where one item must be shown to many people (one-to-many distribution).</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Celebrity fan-out storms.</strong> One post triggers millions of writes.</li>
+<li><strong>Feed caches too big.</strong> Cache feeds only for active users, and cap list sizes.</li>
+<li><strong>Deleted or privacy-changed posts still showing.</strong> Filter them out at hydration time.</li>
+<li><strong>Slow ranking.</strong> Precompute the features used for ranking.</li>
+<li><strong>Unstable pagination.</strong> New posts shift the pages. Use a cursor on (score + ID).</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. Push vs pull for feeds?</strong> Push makes reads cheap but makes writes expensive for popular authors. Pull is the opposite. Use a hybrid: push for most users, pull for celebrities.</p>
+<p><strong>Q2. How do you paginate a feed that changes constantly?</strong> Use a cursor based on (score or timestamp, postId), not page offsets. Offsets break when new posts are added at the top.</p>
+<h2 id="s13-5">13.5 Chat System (WhatsApp / Slack)</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> Every phone keeps an open connection to a chat server. When you send a message, the server saves it, gives it a number in the conversation, and pushes it to the receiver's connection — or sends a push notification if they are offline.</p>
+<p><strong>Functional</strong> (what it must do):
+- 1:1 chat and group chat (≤ 500 members).
+- Presence (online/last seen).
+- Delivery and read receipts.
+- Offline delivery through push notifications.
+- History synced across multiple devices.
+- Media.</p>
+<p><strong>Non-functional</strong> (how well it must do it):
+- &lt; 200 ms delivery when the receiver is online.
+- Messages are never lost.
+- Messages stay in order within each conversation.
+- 500M DAU.</p>
+<p>What it tests: long-lived connections, routing messages to the right server, ordering, storage at huge write volume, and delivery guarantees.</p>
+<h4>What is happening internally?</h4>
+<p><strong>Estimates</strong>: 500M DAU × 40 messages = 20B messages/day ≈ 230k messages/s. At ~100 B each, that is ~2 TB/day of text.</p>
+<p>The architecture in plain words:</p>
+<ol>
+<li>Clients connect over <strong>WebSocket</strong> (a connection that stays open both ways) to connection (gateway) servers. Each server holds ~100k–1M connections. These servers are <em>stateful</em> — they remember who is connected to them.</li>
+<li>Each connection server records "userId → serverId" in a session registry in Redis.</li>
+<li>The chat service stores messages in Cassandra. The partition key is <code>conversation_id</code> and the clustering key (sort order) is <code>message_seq</code>.</li>
+<li>To deliver, the chat service finds the receiver's connection server in the registry and sends the message through internal pub/sub.</li>
+<li>If the receiver is offline, it sends a push notification (FCM/APNs).</li>
+<li>Large groups use fan-out workers on Kafka. Media is uploaded directly to blob storage using a pre-signed URL and served via CDN. Presence uses heartbeats stored in Redis with a TTL.</li>
+</ol>
+<div class="hl"><pre><span></span><code>Clients ══ WebSocket ══► Connection (gateway) servers — stateful, ~100k–1M connections each
+                            register userId → serverId in a session registry (Redis)
+                            ▼
+                        Chat service → Message store (Cassandra: partition = conversation_id, clustering = message_seq)
+                            ├─► route to the recipient's connection server (registry lookup + internal pub/sub)
+                            └─► recipient offline → push notification (FCM/APNs)
+Group fan-out workers (Kafka) for large groups · Media → pre-signed upload to blob + CDN · Presence → heartbeats in Redis with TTL
+</code></pre></div>
+
+<h4>How does it work?</h4>
+<ol>
+<li>The sender's client sends <code>{clientMsgId, conversationId, body}</code> over its WebSocket.</li>
+<li>The chat service gives the message a <strong>per-conversation sequence number</strong>. It saves the message, then confirms (acks) to the sender — "sent" ✓. The <code>clientMsgId</code> makes resends idempotent: if the client sends the same message twice, it is stored once.</li>
+<li>The service finds the receivers' connection servers and pushes the message. When the receiver's device acks, "delivered" ✓✓ flows back to the sender. When the receiver opens the chat, it becomes "read".</li>
+<li>Offline receivers get a push notification. When they reconnect, the client asks for all messages after its <strong>last seen sequence</strong> in each conversation.</li>
+</ol>
+<h4>Example</h4>
+<ol>
+<li>Asha sends "Order confirmed?" to the distributor group (40 members).</li>
+<li>The message gets seq 1043 in the group conversation.</li>
+<li>32 online members receive it through their connection servers in ~100 ms.</li>
+<li>8 offline members get a push notification.</li>
+<li>One of them reconnects an hour later. Its last seen seq was 1029, so it fetches seq &gt; 1029 and receives 14 messages, in order.</li>
+</ol>
+<h4>When would I use it?</h4>
+<ul>
+<li>Chat and live support.</li>
+<li>The conversational ordering channel of an assistant like NOVA.</li>
+<li>Collaborative apps.</li>
+<li>Any real-time messaging that goes both ways.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Connection server fails.</strong> Clients reconnect to another server and resync using their sequence number.</li>
+<li><strong>Ordering across devices.</strong> Fix with a server-assigned sequence per conversation.</li>
+<li><strong>Hot group conversations.</strong> Use fan-out workers and rate limits.</li>
+<li><strong>Presence storms.</strong> Too many online/offline updates. Fetch presence lazily, only when a chat is opened.</li>
+<li><strong>Message loss.</strong> This happens if you ack before saving. Always save first, then ack.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. How do you route a message to a user connected to a different server?</strong> Keep a session registry in Redis that maps each user to their connection server. Then send the message to that server through internal pub/sub or a direct RPC call.</p>
+<p><strong>Q2. How do you guarantee ordering and no loss?</strong> Save the message before acking. Assign a sequence number per conversation. Make sends idempotent using client message IDs. On reconnect, resync from the last seen sequence.</p>
+<p><strong>Q3. Why Cassandra for messages?</strong> The write volume is very high, and messages are read by conversation in time order. That fits Cassandra's partition key + clustering key model well, and Cassandra scales out by adding machines.</p>
+<h2 id="s13-6">13.6 Distributed Cache (design Redis/Memcached)</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> A cache keeps hot data in memory so reads take well under a millisecond. To hold more data than one machine can, you split keys across many machines and keep copies so a crash does not lose everything.</p>
+<p><strong>Functional</strong> (what it must do):
+- <code>get</code>, <code>put</code> with a TTL (time to live), and <code>delete</code>.
+- Grow beyond one machine.
+- Survive node failures.</p>
+<p><strong>Non-functional</strong> (how well it must do it):
+- Sub-millisecond latency.
+- Millions of operations per second.</p>
+<p>What it tests: in-memory data structures, eviction (removing old data when memory is full), partitioning, replication and consistency trade-offs.</p>
+<h4>What is happening internally?</h4>
+<ul>
+<li><strong>Single node</strong>: a hash map plus an eviction structure. This can be an LRU list (<em>least recently used</em> goes first). Or it can be approximate LRU/LFU (<em>least frequently used</em>) done by sampling a few keys, as Redis does. TTLs are enforced in two ways: lazily, when a key is accessed, and by regularly checking a random sample of keys that have expiry.</li>
+<li><strong>Partitioning</strong> (splitting keys across nodes): consistent hashing with virtual nodes, done in the client or through a proxy. Redis Cluster instead uses 16,384 hash slots, and each node owns some of the slots.</li>
+<li><strong>Replication</strong>: each shard has a primary and replicas, copied asynchronously (in the background). Failover is handled by Sentinel or by cluster consensus (the nodes vote).</li>
+<li><strong>Memory efficiency</strong>: slab allocation in Memcached (memory pre-cut into fixed-size chunks), and compact encodings for small objects in Redis (listpacks).</li>
+<li><strong>Concurrency model</strong>: Redis runs commands on a single thread, so it needs no locks (newer versions add I/O threads). Memcached is multi-threaded, with striped locks (many small locks, each covering part of the data).</li>
+<li><strong>Persistence (optional)</strong>: snapshots (RDB) and append-only logs (AOF).</li>
+</ul>
+<h4>How does it work?</h4>
+<ol>
+<li>For <code>GET k</code>, the client hashes k to get a slot.</li>
+<li>The slot tells it which node owns the key.</li>
+<li>That node looks up the key in memory and returns the value.</li>
+</ol>
+<p>If a node fails, its replica is promoted to primary. Keys written to the old primary just before the failure may be lost, because replication is asynchronous. For a cache, this is acceptable.</p>
+<h4>Example</h4>
+<ul>
+<li>A 6-node Redis Cluster (3 primaries + 3 replicas, 32 GB each) holds 80 GB of hot data.</li>
+<li>You add 2 primaries. Some slots move to them while the cluster keeps running (online).</li>
+<li>One hot key — a festival scheme list read 50k times/s — is also copied into an in-process Caffeine cache on every app pod, with a 5 s TTL. So most reads never even reach Redis.</li>
+</ul>
+<h4>When would I use it?</h4>
+<ul>
+<li>Caching.</li>
+<li>Sessions.</li>
+<li>Rate-limit counters.</li>
+<li>Leaderboards.</li>
+<li>Distributed locks (carefully).</li>
+<li>Short-lived coordination state.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Cache as the only copy.</strong> Never keep critical data only in the cache.</li>
+<li><strong>Hot keys.</strong> One very popular key overloads one node.</li>
+<li><strong>Cache and DB disagree.</strong> Use cache-aside: delete the cache entry on every write, and use TTLs (11.5).</li>
+<li><strong>Large values.</strong> A big value blocks Redis's single thread for everyone.</li>
+<li><strong>Eviction storms.</strong> When memory is too small, keys are evicted constantly.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. How would you scale a cache horizontally?</strong> Split keys across nodes with consistent hashing or hash slots. Add replicas for failover, and let the client route each key to the right node.</p>
+<p><strong>Q2. Why is Redis single-threaded yet fast?</strong> In-memory operations take microseconds. A single thread avoids lock contention and context switches. And I/O multiplexing (one thread watching many sockets) lets it serve many connections at once.</p>
+<h2 id="s13-7">13.7 Loyalty and Rewards Platform (your system — rehearse it three levels deep)</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> Outlets earn points on orders and spend them on rewards. Every change is written as a permanent line in a ledger (like a bank passbook), so points are never credited twice, never spent twice, and every rupee can be traced.</p>
+<p><strong>Functional</strong> (what it must do):
+- Tenants (brands) set up their own programmes.
+- Outlets earn points on orders, scans and achievements.
+- They redeem points for rewards: catalogue items, vouchers, cashback.
+- Tiers, expiry, statements and admin adjustments.
+- Reverse the points when an order is cancelled.</p>
+<p><strong>Non-functional</strong> (how well it must do it):
+- Never double-credit, never double-spend.
+- Balance reads &lt; 100 ms.
+- Accrual (adding points) may lag by a few seconds.
+- 700+ tenants and 8.9M outlets.
+- Strict tenant isolation — one tenant never sees another's data.
+- Full audit.</p>
+<p>What it tests: idempotency, ledger design, sagas and multi-tenancy. And it is your strongest story.</p>
+<h4>What is happening internally?</h4>
+<p><strong>Estimates</strong>:
+- 5M orders/day → 5M accrual events (~60/s; month-end peaks ~500/s).
+- 200k redemptions/day.
+- 20M balance reads/day (~230/s).
+- Ledger: ~6M entries/day × 200 B ≈ 1.2 GB/day ≈ 440 GB/year.</p>
+<p><strong>API and events</strong>:</p>
+<div class="hl"><pre><span></span><code>POST /v1/accounts/{id}/redemptions   Idempotency-Key  {rewardId, points}
+GET  /v1/accounts/{id}/balance
+GET  /v1/accounts/{id}/statement?after=cursor
+POST /v1/admin/adjustments           (maker-checker)
+Consumes: OrderCompleted, OrderCancelled, AchievementUnlocked
+Produces: PointsAccrued, PointsRedeemed, PointsExpired, TierChanged
+</code></pre></div>
+
+<p>(Maker-checker means one person makes the adjustment and a second person approves it.)</p>
+<p><strong>Data (PostgreSQL, monthly partitions for the ledger)</strong>:
+- <code>account(id, tenant_id, outlet_id, balance, tier, version)</code>
+- <code>ledger_entry(id, tenant_id, account_id, type, points, idempotency_key UNIQUE(tenant_id, key), ref_id, lot_id, created_at)</code> — append-only: rows are only added, never changed
+- <code>lot(id, account_id, points_remaining, expires_at)</code> — each batch of earned points, used for FIFO expiry (oldest points expire first, 10.11)
+- <code>redemption(id, account_id, reward_id, points, status, partner_ref)</code> — saga state
+- <code>outbox</code>, <code>processed_event</code></p>
+<p>The architecture in plain words:</p>
+<ol>
+<li>The order service publishes order events to Kafka. Accrual consumers read them (idempotently) and use a rules engine to compute points. In one local transaction, they write the ledger entry, the lot, the balance and an outbox row.</li>
+<li>API requests come through the API gateway to the Loyalty API, backed by PostgreSQL (a primary for writes, replicas for statements).</li>
+<li>Redemption is a <em>saga</em> — a series of steps, each with an undo. First debit points in a local transaction. Then call the voucher partner with an idempotency key. Then confirm, or compensate (undo).</li>
+<li>An outbox relay (or CDC — change data capture, reading the DB's change log) publishes points events to Kafka. Notifications, analytics (ClickHouse) and the tier service consume them.</li>
+<li>Balances are cached in Redis and evicted on change. An expiry job runs daily per tenant, in chunks, guarded by ShedLock (so only one instance runs it).</li>
+</ol>
+<div class="hl"><pre><span></span><code>Order svc → Kafka order-events → Accrual consumers (idempotent; rules engine computes points)
+                                   │ local tx: ledger + lot + balance + outbox
+API GW → Loyalty API → PostgreSQL (primary; replicas for statements)
+            │ redemption saga: debit (local tx) → voucher partner (idempotency key) → confirm / compensate
+            ▼
+         Outbox relay/CDC → Kafka points-events → notifications, analytics (ClickHouse), tier service
+Balance cache: Redis (evicted on change) · Expiry job: daily per tenant in chunks (ShedLock)
+</code></pre></div>
+
+<h4>How does it work?</h4>
+<p><strong>Accrual</strong> (adding points):
+1. Consume <code>OrderCompleted</code>.
+2. If this event ID was already processed, skip it.
+3. Compute the points.
+4. In one transaction, insert the ledger entry, the lot, the balance update, the processed-event row and the outbox event.</p>
+<p><strong>Redemption</strong> (spending points):
+1. Check the idempotency key. If it was seen before, return the stored response.
+2. Debit atomically with a condition (<code>balance &gt;= points</code>). If the balance is too low, nothing changes.
+3. In the same transaction, write the ledger entry, the saga row and the outbox row.
+4. The orchestrator calls the voucher partner, using the redemption ID as the idempotency key.
+5. On success: confirm and notify.
+6. On failure after retries: compensate (credit the points back) and mark the redemption FAILED.</p>
+<h4>Example</h4>
+<ol>
+<li>An outlet with 1,200 points redeems 1,000 for a ₹100 voucher. The user double-taps the button, so two requests arrive.</li>
+<li>Request 1 debits the points (balance becomes 200) and stores the key.</li>
+<li>Request 2 has the same key, so it just gets the stored response. No second debit.</li>
+<li>The partner times out once. The retry uses the same key, so the partner returns the same voucher code.</li>
+<li>The SMS goes out via the outbox → Kafka → notification service.</li>
+</ol>
+<h4>When would I use it?</h4>
+<ul>
+<li>Points, wallets, credits, cashback, gift cards.</li>
+<li>Any balance system built on a ledger.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Double credit</strong>: happens if the event-ID dedupe is not in the same transaction as the ledger write.</li>
+<li><strong>Double spend</strong>: happens if you read the balance and then write it, without a conditional update or a lock.</li>
+<li><strong>Balance/ledger drift</strong>: the stored balance stops matching the ledger. Run a nightly reconciliation that compares SUM(ledger) with the balance for each account, and alert on any difference.</li>
+<li><strong>Expiry at scale</strong>: expire lot by lot, in chunks. The job must be resumable (can continue after a crash) and idempotent per lot. Notify users before their points expire.</li>
+<li><strong>Month-end spikes</strong>: Kafka absorbs the burst. Scale consumers based on lag (how far behind they are). Partition by account so each account's events stay in order.</li>
+<li><strong>Tenant isolation</strong>: put the tenant ID on every row and in every query. Apply rate limits per tenant.</li>
+</ul>
+<blockquote class="co saythis">
+<p><strong>Say this:</strong> "The most important property is that every balance change is an immutable, idempotent ledger entry written in the same transaction as the balance update and the outbox event. Everything else — caching, notifications, analytics — hangs off that."</p>
+</blockquote>
+<h4>Interview questions</h4>
+<p><strong>Q1. How do you prevent duplicate accruals when Kafka redelivers?</strong> Keep a unique constraint on the processed event ID (or idempotency key), and write it in the same transaction as the ledger entry. A redelivered event then fails the constraint and is skipped.</p>
+<p><strong>Q2. What if the voucher partner fails after points are debited?</strong> The saga retries with the same idempotency key, so the partner never issues two vouchers. If the failure is permanent, the saga compensates: it credits the points back and marks the redemption failed.</p>
+<p><strong>Q3. How do you keep balance reads fast?</strong> Keep a cached balance column that is updated in the same transaction as the ledger. Add Redis on top, evicted whenever the balance changes. Serve statements from read replicas.</p>
+<h2 id="s13-8">13.8 Payment System</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> A payment system must never lose money and never charge twice. You track every payment through fixed states, make every step safe to repeat, never treat a timeout as a failure, and check your records against the bank's file every day.</p>
+<p><strong>Functional</strong> (what it must do):</p>
+<ul>
+<li>Merchants create <em>payment intents</em> — a record saying "this order needs ₹X".</li>
+<li>Customers pay by card, UPI or netbanking through external gateways. These gateways are called PSPs (payment service providers), like Razorpay or PayU.</li>
+<li>Handle the PSP's callbacks (webhooks) that tell you the result.</li>
+<li>Handle refunds.</li>
+<li>Keep a ledger — a record of every movement of money.</li>
+<li>Do reconciliation — match your records against the PSP's settlement files.</li>
+</ul>
+<p><strong>Non-functional</strong> (how well it must do it):</p>
+<ul>
+<li>Correctness matters more than speed.</li>
+<li>Exactly-once <em>effect</em> — a message may arrive twice, but money moves only once.</li>
+<li>A full audit trail.</li>
+<li>High availability.</li>
+<li>PCI-DSS compliance (the card industry's security rules). Never store card data yourself — the PSP gives you a <em>token</em> (a safe stand-in ID) to use instead.</li>
+</ul>
+<p>This question tests state machines, idempotency at every hop (making each step safe to repeat), unknown outcomes and reconciliation.</p>
+<h4>What is happening internally?</h4>
+<div class="hl"><pre><span></span><code>Client → Payment API: POST /payments {orderId, amount, method}  Idempotency-Key
+   → payment row (CREATED) + outbox, in one transaction
+   → PSP "create order" (idempotency key = payment id) → status PENDING → return PSP intent / UPI deep link
+Customer pays in the PSP/UPI app
+PSP → webhook /psp/callback (verify signature) → idempotent transition PENDING → SUCCEEDED / FAILED
+   → double-entry ledger rows (debit customer receivable, credit merchant payable) in the same transaction
+   → outbox PaymentSucceeded → order service, notifications
+Status poller: PENDING older than N minutes → query the PSP (webhooks get lost)
+Reconciliation: daily settlement file vs ledger → mismatches to an ops queue
+</code></pre></div>
+
+<p>The flow in steps:</p>
+<ol>
+<li>The client calls <code>POST /payments</code> with an <code>Idempotency-Key</code>, so a retry does not create a second payment.</li>
+<li>In one DB transaction, you save the payment row (status CREATED) and an outbox row. An <em>outbox</em> row is a message saved in the same transaction, which a separate process later publishes — so the DB and the events never disagree.</li>
+<li>You call the PSP's "create order" API. You use the payment ID as the idempotency key there too. The status becomes PENDING. You return the PSP intent or a UPI deep link to the client.</li>
+<li>The customer pays inside the PSP page or UPI app.</li>
+<li>The PSP calls your webhook <code>/psp/callback</code>. You first verify its signature, so nobody can fake it.</li>
+<li>You move the status PENDING → SUCCEEDED or FAILED. This step is idempotent — safe if the webhook comes twice.</li>
+<li>In the same transaction, you write double-entry ledger rows: debit the customer receivable, credit the merchant payable.</li>
+<li>The outbox publishes <code>PaymentSucceeded</code> to the order service and notifications.</li>
+<li>A <strong>status poller</strong> checks payments that have been PENDING for more than N minutes, by asking the PSP directly. This is needed because webhooks sometimes get lost.</li>
+<li><strong>Reconciliation</strong> runs daily. It compares the PSP's settlement file against your ledger and sends any mismatch to an ops queue.</li>
+</ol>
+<p>Tables:</p>
+<ul>
+<li><code>payment(id, order_id, amount_minor, currency, method, status, psp_ref, version)</code></li>
+<li><code>ledger_entry(id, account, direction, amount_minor, payment_id, created_at)</code> — the double-entry ledger</li>
+<li><code>refund(...)</code></li>
+<li><code>idempotency_key(...)</code></li>
+</ul>
+<p><code>amount_minor</code> means the amount in the smallest unit — paise, not rupees — stored as a whole number.</p>
+<h4>How does it work?</h4>
+<ul>
+<li><strong>State machine.</strong> A payment can only move along allowed paths: CREATED → PENDING → SUCCEEDED/FAILED, and SUCCEEDED → REFUND_PENDING → REFUNDED.</li>
+<li>Every move is a conditional update, like <code>WHERE status = 'PENDING'</code>.</li>
+<li>So if a duplicate callback arrives, the condition no longer matches and nothing changes. It is a <em>no-op</em>.</li>
+<li><strong>Double-entry ledger.</strong> Every money movement is written as balanced debits and credits — the totals always match.</li>
+<li>Balances are calculated from these entries.</li>
+<li>Amounts are never edited in place; you only add new rows.</li>
+<li>Think of a shop's khata book: you never rub out a line, you only add a correcting line.</li>
+<li><strong>Unknown outcomes.</strong> A timeout when calling the PSP is <em>not</em> a failure. The money may have moved.
+  1. Mark the payment UNKNOWN.
+  2. Ask the PSP's status API what really happened.
+  3. Then resolve it to SUCCEEDED or FAILED.</li>
+<li>Never retry a charge with a new idempotency key — that can charge the customer twice.</li>
+</ul>
+<h4>Example</h4>
+<p>A UPI payment of ₹1,250:</p>
+<ol>
+<li>The API returns a deep link, and the user pays.</li>
+<li>The webhook arrives twice, because the PSP retried.</li>
+<li>The first webhook moves PENDING → SUCCEEDED and writes the ledger rows.</li>
+<li>The second webhook sees the status is no longer PENDING. It returns 200 and changes nothing.</li>
+</ol>
+<p>Another payment's webhook never arrives. After 10 minutes the poller asks the PSP, finds it SUCCEEDED, and completes it.</p>
+<p>Next morning, reconciliation matches 99.98% of settlements. The two mismatches go to the ops team.</p>
+<h4>When would I use it?</h4>
+<p>Payments, wallets, payouts (such as incentive payouts to sales reps), refunds, and any integration where real money moves through an outside system.</p>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Using floating-point for money.</strong> <code>0.1 + 0.2</code> is not exactly <code>0.3</code> in floating point. Use minor units (paise) as whole numbers.</li>
+<li><strong>Treating a timeout as a failure.</strong> The customer retries and gets charged twice.</li>
+<li><strong>Not checking webhook signatures.</strong> Anyone can send a forged "payment succeeded" callback.</li>
+<li><strong>Non-idempotent refunds.</strong> A retried refund sends money back twice.</li>
+<li><strong>No reconciliation.</strong> Your records and the bank's slowly drift apart, and nobody notices.</li>
+<li><strong>Storing card data.</strong> This puts your whole system in PCI scope — very costly audits and risk.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. How do you avoid double charging?</strong> Use idempotency keys at every hop — from client to API, and from API to PSP. Make state changes conditional, so a repeat does nothing. And when the outcome is unknown, ask the PSP for the status instead of retrying blindly.</p>
+<p><strong>Q2. Why a double-entry ledger?</strong> Every movement balances debits and credits. So errors show up immediately, balances can be calculated from the entries, and the full history can be audited.</p>
+<p><strong>Q3. What if the PSP webhook never arrives?</strong> A poller asks the PSP for the status of payments that have been pending too long. Daily reconciliation against the settlement files catches anything still missed.</p>
+<h2 id="s13-9">13.9 Leaderboard (gaming / sales incentives)</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> A leaderboard needs a list that stays sorted by score while scores keep changing. Redis sorted sets do exactly this, so updating a score and asking "what is my rank?" are both very fast.</p>
+<p><strong>Functional</strong> (what it must do):</p>
+<ul>
+<li>Update a user's score.</li>
+<li>Show the top N users.</li>
+<li>Show a user's rank and the people just above and below them (neighbours).</li>
+<li>Keep separate boards per tenant, per region and per period (daily or monthly).</li>
+</ul>
+<p><strong>Non-functional</strong> (how well it must do it):</p>
+<ul>
+<li>Near real-time — scores show up within seconds.</li>
+<li>Top-N reads in under 50 ms.</li>
+<li>Millions of members on one board.</li>
+</ul>
+<p>This question tests whether you choose the right data structure (sorted sets) and how you scale beyond one node.</p>
+<h4>What is happening internally?</h4>
+<p>Use Redis <strong>sorted sets</strong> (ZSETs). Inside, a sorted set is a <em>skip list</em> (a sorted linked list with "express lanes" for fast jumping) plus a hash map. The costs:</p>
+<ul>
+<li><code>ZINCRBY</code> (add to a score) — O(log n).</li>
+<li><code>ZREVRANGE 0 99</code> (top 100) — O(log n + k), where k is how many you fetch.</li>
+<li><code>ZREVRANK</code> (a user's rank) — O(log n).</li>
+</ul>
+<p>O(log n) means even with millions of users, it takes only around 20 steps.</p>
+<div class="hl"><pre><span></span><code>Sales events → Kafka → score updater (idempotent per event) → ZINCRBY lb:{tenant}:{region}:{month} amount repId
+API: top 100 → ZREVRANGE … WITHSCORES ; my rank → ZREVRANK ; neighbours → ZREVRANGE rank-5 rank+5
+Period close → snapshot to Postgres for payouts; key TTL after the period
+</code></pre></div>
+
+<p>The flow:</p>
+<ol>
+<li>Sales events go to Kafka.</li>
+<li>A score updater reads them. It is idempotent per event — the same event never counts twice.</li>
+<li>It runs <code>ZINCRBY</code> on a key like <code>lb:{tenant}:{region}:{month}</code>.</li>
+<li>The API serves the top 100 with <code>ZREVRANGE</code>, "my rank" with <code>ZREVRANK</code>, and neighbours with a range around your rank.</li>
+<li>When the period closes, you snapshot the board to Postgres for payouts. Then the Redis key expires through a TTL (time to live).</li>
+</ol>
+<p>The real source of truth stays in the database or ledger. The board in Redis is only a fast view, and you can rebuild it from the events at any time.</p>
+<h4>How does it work?</h4>
+<p><strong>Ties.</strong> Two reps may have the same score. Put a tiebreaker inside the score itself. For example: <code>score × 10¹⁰ + (MAX_TS − achievedAt)</code>. The person who reached the score earlier gets a slightly higher number, so they rank higher.</p>
+<p><strong>Going beyond one sorted set</strong> (tens of millions of members):</p>
+<ol>
+<li>Split users across shards by a hash of the user ID.</li>
+<li>For the global top N, take each shard's top N and merge them.</li>
+<li>For any user's global rank, you can estimate it using a <em>histogram</em> of score buckets — counts of how many users fall in each score range.</li>
+</ol>
+<h4>Example</h4>
+<p>A Gold-tier rep in the North region opens the app. It shows: "Rank 37 of 2,140 this month, ₹4,200 behind #36".</p>
+<p>This is just <code>ZREVRANK</code> for the rank, plus <code>ZSCORE</code> for this user and the user one place above. It takes about 1 ms.</p>
+<h4>When would I use it?</h4>
+<p>Gamified incentives for field reps, gaming, contests, trending lists, and "top K" dashboards.</p>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Double-counted events.</strong> Remove duplicates by event ID before calling <code>ZINCRBY</code>.</li>
+<li><strong>Boards that grow forever.</strong> Set a TTL on each period's key.</li>
+<li><strong>Calculating ranks from SQL on every request.</strong> This is far too slow at scale.</li>
+<li><strong>Ties not handled in a fixed way.</strong> Two users swap places randomly between page loads.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. Which data structure would you use?</strong> A sorted set built on a skip list — Redis ZSETs. Score updates and rank lookups are O(log n), and fetching the top k is O(log n + k).</p>
+<p><strong>Q2. How do you scale beyond one Redis node?</strong> Shard the users. For the global top k, merge each shard's top k. For a global rank, estimate it using histograms of scores.</p>
+<h2 id="s13-10">13.10 Typeahead / Search Autocomplete</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> As the user types each letter, you must show the best suggestions in a few milliseconds. So you work out the answers in advance, store them in a tree of letters (a trie), and just look them up.</p>
+<p><strong>Functional</strong> (what it must do):</p>
+<ul>
+<li>As the user types, return the top 5–10 suggestions, ranked by popularity. Optionally, personalise them for the user.</li>
+<li>Update popularity from search logs.</li>
+</ul>
+<p><strong>Non-functional</strong> (how well it must do it):</p>
+<ul>
+<li>Under 50 ms end to end, because it runs on every keystroke.</li>
+<li>Very high QPS (queries per second).</li>
+<li>Suggestions may be minutes or even hours old — that is acceptable.</li>
+</ul>
+<p>This question tests tries, precomputation and caching.</p>
+<h4>What is happening internally?</h4>
+<p><strong>Estimates:</strong> 10M daily active users × 10 searches each × about 6 keystrokes ≈ 600M requests per day. That is about 7k QPS on average, and around 20k QPS at peak.</p>
+<div class="hl"><pre><span></span><code>Search logs → Kafka → aggregation job (hourly/daily: Spark/Flink) → top queries with counts
+   → build a trie in which every node stores its precomputed top-K completions
+   → serialise, shard by prefix range, load into the memory of Suggest servers (or Redis)
+Client (debounce ~100 ms, cache prefixes) → CDN/edge cache for popular prefixes → Suggest service (O(prefix length) lookup)
+</code></pre></div>
+
+<p>The flow:</p>
+<ol>
+<li>Search logs go into Kafka.</li>
+<li>An aggregation job (Spark or Flink, run hourly or daily) counts the top queries.</li>
+<li>You build a <em>trie</em> — a tree where each step down is one letter. Every node stores its own precomputed top-K completions.</li>
+<li>You serialise the trie, split it by prefix ranges (shards), and load it into the memory of the Suggest servers (or into Redis).</li>
+<li>On the client side, the app waits about 100 ms after the last keystroke before sending a request. This is called <em>debounce</em>. The app also caches prefixes it has already seen.</li>
+<li>Popular prefixes are served from a CDN/edge cache.</li>
+<li>Anything else reaches the Suggest service, which looks it up in O(prefix length) — the time depends only on how many letters were typed.</li>
+</ol>
+<h4>How does it work?</h4>
+<p>To look up a prefix:</p>
+<ol>
+<li>Walk down the trie, one character at a time.</li>
+<li>At the last node, return the top-K list already stored there.</li>
+</ol>
+<p>You never search the whole subtree at query time. Storing the top-K at every node uses more memory, but it makes lookups very fast. That is the trade-off: memory for speed.</p>
+<h4>Example</h4>
+<p>A retailer types "maz". You walk m → a → z. That node already holds ["maaza 600ml", "maaza 1.2l", "maaza 250ml"…]. It returns from memory in about 1 ms.</p>
+<p>For SKU search in an ordering assistant like NOVA, a trie alone is not enough. Combine it with Elasticsearch for:</p>
+<ul>
+<li><em>fuzzy matching</em> — handling spelling mistakes ("mazza" → "maaza"),</li>
+<li><em>transliteration</em> — handling Hinglish queries typed in English letters.</li>
+</ul>
+<h4>When would I use it?</h4>
+<p>Search boxes, product and SKU lookup, address autocomplete, and command palettes.</p>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Memory blows up.</strong> Cap the size of top-K and remove rare prefixes.</li>
+<li><strong>Uneven shards</strong> — one shard gets far more traffic. Shard by prefix ranges, and split a range when its load is high.</li>
+<li><strong>Offensive or old suggestions.</strong> Use filter lists, and add a small real-time layer for trending queries.</li>
+<li><strong>Calling the server on every keystroke</strong> without debounce and client caching. This multiplies the load.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. How do you make suggestions fast?</strong> Keep a trie in memory with the top-K precomputed at each node. Add edge and client caching, and debounce requests so you don't call on every keystroke.</p>
+<p><strong>Q2. How do you keep suggestions fresh?</strong> Rebuild from the logs in regular batches, and merge in a small real-time trending layer at query time.</p>
+<h2 id="s13-11">13.11 Metrics and Logging Pipeline</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> Thousands of services send a flood of numbers and logs. You catch the flood in Kafka, store it in a column-based database like ClickHouse, keep pre-summed totals for dashboards, and move old data to cheap storage.</p>
+<p><strong>Functional</strong> (what it must do):</p>
+<ul>
+<li>Collect events, metrics and logs from thousands of services and devices.</li>
+<li>Query totals and averages over time and by dimensions (tenant, service, region…).</li>
+<li>Show dashboards.</li>
+<li>Raise alerts.</li>
+<li>Apply retention policies — delete data after a set time.</li>
+</ul>
+<p><strong>Non-functional</strong> (how well it must do it):</p>
+<ul>
+<li>Take in 1M events per second.</li>
+<li>Query billions of rows in seconds.</li>
+<li>Keep the cost low.</li>
+</ul>
+<p>This question tests streaming ingestion, columnar storage and tiering (hot vs cold storage). It is a strong question for you because of your ClickHouse and Trino experience.</p>
+<h4>What is happening internally?</h4>
+<div class="hl"><pre><span></span><code>Agents/SDKs (batch + compress) → ingestion gateway (auth, rate limits) → Kafka (partition by tenant/service)
+  → stream processors (validation, enrichment, pre-aggregation, downsampling)
+  → ClickHouse (MergeTree: PARTITION BY day, ORDER BY (tenant, metric, timestamp)); materialised views for rollups
+  → object storage (Parquet) for raw and cold data, queried with Trino
+Query service → Grafana dashboards ; alerting service evaluates rules on rollups
+</code></pre></div>
+
+<p>The flow:</p>
+<ol>
+<li>Agents and SDKs on each service collect data, batch it and compress it.</li>
+<li>An ingestion gateway checks auth and applies rate limits.</li>
+<li>Data goes into Kafka, partitioned by tenant or service.</li>
+<li>Stream processors validate it, enrich it (add extra fields), pre-aggregate it (sum it up early) and downsample it (keep fewer points for old data).</li>
+<li>Data lands in ClickHouse, in a MergeTree table with <code>PARTITION BY day</code> and <code>ORDER BY (tenant, metric, timestamp)</code>. Materialised views keep the rollups (summary tables).</li>
+<li>Raw and cold data also goes to object storage as Parquet files, and you query it with Trino.</li>
+<li>A query service feeds Grafana dashboards. An alerting service checks rules against the rollups.</li>
+</ol>
+<h4>How does it work?</h4>
+<ul>
+<li><strong>Kafka absorbs bursts.</strong> It sits between the producers and storage, so a sudden spike doesn't crash the database. Producers and storage don't depend on each other's speed.</li>
+<li><strong>Batch inserts</strong> — thousands of rows per insert — keep ClickHouse efficient. It hates many tiny inserts.</li>
+<li><strong>Materialised views</strong> keep per-minute and per-hour rollups up to date at the moment data is inserted. So dashboards never need to sum raw data.</li>
+<li><strong>TTL rules</strong> move data from fast SSD (hot, 7 days) to cheap object storage (cold), and delete it when the retention period ends.</li>
+</ul>
+<h4>Example</h4>
+<p>Query: "p99 latency of the redemption API per tenant over the last 24 hours". (p99 = the time within which 99% of requests finished.)</p>
+<p>It is served from a per-minute rollup table — about 1,440 rows per tenant. It takes tens of milliseconds. Without the rollup, you would scan a billion raw events.</p>
+<h4>When would I use it?</h4>
+<p>Observability platforms, product analytics, IoT telemetry, and audit-event analytics.</p>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>High-cardinality labels.</strong> <em>Cardinality</em> means the number of distinct values. If you use user IDs as metric tags, you get millions of separate series, and storage explodes.</li>
+<li><strong>Too many small inserts.</strong> ClickHouse slows down badly.</li>
+<li><strong>Late-arriving data.</strong> Some events arrive after their time window has been summed. Use watermarks (a marker of "how late we still accept data") and re-aggregation windows.</li>
+<li><strong>One noisy tenant fills up ingestion</strong> for everyone. Use per-tenant quotas.</li>
+<li><strong>Dashboards that query raw data</strong> instead of rollups — slow and expensive.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. Why a columnar store for metrics and logs?</strong> Queries read only a few columns, but across huge time ranges. A columnar store reads just those columns, compresses them well and scans them in vectorised batches (many values at once). So these aggregations are fast and cheap.</p>
+<p><strong>Q2. How do you handle 10× traffic bursts?</strong> Kafka buffers the burst. Consumers scale up based on lag (how far behind they are). Ingestion applies per-tenant rate limits and sampling.</p>
+<h2 id="s13-12">13.12 Distributed Job Scheduler (cron at scale)</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> You have millions of jobs that must run at set times, and several scheduler machines. Each machine picks up a batch of due jobs inside a database lock, so no two machines take the same job. Each job run has a unique ID, so if it is delivered twice, the second copy does nothing.</p>
+<p>Almost every product has work that must happen at a time, not on a user click:</p>
+<ul>
+<li>Expire loyalty points every night at 02:00 for each tenant.</li>
+<li>Send "your offer ends tomorrow" reminders.</li>
+<li>Run end-of-month incentive payouts.</li>
+<li>Retry a failed webhook in 10 minutes.</li>
+</ul>
+<p>On one server, a Spring <code>@Scheduled</code> method or Linux <code>cron</code> is enough. At scale it breaks:</p>
+<ul>
+<li>If that one server is down at 02:00, the job never runs.</li>
+<li>If you run three copies of the service, the job runs three times.</li>
+<li>One server cannot run 10 million jobs per day on time.</li>
+</ul>
+<p>So you need a <strong>distributed job scheduler</strong>: a service that stores jobs, decides when each one is due, and makes sure each due run happens — on time, once in effect, even when machines crash.</p>
+<p><strong>Functional requirements</strong> (what it must do):</p>
+<ol>
+<li>Create a job: one-time ("run at 2026-10-05 10:00") or repeating (a cron expression like <code>0 2 * * *</code> plus a time zone).</li>
+<li>Run each job at its time.</li>
+<li>Retry failed runs with backoff (waiting longer after each failure).</li>
+<li>Keep a history of runs: status, start, end, error.</li>
+<li>Pause, resume, cancel and "run now".</li>
+</ol>
+<p><strong>Non-functional requirements</strong> (how well it must do it):</p>
+<ul>
+<li><strong>No missed runs and no double effects.</strong> Delivery is <em>at-least-once</em> (every run happens, rarely twice); jobs are written so a repeat does no harm. Together this gives <em>effectively once</em>.</li>
+<li><strong>On time</strong>: start within a few seconds of the due time.</li>
+<li><strong>Scale</strong>: 10 million job definitions, peaks of many thousands of runs per second (everyone schedules at midnight).</li>
+<li><strong>No single point of failure</strong>: losing any one machine must not stop scheduling.</li>
+</ul>
+<p><strong>Back-of-envelope estimate</strong> (say these numbers aloud in the interview):</p>
+<ul>
+<li>10M jobs, average 3 runs/day → 30M runs/day ÷ ~10⁵ s/day ≈ <strong>300 runs/s average</strong>.</li>
+<li>Peaks are the real problem. If 20% of jobs are due at exactly 00:00, that is 2M runs in one minute ≈ <strong>33,000 runs/s for a minute</strong>.</li>
+<li>Storage: a job row ≈ 500 bytes → 10M × 500 B = <strong>5 GB</strong>. A run-history row ≈ 200 bytes → 30M/day × 200 B = <strong>6 GB/day</strong>; keep 30 days hot (~180 GB), archive the rest.</li>
+</ul>
+<p>So the database for definitions is small. The hard parts are <strong>finding due jobs fast</strong>, <strong>spreading the peak</strong>, and <strong>never running a job twice in effect</strong>.</p>
+<p>This question tests coordination between machines, idempotency (safe to repeat), time handling and failure thinking.</p>
+<h4>What is happening internally?</h4>
+<p>The design separates <strong>deciding when</strong> (scheduler) from <strong>doing the work</strong> (workers). A queue sits between them.</p>
+<div class="hl"><pre><span></span><code>            ┌──────────────┐  create / pause / cancel / run-now
+ Clients ──►│ Job API      │──────────────────────────┐
+            └──────────────┘                          ▼
+                                     ┌───────────────────────────────┐
+                                     │ Jobs DB (PostgreSQL)          │
+                                     │  jobs(next_run_at indexed)    │
+                                     │  job_runs(execution_id UNIQUE)│
+                                     └───────▲───────────────┬───────┘
+                       claim due rows        │               │ status updates
+                  (FOR UPDATE SKIP LOCKED)   │               │
+            ┌──────────────┐  ┌──────────────┴┐  ┌───────────┴──┐
+            │ Scheduler 1  │  │ Scheduler 2   │  │ Scheduler 3  │   stateless, any can die
+            └──────┬───────┘  └──────┬────────┘  └──────┬───────┘
+                   └───── publish run(execution_id) ─────┘
+                                     ▼
+                         ┌───────────────────────┐
+                         │ Kafka / RabbitMQ      │  topics by priority / tenant
+                         └───────────┬───────────┘
+                                     ▼
+                ┌─────────┐   ┌─────────┐   ┌─────────┐
+                │ Worker  │   │ Worker  │   │ Worker  │   heartbeat + lease on the run
+                └────┬────┘   └────┬────┘   └────┬────┘
+                     └──── success / retry with backoff / DLQ ────┘
+</code></pre></div>
+
+<p><strong>The two main tables:</strong></p>
+<div class="hl"><pre><span></span><code><span class="k">CREATE</span><span class="w"> </span><span class="k">TABLE</span><span class="w"> </span><span class="n">jobs</span><span class="w"> </span><span class="p">(</span>
+<span class="w">  </span><span class="n">job_id</span><span class="w">        </span><span class="nb">BIGINT</span><span class="w"> </span><span class="k">PRIMARY</span><span class="w"> </span><span class="k">KEY</span><span class="p">,</span>
+<span class="w">  </span><span class="n">tenant_id</span><span class="w">     </span><span class="nb">BIGINT</span><span class="w">       </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span>
+<span class="w">  </span><span class="n">name</span><span class="w">          </span><span class="nb">TEXT</span><span class="w">         </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span>
+<span class="w">  </span><span class="n">schedule_type</span><span class="w"> </span><span class="nb">TEXT</span><span class="w">         </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span><span class="w">          </span><span class="c1">-- 'ONCE' or 'CRON'</span>
+<span class="w">  </span><span class="n">cron_expr</span><span class="w">     </span><span class="nb">TEXT</span><span class="p">,</span><span class="w">                           </span><span class="c1">-- e.g. '0 2 * * *'</span>
+<span class="w">  </span><span class="n">time_zone</span><span class="w">     </span><span class="nb">TEXT</span><span class="w">         </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span><span class="w">          </span><span class="c1">-- e.g. 'Asia/Kolkata' (never store a fixed offset)</span>
+<span class="w">  </span><span class="n">payload</span><span class="w">       </span><span class="n">JSONB</span><span class="w">        </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span><span class="w">          </span><span class="c1">-- what the worker needs: handler name + arguments</span>
+<span class="w">  </span><span class="n">status</span><span class="w">        </span><span class="nb">TEXT</span><span class="w">         </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span><span class="w">          </span><span class="c1">-- ACTIVE, PAUSED, CANCELLED, DONE</span>
+<span class="w">  </span><span class="n">next_run_at</span><span class="w">   </span><span class="n">TIMESTAMPTZ</span><span class="p">,</span><span class="w">                    </span><span class="c1">-- next fire time in UTC; NULL when nothing is due</span>
+<span class="w">  </span><span class="n">misfire_policy</span><span class="w"> </span><span class="nb">TEXT</span><span class="w">        </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="w"> </span><span class="k">DEFAULT</span><span class="w"> </span><span class="s1">'RUN_ONCE'</span><span class="p">,</span><span class="w">  </span><span class="c1">-- RUN_ONCE, RUN_ALL, SKIP</span>
+<span class="w">  </span><span class="n">max_attempts</span><span class="w">  </span><span class="nb">INT</span><span class="w">          </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="w"> </span><span class="k">DEFAULT</span><span class="w"> </span><span class="mi">5</span><span class="p">,</span>
+<span class="w">  </span><span class="n">timeout_sec</span><span class="w">   </span><span class="nb">INT</span><span class="w">          </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="w"> </span><span class="k">DEFAULT</span><span class="w"> </span><span class="mi">900</span><span class="p">,</span>
+<span class="w">  </span><span class="k">version</span><span class="w">       </span><span class="nb">BIGINT</span><span class="w">       </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="w"> </span><span class="k">DEFAULT</span><span class="w"> </span><span class="mi">0</span><span class="w">  </span><span class="c1">-- optimistic locking for API edits</span>
+<span class="p">);</span>
+<span class="c1">-- partial index: only active jobs, ordered by time -&gt; "what is due?" is a cheap index range scan</span>
+<span class="k">CREATE</span><span class="w"> </span><span class="k">INDEX</span><span class="w"> </span><span class="n">idx_jobs_due</span><span class="w"> </span><span class="k">ON</span><span class="w"> </span><span class="n">jobs</span><span class="w"> </span><span class="p">(</span><span class="n">next_run_at</span><span class="p">)</span><span class="w"> </span><span class="k">WHERE</span><span class="w"> </span><span class="n">status</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">'ACTIVE'</span><span class="p">;</span>
+
+<span class="k">CREATE</span><span class="w"> </span><span class="k">TABLE</span><span class="w"> </span><span class="n">job_runs</span><span class="w"> </span><span class="p">(</span>
+<span class="w">  </span><span class="n">execution_id</span><span class="w">  </span><span class="nb">TEXT</span><span class="w"> </span><span class="k">PRIMARY</span><span class="w"> </span><span class="k">KEY</span><span class="p">,</span><span class="w">               </span><span class="c1">-- job_id + '@' + scheduled_for  (idempotency key)</span>
+<span class="w">  </span><span class="n">job_id</span><span class="w">        </span><span class="nb">BIGINT</span><span class="w">       </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span>
+<span class="w">  </span><span class="n">scheduled_for</span><span class="w"> </span><span class="n">TIMESTAMPTZ</span><span class="w">  </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span>
+<span class="w">  </span><span class="n">attempt</span><span class="w">       </span><span class="nb">INT</span><span class="w">          </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span>
+<span class="w">  </span><span class="n">status</span><span class="w">        </span><span class="nb">TEXT</span><span class="w">         </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span><span class="w">          </span><span class="c1">-- QUEUED, RUNNING, SUCCEEDED, FAILED, DEAD</span>
+<span class="w">  </span><span class="n">worker_id</span><span class="w">     </span><span class="nb">TEXT</span><span class="p">,</span>
+<span class="w">  </span><span class="n">lease_until</span><span class="w">   </span><span class="n">TIMESTAMPTZ</span><span class="p">,</span><span class="w">                    </span><span class="c1">-- worker must heartbeat before this</span>
+<span class="w">  </span><span class="n">started_at</span><span class="w">    </span><span class="n">TIMESTAMPTZ</span><span class="p">,</span><span class="w"> </span><span class="n">finished_at</span><span class="w"> </span><span class="n">TIMESTAMPTZ</span><span class="p">,</span><span class="w"> </span><span class="n">error</span><span class="w"> </span><span class="nb">TEXT</span>
+<span class="p">);</span>
+</code></pre></div>
+
+<p>Key ideas in this layout:</p>
+<ul>
+<li><strong><code>next_run_at</code> is always stored in UTC.</strong> The cron expression and time zone are used only to <em>calculate</em> it. So the "is it due?" check is a simple number comparison.</li>
+<li><strong>The partial index</strong> contains only ACTIVE jobs, sorted by time. Finding due jobs is like opening a register at today's page — you never scan paused or finished jobs.</li>
+<li><strong><code>execution_id</code> is UNIQUE.</strong> The same scheduled slot can never create two run rows. This is the idempotency key the worker checks.</li>
+</ul>
+<h4>How does it work?</h4>
+<p><strong>A. The scheduler loop</strong> (every scheduler node runs this, every ~1 second):</p>
+<div class="hl"><pre><span></span><code><span class="k">BEGIN</span><span class="p">;</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="n">job_id</span><span class="p">,</span><span class="w"> </span><span class="n">cron_expr</span><span class="p">,</span><span class="w"> </span><span class="n">time_zone</span><span class="p">,</span><span class="w"> </span><span class="n">next_run_at</span>
+<span class="k">FROM</span><span class="w">   </span><span class="n">jobs</span>
+<span class="k">WHERE</span><span class="w">  </span><span class="n">status</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s1">'ACTIVE'</span><span class="w"> </span><span class="k">AND</span><span class="w"> </span><span class="n">next_run_at</span><span class="w"> </span><span class="o">&lt;=</span><span class="w"> </span><span class="n">now</span><span class="p">()</span>
+<span class="k">ORDER</span><span class="w">  </span><span class="k">BY</span><span class="w"> </span><span class="n">next_run_at</span>
+<span class="k">LIMIT</span><span class="w">  </span><span class="mi">500</span>
+<span class="k">FOR</span><span class="w"> </span><span class="k">UPDATE</span><span class="w"> </span><span class="n">SKIP</span><span class="w"> </span><span class="n">LOCKED</span><span class="p">;</span><span class="w">            </span><span class="c1">-- rows locked by another scheduler are skipped, not waited on</span>
+
+<span class="c1">-- for each row:</span>
+<span class="k">INSERT</span><span class="w"> </span><span class="k">INTO</span><span class="w"> </span><span class="n">job_runs</span><span class="w"> </span><span class="p">(</span><span class="n">execution_id</span><span class="p">,</span><span class="w"> </span><span class="n">job_id</span><span class="p">,</span><span class="w"> </span><span class="n">scheduled_for</span><span class="p">,</span><span class="w"> </span><span class="n">attempt</span><span class="p">,</span><span class="w"> </span><span class="n">status</span><span class="p">)</span>
+<span class="k">VALUES</span><span class="w"> </span><span class="p">(</span><span class="s1">'42@2026-10-03T20:30:00Z'</span><span class="p">,</span><span class="w"> </span><span class="mi">42</span><span class="p">,</span><span class="w"> </span><span class="s1">'2026-10-03T20:30:00Z'</span><span class="p">,</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="s1">'QUEUED'</span><span class="p">)</span>
+<span class="k">ON</span><span class="w"> </span><span class="n">CONFLICT</span><span class="w"> </span><span class="p">(</span><span class="n">execution_id</span><span class="p">)</span><span class="w"> </span><span class="k">DO</span><span class="w"> </span><span class="k">NOTHING</span><span class="p">;</span><span class="w">            </span><span class="c1">-- already created? do nothing</span>
+<span class="k">UPDATE</span><span class="w"> </span><span class="n">jobs</span><span class="w"> </span><span class="k">SET</span><span class="w"> </span><span class="n">next_run_at</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="o">&lt;</span><span class="k">next</span><span class="w"> </span><span class="n">fire</span><span class="w"> </span><span class="k">time</span><span class="w"> </span><span class="k">after</span><span class="w"> </span><span class="n">the</span><span class="w"> </span><span class="k">current</span><span class="w"> </span><span class="n">one</span><span class="o">&gt;</span><span class="w"> </span><span class="k">WHERE</span><span class="w"> </span><span class="n">job_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">42</span><span class="p">;</span>
+<span class="k">COMMIT</span><span class="p">;</span>
+<span class="c1">-- after commit: publish the run to the queue (or use an outbox table so publish can't be lost - see 11.15)</span>
+</code></pre></div>
+
+<p>Step by step:</p>
+<ol>
+<li>Open a transaction and lock up to 500 due rows. <code>SKIP LOCKED</code> means scheduler 2 does not wait for scheduler 1's rows — it simply takes the next free rows. Three schedulers get three different batches.</li>
+<li>For each job, create a run row. The <code>execution_id</code> is <code>job_id@scheduled_time</code>.</li>
+<li>Move <code>next_run_at</code> forward to the next fire time. Now the job is no longer "due", so no one else can pick this slot.</li>
+<li>Commit. Steps 2 and 3 happen together or not at all. If the scheduler crashes before commit, the locks are released and another scheduler picks the same rows a second later. Nothing is lost.</li>
+<li>Publish each run to the queue. To make "DB change + publish" safe, write the message to an <strong>outbox table</strong> in the same transaction and let a relay publish it (11.15).</li>
+</ol>
+<p>Think of a railway parcel office with three clerks and one big register sorted by delivery time. Each clerk takes a pencil, marks the next free lines as "mine", writes a delivery slip for each and moves the line's date to its next delivery. A clerk never touches lines another clerk has marked.</p>
+<p><strong>B. Computing the next run time (time zones and DST).</strong></p>
+<ul>
+<li>Parse the cron expression in the job's own time zone, then convert the result to UTC. In Spring: <code>CronExpression.parse("0 0 2 * * *").next(ZonedDateTime.now(zone))</code>.</li>
+<li><strong>DST gap</strong> (clocks jump 02:00 → 03:00): a 02:30 job has no 02:30 that night. Java's <code>atZone</code> moves it forward to 03:30. Decide and document that policy.</li>
+<li><strong>DST overlap</strong> (clocks go back, 01:30 happens twice): run once, at the first occurrence.</li>
+<li>India has no DST, but your global tenants do. Always store the zone name (<code>America/New_York</code>), never a fixed offset (<code>-05:00</code>).</li>
+</ul>
+<p><strong>C. Workers: leases, heartbeats and idempotency.</strong></p>
+<ol>
+<li>A worker takes a run from the queue.</li>
+<li>It updates the run row: <code>status = RUNNING, worker_id = me, lease_until = now() + 60s</code>. This is a <strong>lease</strong> — "I own this run for 60 seconds".</li>
+<li>While working, it renews the lease every ~20 seconds (a <strong>heartbeat</strong>).</li>
+<li>If the worker dies, heartbeats stop and the lease expires. A <strong>reaper</strong> (a small background task) finds RUNNING runs with expired leases and puts them back on the queue.</li>
+<li>Because a run can be delivered twice (queue redelivery, reaper, retry), the job's own work must be idempotent. Example: the points-expiry handler writes <code>INSERT ... ON CONFLICT (execution_id, account_id) DO NOTHING</code>, so a second run changes nothing. For long jobs, save a <strong>checkpoint</strong> (e.g. last processed account ID) so a retry continues instead of starting over.</li>
+</ol>
+<p><strong>D. Retries and the dead-letter queue.</strong></p>
+<ul>
+<li>On failure: if <code>attempt &lt; max_attempts</code>, re-queue with delay = <code>base × 2^attempt</code> plus random <strong>jitter</strong> (so 10,000 failed jobs don't all retry in the same second).</li>
+<li>After the last attempt: mark the run <code>DEAD</code>, send it to a <strong>DLQ</strong> (dead-letter queue) and alert the job owner. A human fixes the cause and clicks "replay".</li>
+<li>Retry only errors that can heal (timeouts, 503s). A validation error will fail every time — send it to DLQ immediately.</li>
+</ul>
+<p><strong>E. Missed runs after downtime (misfire policy).</strong></p>
+<p>Suppose the whole system was down from 01:00 to 05:00. An hourly job missed four slots. When it comes back, <code>next_run_at</code> is in the past. What should happen? This is the <strong>misfire policy</strong>, chosen per job:</p>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>Policy</th>
+<th>Behaviour</th>
+<th>Use it for</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>RUN_ONCE</code> (default)</td>
+<td>Run one catch-up now, then continue the normal schedule</td>
+<td>Cleanup, expiry, sync jobs — one run catches up everything</td>
+</tr>
+<tr>
+<td><code>RUN_ALL</code></td>
+<td>Run every missed slot, in order</td>
+<td>Billing or reports per period, where each slot is its own result</td>
+</tr>
+<tr>
+<td><code>SKIP</code></td>
+<td>Ignore missed slots, wait for the next one</td>
+<td>Reminders and notifications — a 2-hour-late "good morning" is worse than none</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>F. Handling the midnight peak and scaling to millions of jobs.</strong></p>
+<ol>
+<li><strong>Jitter at create time.</strong> For jobs that don't need an exact time ("daily cleanup"), store a random offset in <code>next_run_at</code> (say 0–10 minutes). The 00:00 spike becomes a gentle 10-minute hill.</li>
+<li><strong>Pre-load the near future.</strong> A loader moves jobs due in the next ~5 minutes from the DB into a fast in-memory structure — a <strong>Redis sorted set</strong> (score = due time, <code>ZRANGEBYSCORE</code> to pop due ones) or a <strong>timing wheel</strong> (a ring of time buckets, like a clock face with a bucket per second). The DB is touched once per job per window, not every second.</li>
+<li><strong>Partition the work.</strong> Split jobs into, say, 256 buckets by <code>hash(job_id) % 256</code>. Each scheduler node holds a <strong>lease</strong> on a set of buckets (stored in the DB, ZooKeeper or etcd). If a node dies, its bucket leases expire and other nodes take them over. Within a bucket, ordering by time is local and cheap.</li>
+<li><strong>Separate queues by priority or tenant.</strong> One tenant scheduling a million jobs must not delay everyone else. Give each priority (or large tenant) its own topic, and cap concurrency per tenant (<strong>fairness</strong>).</li>
+<li><strong>Scale workers independently</strong> of schedulers — workers do the heavy lifting; autoscale them on queue lag.</li>
+</ol>
+<p><strong>G. What to monitor.</strong></p>
+<ul>
+<li><strong>Schedule lag</strong>: <code>now − scheduled_for</code> when a run starts. This is the main health number; alert if p99 &gt; 30 s.</li>
+<li>Queue lag (messages waiting), runs per second, failure rate per job type, DLQ size, number of expired leases.</li>
+</ul>
+<h4>Example</h4>
+<p><strong>Daily points expiry for 1,000 tenants at 02:00 IST</strong>, with three scheduler nodes. The code below is a single-file simulation of the core ideas: DST-safe next-run calculation, atomic claiming by several nodes, at-least-once delivery with duplicates, idempotent execution, retries and a dead-letter queue. Run it with <code>java SchedulerDemo.java</code>.</p>
+<div class="hl"><pre><span></span><code><span class="c1">// FILE: SchedulerDemo.java</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">java.time.*</span><span class="p">;</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">java.util.*</span><span class="p">;</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">java.util.concurrent.*</span><span class="p">;</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">java.util.concurrent.atomic.*</span><span class="p">;</span>
+
+<span class="kd">public</span><span class="w"> </span><span class="kd">class</span> <span class="nc">SchedulerDemo</span><span class="w"> </span><span class="p">{</span>
+
+<span class="w">    </span><span class="c1">// ---- 1. Job definition and execution record ----</span>
+<span class="w">    </span><span class="kd">enum</span><span class="w"> </span><span class="n">ExecStatus</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">CLAIMED</span><span class="p">,</span><span class="w"> </span><span class="n">RUNNING</span><span class="p">,</span><span class="w"> </span><span class="n">SUCCEEDED</span><span class="p">,</span><span class="w"> </span><span class="n">FAILED</span><span class="p">,</span><span class="w"> </span><span class="n">DEAD</span><span class="w"> </span><span class="p">}</span>
+
+<span class="w">    </span><span class="kd">static</span><span class="w"> </span><span class="kd">final</span><span class="w"> </span><span class="kd">class</span> <span class="nc">Job</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="kd">final</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="n">id</span><span class="p">;</span><span class="w"> </span><span class="kd">final</span><span class="w"> </span><span class="n">LocalTime</span><span class="w"> </span><span class="n">runAt</span><span class="p">;</span><span class="w"> </span><span class="kd">final</span><span class="w"> </span><span class="n">ZoneId</span><span class="w"> </span><span class="n">zone</span><span class="p">;</span><span class="w"> </span><span class="kd">final</span><span class="w"> </span><span class="kt">int</span><span class="w"> </span><span class="n">maxAttempts</span><span class="p">;</span>
+<span class="w">        </span><span class="n">Instant</span><span class="w"> </span><span class="n">nextRunAt</span><span class="p">;</span><span class="w">                       </span><span class="c1">// UTC instant of the next fire time</span>
+<span class="w">        </span><span class="n">Job</span><span class="p">(</span><span class="n">String</span><span class="w"> </span><span class="n">id</span><span class="p">,</span><span class="w"> </span><span class="n">LocalTime</span><span class="w"> </span><span class="n">runAt</span><span class="p">,</span><span class="w"> </span><span class="n">ZoneId</span><span class="w"> </span><span class="n">zone</span><span class="p">,</span><span class="w"> </span><span class="kt">int</span><span class="w"> </span><span class="n">maxAttempts</span><span class="p">,</span><span class="w"> </span><span class="n">Instant</span><span class="w"> </span><span class="n">firstRun</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="k">this</span><span class="p">.</span><span class="na">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">id</span><span class="p">;</span><span class="w"> </span><span class="k">this</span><span class="p">.</span><span class="na">runAt</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">runAt</span><span class="p">;</span><span class="w"> </span><span class="k">this</span><span class="p">.</span><span class="na">zone</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">zone</span><span class="p">;</span><span class="w"> </span><span class="k">this</span><span class="p">.</span><span class="na">maxAttempts</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">maxAttempts</span><span class="p">;</span><span class="w"> </span><span class="k">this</span><span class="p">.</span><span class="na">nextRunAt</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">firstRun</span><span class="p">;</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">}</span>
+
+<span class="w">    </span><span class="kd">record</span> <span class="nc">Execution</span><span class="p">(</span><span class="n">String</span><span class="w"> </span><span class="n">executionId</span><span class="p">,</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="n">jobId</span><span class="p">,</span><span class="w"> </span><span class="n">Instant</span><span class="w"> </span><span class="n">scheduledFor</span><span class="p">,</span><span class="w"> </span><span class="kt">int</span><span class="w"> </span><span class="n">attempt</span><span class="p">)</span><span class="w"> </span><span class="p">{}</span>
+
+<span class="w">    </span><span class="c1">// ---- 2. "Daily at HH:mm in a time zone" -&gt; next UTC instant (DST-safe) ----</span>
+<span class="w">    </span><span class="kd">static</span><span class="w"> </span><span class="n">Instant</span><span class="w"> </span><span class="nf">nextDailyRun</span><span class="p">(</span><span class="n">LocalTime</span><span class="w"> </span><span class="n">at</span><span class="p">,</span><span class="w"> </span><span class="n">ZoneId</span><span class="w"> </span><span class="n">zone</span><span class="p">,</span><span class="w"> </span><span class="n">Instant</span><span class="w"> </span><span class="n">after</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="n">LocalDate</span><span class="w"> </span><span class="n">day</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">after</span><span class="p">.</span><span class="na">atZone</span><span class="p">(</span><span class="n">zone</span><span class="p">).</span><span class="na">toLocalDate</span><span class="p">();</span>
+<span class="w">        </span><span class="k">for</span><span class="w"> </span><span class="p">(</span><span class="kt">int</span><span class="w"> </span><span class="n">i</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="p">;</span><span class="w"> </span><span class="n">i</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="mi">3</span><span class="p">;</span><span class="w"> </span><span class="n">i</span><span class="o">++</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="c1">// atZone() moves a time that falls in a DST gap forward, and picks the earlier offset in an overlap</span>
+<span class="w">            </span><span class="n">Instant</span><span class="w"> </span><span class="n">candidate</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">day</span><span class="p">.</span><span class="na">plusDays</span><span class="p">(</span><span class="n">i</span><span class="p">).</span><span class="na">atTime</span><span class="p">(</span><span class="n">at</span><span class="p">).</span><span class="na">atZone</span><span class="p">(</span><span class="n">zone</span><span class="p">).</span><span class="na">toInstant</span><span class="p">();</span>
+<span class="w">            </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">candidate</span><span class="p">.</span><span class="na">isAfter</span><span class="p">(</span><span class="n">after</span><span class="p">))</span><span class="w"> </span><span class="k">return</span><span class="w"> </span><span class="n">candidate</span><span class="p">;</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">        </span><span class="k">throw</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">IllegalStateException</span><span class="p">(</span><span class="s">"unreachable"</span><span class="p">);</span>
+<span class="w">    </span><span class="p">}</span>
+
+<span class="w">    </span><span class="c1">// ---- 3. Job store: claim due jobs atomically ----</span>
+<span class="w">    </span><span class="c1">// `synchronized` stands in for the database transaction with SELECT ... FOR UPDATE SKIP LOCKED:</span>
+<span class="w">    </span><span class="c1">// pick due rows, create one execution per row, move next_run_at forward, commit.</span>
+<span class="w">    </span><span class="kd">static</span><span class="w"> </span><span class="kd">final</span><span class="w"> </span><span class="kd">class</span> <span class="nc">JobStore</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="kd">private</span><span class="w"> </span><span class="kd">final</span><span class="w"> </span><span class="n">Map</span><span class="o">&lt;</span><span class="n">String</span><span class="p">,</span><span class="w"> </span><span class="n">Job</span><span class="o">&gt;</span><span class="w"> </span><span class="n">jobs</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">ConcurrentHashMap</span><span class="o">&lt;&gt;</span><span class="p">();</span>
+<span class="w">        </span><span class="kt">void</span><span class="w"> </span><span class="nf">add</span><span class="p">(</span><span class="n">Job</span><span class="w"> </span><span class="n">j</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">jobs</span><span class="p">.</span><span class="na">put</span><span class="p">(</span><span class="n">j</span><span class="p">.</span><span class="na">id</span><span class="p">,</span><span class="w"> </span><span class="n">j</span><span class="p">);</span><span class="w"> </span><span class="p">}</span>
+
+<span class="w">        </span><span class="cm">/** Atomically claim up to `limit` due jobs. A claimed job is no longer due, so no other node sees it. */</span>
+<span class="w">        </span><span class="kd">synchronized</span><span class="w"> </span><span class="n">List</span><span class="o">&lt;</span><span class="n">Execution</span><span class="o">&gt;</span><span class="w"> </span><span class="nf">claimDue</span><span class="p">(</span><span class="n">String</span><span class="w"> </span><span class="n">node</span><span class="p">,</span><span class="w"> </span><span class="n">Instant</span><span class="w"> </span><span class="n">now</span><span class="p">,</span><span class="w"> </span><span class="kt">int</span><span class="w"> </span><span class="n">limit</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="n">List</span><span class="o">&lt;</span><span class="n">Execution</span><span class="o">&gt;</span><span class="w"> </span><span class="n">claimed</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">ArrayList</span><span class="o">&lt;&gt;</span><span class="p">();</span>
+<span class="w">            </span><span class="n">jobs</span><span class="p">.</span><span class="na">values</span><span class="p">().</span><span class="na">stream</span><span class="p">()</span>
+<span class="w">                </span><span class="p">.</span><span class="na">filter</span><span class="p">(</span><span class="n">j</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="o">!</span><span class="n">j</span><span class="p">.</span><span class="na">nextRunAt</span><span class="p">.</span><span class="na">isAfter</span><span class="p">(</span><span class="n">now</span><span class="p">))</span>
+<span class="w">                </span><span class="p">.</span><span class="na">sorted</span><span class="p">(</span><span class="n">Comparator</span><span class="p">.</span><span class="na">comparing</span><span class="p">(</span><span class="n">j</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">j</span><span class="p">.</span><span class="na">nextRunAt</span><span class="p">))</span>
+<span class="w">                </span><span class="p">.</span><span class="na">limit</span><span class="p">(</span><span class="n">limit</span><span class="p">)</span>
+<span class="w">                </span><span class="p">.</span><span class="na">forEach</span><span class="p">(</span><span class="n">j</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                    </span><span class="n">String</span><span class="w"> </span><span class="n">execId</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">j</span><span class="p">.</span><span class="na">id</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="s">"@"</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">j</span><span class="p">.</span><span class="na">nextRunAt</span><span class="p">;</span><span class="w">                      </span><span class="c1">// idempotency key</span>
+<span class="w">                    </span><span class="n">claimed</span><span class="p">.</span><span class="na">add</span><span class="p">(</span><span class="k">new</span><span class="w"> </span><span class="n">Execution</span><span class="p">(</span><span class="n">execId</span><span class="p">,</span><span class="w"> </span><span class="n">j</span><span class="p">.</span><span class="na">id</span><span class="p">,</span><span class="w"> </span><span class="n">j</span><span class="p">.</span><span class="na">nextRunAt</span><span class="p">,</span><span class="w"> </span><span class="mi">1</span><span class="p">));</span>
+<span class="w">                    </span><span class="n">j</span><span class="p">.</span><span class="na">nextRunAt</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">nextDailyRun</span><span class="p">(</span><span class="n">j</span><span class="p">.</span><span class="na">runAt</span><span class="p">,</span><span class="w"> </span><span class="n">j</span><span class="p">.</span><span class="na">zone</span><span class="p">,</span><span class="w"> </span><span class="n">j</span><span class="p">.</span><span class="na">nextRunAt</span><span class="p">);</span><span class="w">       </span><span class="c1">// advance in the same "transaction"</span>
+<span class="w">                </span><span class="p">});</span>
+<span class="w">            </span><span class="k">return</span><span class="w"> </span><span class="n">claimed</span><span class="p">;</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">        </span><span class="n">Job</span><span class="w"> </span><span class="nf">get</span><span class="p">(</span><span class="n">String</span><span class="w"> </span><span class="n">id</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="k">return</span><span class="w"> </span><span class="n">jobs</span><span class="p">.</span><span class="na">get</span><span class="p">(</span><span class="n">id</span><span class="p">);</span><span class="w"> </span><span class="p">}</span>
+<span class="w">    </span><span class="p">}</span>
+
+<span class="w">    </span><span class="c1">// ---- 4. Worker side: idempotent execution + retry with backoff + dead-letter queue ----</span>
+<span class="w">    </span><span class="kd">static</span><span class="w"> </span><span class="kd">final</span><span class="w"> </span><span class="n">Set</span><span class="o">&lt;</span><span class="n">String</span><span class="o">&gt;</span><span class="w"> </span><span class="n">doneExecutions</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ConcurrentHashMap</span><span class="p">.</span><span class="na">newKeySet</span><span class="p">();</span><span class="w"> </span><span class="c1">// "processed executions" table</span>
+<span class="w">    </span><span class="kd">static</span><span class="w"> </span><span class="kd">final</span><span class="w"> </span><span class="n">List</span><span class="o">&lt;</span><span class="n">String</span><span class="o">&gt;</span><span class="w"> </span><span class="n">deadLetters</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Collections</span><span class="p">.</span><span class="na">synchronizedList</span><span class="p">(</span><span class="k">new</span><span class="w"> </span><span class="n">ArrayList</span><span class="o">&lt;&gt;</span><span class="p">());</span>
+<span class="w">    </span><span class="kd">static</span><span class="w"> </span><span class="kd">final</span><span class="w"> </span><span class="n">AtomicInteger</span><span class="w"> </span><span class="n">realRuns</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">AtomicInteger</span><span class="p">(),</span><span class="w"> </span><span class="n">retries</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">AtomicInteger</span><span class="p">();</span>
+
+<span class="w">    </span><span class="kd">static</span><span class="w"> </span><span class="kt">void</span><span class="w"> </span><span class="nf">execute</span><span class="p">(</span><span class="n">Execution</span><span class="w"> </span><span class="n">e</span><span class="p">,</span><span class="w"> </span><span class="n">JobStore</span><span class="w"> </span><span class="n">store</span><span class="p">,</span><span class="w"> </span><span class="n">BlockingQueue</span><span class="o">&lt;</span><span class="n">Execution</span><span class="o">&gt;</span><span class="w"> </span><span class="n">queue</span><span class="p">,</span><span class="w"> </span><span class="n">Set</span><span class="o">&lt;</span><span class="n">String</span><span class="o">&gt;</span><span class="w"> </span><span class="n">flakyJobs</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">doneExecutions</span><span class="p">.</span><span class="na">contains</span><span class="p">(</span><span class="n">e</span><span class="p">.</span><span class="na">executionId</span><span class="p">()))</span><span class="w"> </span><span class="k">return</span><span class="p">;</span><span class="w">          </span><span class="c1">// duplicate delivery -&gt; no-op</span>
+<span class="w">        </span><span class="kt">boolean</span><span class="w"> </span><span class="n">ok</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="o">!</span><span class="p">(</span><span class="n">flakyJobs</span><span class="p">.</span><span class="na">contains</span><span class="p">(</span><span class="n">e</span><span class="p">.</span><span class="na">jobId</span><span class="p">())</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="n">e</span><span class="p">.</span><span class="na">attempt</span><span class="p">()</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="mi">3</span><span class="p">);</span><span class="w"> </span><span class="c1">// flaky jobs succeed on attempt 3</span>
+<span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">e</span><span class="p">.</span><span class="na">jobId</span><span class="p">().</span><span class="na">equals</span><span class="p">(</span><span class="s">"broken"</span><span class="p">))</span><span class="w"> </span><span class="n">ok</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">false</span><span class="p">;</span><span class="w">                      </span><span class="c1">// always fails</span>
+<span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">ok</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">doneExecutions</span><span class="p">.</span><span class="na">add</span><span class="p">(</span><span class="n">e</span><span class="p">.</span><span class="na">executionId</span><span class="p">()))</span><span class="w"> </span><span class="n">realRuns</span><span class="p">.</span><span class="na">incrementAndGet</span><span class="p">();</span>
+<span class="w">            </span><span class="k">return</span><span class="p">;</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">        </span><span class="kt">int</span><span class="w"> </span><span class="n">max</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">store</span><span class="p">.</span><span class="na">get</span><span class="p">(</span><span class="n">e</span><span class="p">.</span><span class="na">jobId</span><span class="p">()).</span><span class="na">maxAttempts</span><span class="p">;</span>
+<span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">e</span><span class="p">.</span><span class="na">attempt</span><span class="p">()</span><span class="w"> </span><span class="o">&gt;=</span><span class="w"> </span><span class="n">max</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">deadLetters</span><span class="p">.</span><span class="na">add</span><span class="p">(</span><span class="n">e</span><span class="p">.</span><span class="na">executionId</span><span class="p">());</span><span class="w"> </span><span class="k">return</span><span class="p">;</span><span class="w"> </span><span class="p">}</span>
+<span class="w">        </span><span class="kt">long</span><span class="w"> </span><span class="n">backoffMs</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">(</span><span class="kt">long</span><span class="p">)</span><span class="w"> </span><span class="n">Math</span><span class="p">.</span><span class="na">pow</span><span class="p">(</span><span class="mi">2</span><span class="p">,</span><span class="w"> </span><span class="n">e</span><span class="p">.</span><span class="na">attempt</span><span class="p">())</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="mi">100</span><span class="p">;</span><span class="w">         </span><span class="c1">// 200, 400, 800 ms ... (simulated)</span>
+<span class="w">        </span><span class="n">queue</span><span class="p">.</span><span class="na">add</span><span class="p">(</span><span class="k">new</span><span class="w"> </span><span class="n">Execution</span><span class="p">(</span><span class="n">e</span><span class="p">.</span><span class="na">executionId</span><span class="p">(),</span><span class="w"> </span><span class="n">e</span><span class="p">.</span><span class="na">jobId</span><span class="p">(),</span><span class="w"> </span><span class="n">e</span><span class="p">.</span><span class="na">scheduledFor</span><span class="p">(),</span><span class="w"> </span><span class="n">e</span><span class="p">.</span><span class="na">attempt</span><span class="p">()</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="mi">1</span><span class="p">));</span>
+<span class="w">        </span><span class="n">retries</span><span class="p">.</span><span class="na">incrementAndGet</span><span class="p">();</span><span class="w">   </span><span class="c1">// a real system waits backoffMs (plus jitter) before redelivery</span>
+<span class="w">    </span><span class="p">}</span>
+
+<span class="w">    </span><span class="kd">public</span><span class="w"> </span><span class="kd">static</span><span class="w"> </span><span class="kt">void</span><span class="w"> </span><span class="nf">main</span><span class="p">(</span><span class="n">String</span><span class="o">[]</span><span class="w"> </span><span class="n">args</span><span class="p">)</span><span class="w"> </span><span class="kd">throws</span><span class="w"> </span><span class="n">Exception</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="n">ZoneId</span><span class="w"> </span><span class="n">ist</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ZoneId</span><span class="p">.</span><span class="na">of</span><span class="p">(</span><span class="s">"Asia/Kolkata"</span><span class="p">),</span><span class="w"> </span><span class="n">ny</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ZoneId</span><span class="p">.</span><span class="na">of</span><span class="p">(</span><span class="s">"America/New_York"</span><span class="p">);</span>
+
+<span class="w">        </span><span class="c1">// DST check: "daily at 02:30 New York" on the night clocks jump 02:00 -&gt; 03:00 (8 March 2026)</span>
+<span class="w">        </span><span class="n">Instant</span><span class="w"> </span><span class="n">beforeGap</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ZonedDateTime</span><span class="p">.</span><span class="na">of</span><span class="p">(</span><span class="mi">2026</span><span class="p">,</span><span class="w"> </span><span class="mi">3</span><span class="p">,</span><span class="w"> </span><span class="mi">7</span><span class="p">,</span><span class="w"> </span><span class="mi">12</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="n">ny</span><span class="p">).</span><span class="na">toInstant</span><span class="p">();</span>
+<span class="w">        </span><span class="n">Instant</span><span class="w"> </span><span class="n">r1</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">nextDailyRun</span><span class="p">(</span><span class="n">LocalTime</span><span class="p">.</span><span class="na">of</span><span class="p">(</span><span class="mi">2</span><span class="p">,</span><span class="w"> </span><span class="mi">30</span><span class="p">),</span><span class="w"> </span><span class="n">ny</span><span class="p">,</span><span class="w"> </span><span class="n">beforeGap</span><span class="p">);</span>
+<span class="w">        </span><span class="n">Instant</span><span class="w"> </span><span class="n">r2</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">nextDailyRun</span><span class="p">(</span><span class="n">LocalTime</span><span class="p">.</span><span class="na">of</span><span class="p">(</span><span class="mi">2</span><span class="p">,</span><span class="w"> </span><span class="mi">30</span><span class="p">),</span><span class="w"> </span><span class="n">ny</span><span class="p">,</span><span class="w"> </span><span class="n">r1</span><span class="p">);</span>
+<span class="w">        </span><span class="n">System</span><span class="p">.</span><span class="na">out</span><span class="p">.</span><span class="na">println</span><span class="p">(</span><span class="s">"NY 02:30 job, run 1: "</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">r1</span><span class="p">.</span><span class="na">atZone</span><span class="p">(</span><span class="n">ny</span><span class="p">)</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="s">"  (02:30 does not exist that night)"</span><span class="p">);</span>
+<span class="w">        </span><span class="n">System</span><span class="p">.</span><span class="na">out</span><span class="p">.</span><span class="na">println</span><span class="p">(</span><span class="s">"NY 02:30 job, run 2: "</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">r2</span><span class="p">.</span><span class="na">atZone</span><span class="p">(</span><span class="n">ny</span><span class="p">));</span>
+<span class="w">        </span><span class="n">System</span><span class="p">.</span><span class="na">out</span><span class="p">.</span><span class="na">println</span><span class="p">(</span><span class="s">"IST 02:00 job fires at UTC: "</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">nextDailyRun</span><span class="p">(</span><span class="n">LocalTime</span><span class="p">.</span><span class="na">of</span><span class="p">(</span><span class="mi">2</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="p">),</span><span class="w"> </span><span class="n">ist</span><span class="p">,</span><span class="w"> </span><span class="n">Instant</span><span class="p">.</span><span class="na">parse</span><span class="p">(</span><span class="s">"2026-10-03T00:00:00Z"</span><span class="p">)));</span>
+
+<span class="w">        </span><span class="c1">// 1,000 tenant jobs due "now", 3 scheduler nodes racing to claim them</span>
+<span class="w">        </span><span class="n">JobStore</span><span class="w"> </span><span class="n">store</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">JobStore</span><span class="p">();</span>
+<span class="w">        </span><span class="n">Instant</span><span class="w"> </span><span class="n">now</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Instant</span><span class="p">.</span><span class="na">parse</span><span class="p">(</span><span class="s">"2026-10-03T20:30:00Z"</span><span class="p">);</span>
+<span class="w">        </span><span class="k">for</span><span class="w"> </span><span class="p">(</span><span class="kt">int</span><span class="w"> </span><span class="n">i</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span><span class="p">;</span><span class="w"> </span><span class="n">i</span><span class="w"> </span><span class="o">&lt;=</span><span class="w"> </span><span class="mi">1000</span><span class="p">;</span><span class="w"> </span><span class="n">i</span><span class="o">++</span><span class="p">)</span><span class="w"> </span><span class="n">store</span><span class="p">.</span><span class="na">add</span><span class="p">(</span><span class="k">new</span><span class="w"> </span><span class="n">Job</span><span class="p">(</span><span class="s">"tenant-"</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">i</span><span class="p">,</span><span class="w"> </span><span class="n">LocalTime</span><span class="p">.</span><span class="na">of</span><span class="p">(</span><span class="mi">2</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="p">),</span><span class="w"> </span><span class="n">ist</span><span class="p">,</span><span class="w"> </span><span class="mi">4</span><span class="p">,</span><span class="w"> </span><span class="n">now</span><span class="p">));</span>
+<span class="w">        </span><span class="n">store</span><span class="p">.</span><span class="na">add</span><span class="p">(</span><span class="k">new</span><span class="w"> </span><span class="n">Job</span><span class="p">(</span><span class="s">"broken"</span><span class="p">,</span><span class="w"> </span><span class="n">LocalTime</span><span class="p">.</span><span class="na">of</span><span class="p">(</span><span class="mi">2</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="p">),</span><span class="w"> </span><span class="n">ist</span><span class="p">,</span><span class="w"> </span><span class="mi">3</span><span class="p">,</span><span class="w"> </span><span class="n">now</span><span class="p">));</span>
+<span class="w">        </span><span class="n">Set</span><span class="o">&lt;</span><span class="n">String</span><span class="o">&gt;</span><span class="w"> </span><span class="n">flaky</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Set</span><span class="p">.</span><span class="na">of</span><span class="p">(</span><span class="s">"tenant-7"</span><span class="p">,</span><span class="w"> </span><span class="s">"tenant-42"</span><span class="p">);</span>
+
+<span class="w">        </span><span class="n">BlockingQueue</span><span class="o">&lt;</span><span class="n">Execution</span><span class="o">&gt;</span><span class="w"> </span><span class="n">queue</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">LinkedBlockingQueue</span><span class="o">&lt;&gt;</span><span class="p">();</span>
+<span class="w">        </span><span class="n">Map</span><span class="o">&lt;</span><span class="n">String</span><span class="p">,</span><span class="w"> </span><span class="n">Integer</span><span class="o">&gt;</span><span class="w"> </span><span class="n">claimedBy</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">ConcurrentHashMap</span><span class="o">&lt;&gt;</span><span class="p">();</span>
+<span class="w">        </span><span class="n">ExecutorService</span><span class="w"> </span><span class="n">schedulers</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Executors</span><span class="p">.</span><span class="na">newFixedThreadPool</span><span class="p">(</span><span class="mi">3</span><span class="p">);</span>
+<span class="w">        </span><span class="k">for</span><span class="w"> </span><span class="p">(</span><span class="kt">int</span><span class="w"> </span><span class="n">n</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span><span class="p">;</span><span class="w"> </span><span class="n">n</span><span class="w"> </span><span class="o">&lt;=</span><span class="w"> </span><span class="mi">3</span><span class="p">;</span><span class="w"> </span><span class="n">n</span><span class="o">++</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="n">String</span><span class="w"> </span><span class="n">node</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"sched-"</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">n</span><span class="p">;</span>
+<span class="w">            </span><span class="n">schedulers</span><span class="p">.</span><span class="na">submit</span><span class="p">(()</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                </span><span class="n">List</span><span class="o">&lt;</span><span class="n">Execution</span><span class="o">&gt;</span><span class="w"> </span><span class="n">batch</span><span class="p">;</span>
+<span class="w">                </span><span class="k">while</span><span class="w"> </span><span class="p">(</span><span class="o">!</span><span class="p">(</span><span class="n">batch</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">store</span><span class="p">.</span><span class="na">claimDue</span><span class="p">(</span><span class="n">node</span><span class="p">,</span><span class="w"> </span><span class="n">now</span><span class="p">,</span><span class="w"> </span><span class="mi">50</span><span class="p">)).</span><span class="na">isEmpty</span><span class="p">())</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                    </span><span class="k">for</span><span class="w"> </span><span class="p">(</span><span class="n">Execution</span><span class="w"> </span><span class="n">e</span><span class="w"> </span><span class="p">:</span><span class="w"> </span><span class="n">batch</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">claimedBy</span><span class="p">.</span><span class="na">merge</span><span class="p">(</span><span class="n">e</span><span class="p">.</span><span class="na">executionId</span><span class="p">(),</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="n">Integer</span><span class="p">::</span><span class="n">sum</span><span class="p">);</span><span class="w"> </span><span class="n">queue</span><span class="p">.</span><span class="na">add</span><span class="p">(</span><span class="n">e</span><span class="p">);</span><span class="w"> </span><span class="p">}</span>
+<span class="w">                </span><span class="p">}</span>
+<span class="w">            </span><span class="p">});</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">        </span><span class="n">schedulers</span><span class="p">.</span><span class="na">shutdown</span><span class="p">();</span><span class="w"> </span><span class="n">schedulers</span><span class="p">.</span><span class="na">awaitTermination</span><span class="p">(</span><span class="mi">10</span><span class="p">,</span><span class="w"> </span><span class="n">TimeUnit</span><span class="p">.</span><span class="na">SECONDS</span><span class="p">);</span>
+<span class="w">        </span><span class="kt">long</span><span class="w"> </span><span class="n">doubleClaims</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">claimedBy</span><span class="p">.</span><span class="na">values</span><span class="p">().</span><span class="na">stream</span><span class="p">().</span><span class="na">filter</span><span class="p">(</span><span class="n">c</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">c</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="mi">1</span><span class="p">).</span><span class="na">count</span><span class="p">();</span>
+<span class="w">        </span><span class="n">System</span><span class="p">.</span><span class="na">out</span><span class="p">.</span><span class="na">println</span><span class="p">(</span><span class="s">"executions claimed: "</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">claimedBy</span><span class="p">.</span><span class="na">size</span><span class="p">()</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="s">", claimed twice: "</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">doubleClaims</span><span class="p">);</span>
+
+<span class="w">        </span><span class="c1">// Simulate the queue delivering 5 messages twice (at-least-once delivery)</span>
+<span class="w">        </span><span class="n">List</span><span class="o">&lt;</span><span class="n">Execution</span><span class="o">&gt;</span><span class="w"> </span><span class="n">firstFive</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">ArrayList</span><span class="o">&lt;&gt;</span><span class="p">(</span><span class="n">queue</span><span class="p">).</span><span class="na">subList</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="mi">5</span><span class="p">);</span>
+<span class="w">        </span><span class="n">queue</span><span class="p">.</span><span class="na">addAll</span><span class="p">(</span><span class="n">firstFive</span><span class="p">);</span>
+
+<span class="w">        </span><span class="n">ExecutorService</span><span class="w"> </span><span class="n">workers</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Executors</span><span class="p">.</span><span class="na">newFixedThreadPool</span><span class="p">(</span><span class="mi">8</span><span class="p">);</span>
+<span class="w">        </span><span class="k">while</span><span class="w"> </span><span class="p">(</span><span class="o">!</span><span class="n">queue</span><span class="p">.</span><span class="na">isEmpty</span><span class="p">())</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="n">List</span><span class="o">&lt;</span><span class="n">Execution</span><span class="o">&gt;</span><span class="w"> </span><span class="n">drained</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">ArrayList</span><span class="o">&lt;&gt;</span><span class="p">();</span><span class="w"> </span><span class="n">queue</span><span class="p">.</span><span class="na">drainTo</span><span class="p">(</span><span class="n">drained</span><span class="p">);</span>
+<span class="w">            </span><span class="n">CountDownLatch</span><span class="w"> </span><span class="n">latch</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">CountDownLatch</span><span class="p">(</span><span class="n">drained</span><span class="p">.</span><span class="na">size</span><span class="p">());</span>
+<span class="w">            </span><span class="k">for</span><span class="w"> </span><span class="p">(</span><span class="n">Execution</span><span class="w"> </span><span class="n">e</span><span class="w"> </span><span class="p">:</span><span class="w"> </span><span class="n">drained</span><span class="p">)</span><span class="w"> </span><span class="n">workers</span><span class="p">.</span><span class="na">submit</span><span class="p">(()</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="k">try</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">execute</span><span class="p">(</span><span class="n">e</span><span class="p">,</span><span class="w"> </span><span class="n">store</span><span class="p">,</span><span class="w"> </span><span class="n">queue</span><span class="p">,</span><span class="w"> </span><span class="n">flaky</span><span class="p">);</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="k">finally</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">latch</span><span class="p">.</span><span class="na">countDown</span><span class="p">();</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="p">});</span>
+<span class="w">            </span><span class="n">latch</span><span class="p">.</span><span class="na">await</span><span class="p">();</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">        </span><span class="n">workers</span><span class="p">.</span><span class="na">shutdown</span><span class="p">();</span>
+
+<span class="w">        </span><span class="n">System</span><span class="p">.</span><span class="na">out</span><span class="p">.</span><span class="na">println</span><span class="p">(</span><span class="s">"real runs: "</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">realRuns</span><span class="p">.</span><span class="na">get</span><span class="p">()</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="s">" (1000 tenants, duplicates ignored)"</span><span class="p">);</span>
+<span class="w">        </span><span class="n">System</span><span class="p">.</span><span class="na">out</span><span class="p">.</span><span class="na">println</span><span class="p">(</span><span class="s">"retries: "</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">retries</span><span class="p">.</span><span class="na">get</span><span class="p">()</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="s">", dead letters: "</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">deadLetters</span><span class="p">);</span>
+<span class="w">        </span><span class="n">System</span><span class="p">.</span><span class="na">out</span><span class="p">.</span><span class="na">println</span><span class="p">(</span><span class="s">"tenant-1 next run: "</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">store</span><span class="p">.</span><span class="na">get</span><span class="p">(</span><span class="s">"tenant-1"</span><span class="p">).</span><span class="na">nextRunAt</span><span class="p">.</span><span class="na">atZone</span><span class="p">(</span><span class="n">ist</span><span class="p">));</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p>Output:</p>
+<div class="hl"><pre><span></span><code>NY 02:30 job, run 1: 2026-03-08T03:30-04:00[America/New_York]  (02:30 does not exist that night)
+NY 02:30 job, run 2: 2026-03-09T02:30-04:00[America/New_York]
+IST 02:00 job fires at UTC: 2026-10-03T20:30:00Z
+executions claimed: 1001, claimed twice: 0
+real runs: 1000 (1000 tenants, duplicates ignored)
+retries: 6, dead letters: [broken@2026-10-03T20:30:00Z]
+tenant-1 next run: 2026-10-05T02:00+05:30[Asia/Kolkata]
+</code></pre></div>
+
+<p>What the output proves:</p>
+<ol>
+<li><strong>DST</strong>: on 8 March 2026 New York has no 02:30, so the run moves to 03:30. The next day it is back to 02:30.</li>
+<li><strong>Claiming</strong>: three nodes race over 1,001 due jobs, and not one execution is claimed twice — the same guarantee <code>FOR UPDATE SKIP LOCKED</code> gives you.</li>
+<li><strong>Idempotency</strong>: five messages were delivered twice, but there are exactly 1,000 real runs. The <code>execution_id</code> check turned the duplicates into no-ops.</li>
+<li><strong>Retries</strong>: the two flaky tenants succeed on attempt 3. The <code>broken</code> job fails 3 times and lands in the dead-letter queue instead of retrying forever.</li>
+<li><strong>Next run</strong>: after the 02:00 run on 4 October (IST), the next one is 5 October 02:00 IST.</li>
+</ol>
+<p>In a real Spring Boot service the pieces map like this: the claim loop is a <code>@Scheduled(fixedDelay = 1000)</code> method calling a repository with a native <code>FOR UPDATE SKIP LOCKED</code> query inside <code>@Transactional</code>; publishing uses the outbox (8.5 / 11.15); workers are <code>@KafkaListener</code> consumers; <code>CronExpression</code> from Spring computes the next time.</p>
+<h4>When would I use it?</h4>
+<ul>
+<li><strong>Use a distributed scheduler</strong> when you have many jobs (thousands to millions), per-tenant schedules, user-created schedules ("remind me in 3 days"), or runs that must survive machine failures.</li>
+<li><strong>Simpler options when the need is small:</strong></li>
+</ul>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>Need</th>
+<th>Simplest fit</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A few fixed jobs in one Spring service, must run once across replicas</td>
+<td><code>@Scheduled</code> + <strong>ShedLock</strong> (a DB lock per job name)</td>
+</tr>
+<tr>
+<td>Fixed jobs per service, on Kubernetes</td>
+<td><strong>Kubernetes CronJob</strong> (a new pod per run)</td>
+</tr>
+<tr>
+<td>Many jobs with JDBC persistence and clustering, inside a Java app</td>
+<td><strong>Quartz</strong> in clustered mode</td>
+</tr>
+<tr>
+<td>Long, multi-step workflows with timers and retries per step</td>
+<td><strong>Temporal</strong> (durable workflows)</td>
+</tr>
+<tr>
+<td>Data pipelines with dependencies between tasks (DAGs)</td>
+<td><strong>Airflow</strong></td>
+</tr>
+<tr>
+<td>"Do X in N minutes" once, at moderate scale</td>
+<td>Delayed messages (RabbitMQ delayed exchange, SQS delay) or a Redis sorted set</td>
+</tr>
+</tbody>
+</table></div>
+<p>In the interview, mention one of these and then say why you are designing your own: scale, multi-tenancy, or custom policies.</p>
+<h4>What can go wrong?</h4>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>Problem</th>
+<th>What you see</th>
+<th>Fix</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Double run</strong></td>
+<td>Points expired twice, two emails sent</td>
+<td>Atomic claim (<code>SKIP LOCKED</code> / leases) + UNIQUE <code>execution_id</code> + idempotent handlers</td>
+</tr>
+<tr>
+<td><strong>Lost run</strong></td>
+<td>Scheduler moved <code>next_run_at</code> but crashed before publishing</td>
+<td>Outbox in the same transaction; reaper re-queues QUEUED runs older than N minutes</td>
+</tr>
+<tr>
+<td><strong>Stuck run</strong></td>
+<td>Worker hung or died; run RUNNING forever</td>
+<td>Leases + heartbeats + reaper; per-job <code>timeout_sec</code></td>
+</tr>
+<tr>
+<td><strong>Missed runs after outage</strong></td>
+<td>Burst of catch-up runs, or silent gaps</td>
+<td>Per-job misfire policy (<code>RUN_ONCE</code> / <code>RUN_ALL</code> / <code>SKIP</code>)</td>
+</tr>
+<tr>
+<td><strong>Midnight thundering herd</strong></td>
+<td>33,000 runs/s spike, DB and downstream overload</td>
+<td>Jitter, pre-loading into Redis / timing wheel, rate limits per tenant</td>
+</tr>
+<tr>
+<td><strong>Time zone / DST bugs</strong></td>
+<td>Job runs at 03:30, or twice, or not at all</td>
+<td>Store zone name, compute next run in that zone, test gap and overlap dates</td>
+</tr>
+<tr>
+<td><strong>Clock skew between nodes</strong></td>
+<td>One node thinks a job is due early</td>
+<td>Use the database's <code>now()</code> as the single clock, not each node's clock</td>
+</tr>
+<tr>
+<td><strong>Retry storm</strong></td>
+<td>Downstream is down; all jobs retry together and keep it down</td>
+<td>Exponential backoff + jitter, a circuit breaker per downstream (8.7), DLQ</td>
+</tr>
+<tr>
+<td><strong>Noisy tenant</strong></td>
+<td>One tenant's million jobs delay everyone</td>
+<td>Per-tenant queues or concurrency caps (fairness)</td>
+</tr>
+<tr>
+<td><strong>Run-history table grows forever</strong></td>
+<td>Slow queries, huge DB</td>
+<td>Partition <code>job_runs</code> by month and drop old partitions (12.8)</td>
+</tr>
+</tbody>
+</table></div>
+<h4>Interview questions</h4>
+<p><strong>Q1. How do you ensure a job runs once even with multiple scheduler nodes?</strong> Two layers. First, claiming is atomic: schedulers select due rows with <code>FOR UPDATE SKIP LOCKED</code> (or own partitions through leases), create the run and move <code>next_run_at</code> forward in the same transaction — so a slot can be claimed only once. Second, delivery is still at-least-once (queue redelivery, worker crashes), so each run has an <code>execution_id</code> = job + scheduled time with a UNIQUE constraint, and handlers are idempotent. Together: effectively once.</p>
+<p><strong>Q2. How do you scale to millions of near-term jobs?</strong> Keep definitions in a DB with a partial index on <code>next_run_at</code>. Partition jobs into buckets by hash and give each scheduler a lease on some buckets. Pre-load jobs due in the next few minutes into a Redis sorted set or a timing wheel so the DB is not polled every second. Publish runs to a queue and scale workers separately based on queue lag. Spread fixed-time peaks with jitter.</p>
+<p><strong>Q3. A worker picks up a job and dies halfway. What happens?</strong> The worker holds a lease on the run and renews it with heartbeats. When it dies, the lease expires; a reaper finds the run and re-queues it as the next attempt. Because the handler is idempotent and saves checkpoints, the retry continues safely without double effects.</p>
+<p><strong>Q4. The whole system was down for 4 hours. What happens to jobs that should have run?</strong> Their <code>next_run_at</code> is in the past, so they are due immediately. The per-job misfire policy decides: run once to catch up (cleanup jobs), run every missed slot (per-period billing), or skip to the next slot (time-sensitive notifications). Also throttle the catch-up so the backlog doesn't overload downstream systems.</p>
+<p><strong>Q5. How do you handle time zones and daylight saving time?</strong> Store the IANA zone name with the job and always store <code>next_run_at</code> in UTC. Compute the next time with the cron expression in the job's zone, then convert to UTC. Define policy for the DST gap (move forward) and overlap (run at the first occurrence) and test both dates.</p>
+<p><strong>Q6. Why put a queue between schedulers and workers?</strong> It separates "when" from "how". Schedulers stay small and fast; workers can be slow, many and autoscaled. The queue absorbs peaks, gives retries and a DLQ, and lets you route jobs by priority or tenant. Without it, a slow job would block the scheduler loop and delay every other job.</p>
+<p><strong>Q7. When would you not build this, and use something off the shelf?</strong> For a few fixed jobs in one service, <code>@Scheduled</code> + ShedLock or a Kubernetes CronJob is enough. For long multi-step workflows, Temporal; for data pipelines with dependencies, Airflow; for clustered Java scheduling at moderate scale, Quartz. Build your own when you need millions of user-defined, multi-tenant schedules with custom misfire, fairness and retry policies.</p>
+<h2 id="s13-13">13.13 Ride Matching and Nearby Search (Uber, delivery partner assignment)</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> Keep every driver's latest location in memory, grouped into map cells. When a rider asks, look in nearby cells, rank drivers by real travel time, and lock one driver before offering the ride so two riders never get the same driver.</p>
+<p><strong>Functional</strong> (what it must do):</p>
+<ul>
+<li>Drivers send their location every few seconds.</li>
+<li>Riders request rides.</li>
+<li>Match the nearest suitable driver who is free.</li>
+<li>Track the trip.</li>
+</ul>
+<p><strong>Non-functional</strong> (how well it must do it):</p>
+<ul>
+<li>Match within 1–2 seconds.</li>
+<li>Handle a huge rate of location writes.</li>
+<li>High availability for each city.</li>
+</ul>
+<p>This question tests geo-indexing (searching by location), keeping hot state in memory, atomic assignment (all-or-nothing, so no clash) and partitioning by city. (The LLD version is in 10.17.)</p>
+<h4>What is happening internally?</h4>
+<p><strong>Estimates:</strong> 1M active drivers × 1 update every 4 s = 250k writes per second. This is too many for a disk database. So keep current locations in memory.</p>
+<p>A <em>geo index</em> is a structure that quickly answers "who is near this point?". The main options:</p>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>Geo index</th>
+<th>Idea</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Geohash</td>
+<td>Turn lat/lng into a base32 string; a longer shared prefix ≈ closer together</td>
+<td>Redis GEO (<code>GEOADD</code>, <code>GEOSEARCH</code>); at cell edges, also check the neighbouring cells</td>
+</tr>
+<tr>
+<td>Quadtree</td>
+<td>Keep splitting busy areas into four smaller boxes</td>
+<td>Adjusts to how crowded an area is; in-memory</td>
+</tr>
+<tr>
+<td>H3 / S2</td>
+<td>Hexagon cells / cells on a sphere</td>
+<td>Every neighbour is the same distance away; good for surge pricing per cell</td>
+</tr>
+</tbody>
+</table></div>
+<div class="hl"><pre><span></span><code>Driver app → location service (WebSocket/UDP) → in-memory geo index per city shard (Redis GEO or custom)
+                                              └→ Kafka location stream → trip tracking, ETA, analytics
+Rider request → matching service: candidates in nearby cells (expand rings until K found)
+   → rank by ETA (routing engine), rating, acceptance probability → offer to driver (10–15 s timeout)
+   → atomic reserve (AVAILABLE → OFFERED) to prevent double assignment → accept → trip ACCEPTED
+Trip service (state machine, Postgres) · Pricing service (surge per H3 cell from supply/demand)
+</code></pre></div>
+
+<p>The flow:</p>
+<ol>
+<li>The driver app sends locations (over WebSocket or UDP) to the location service.</li>
+<li>The location service updates an in-memory geo index for that city's shard (Redis GEO or a custom index).</li>
+<li>It also writes the location stream to Kafka, for trip tracking, ETA and analytics.</li>
+<li>A rider request goes to the matching service. It finds candidates in nearby cells. If it doesn't find K drivers, it expands outward ring by ring.</li>
+<li>It ranks candidates by ETA (from a routing engine), rating and how likely they are to accept.</li>
+<li>It atomically reserves the top driver: AVAILABLE → OFFERED. This prevents double assignment.</li>
+<li>It offers the ride, with a 10–15 s timeout.</li>
+<li>If the driver accepts, the trip becomes ACCEPTED.</li>
+<li>The trip service keeps the trip's state machine in Postgres. The pricing service sets surge per H3 cell, based on supply and demand.</li>
+</ol>
+<h4>How does it work?</h4>
+<ol>
+<li>A request comes in.</li>
+<li>Search nearby — about 1 km first, then wider if needed.</li>
+<li>Pick the top candidates by ETA.</li>
+<li>Reserve the first one atomically.</li>
+<li>Send the offer.</li>
+<li>If the driver declines or the timer runs out, release them and try the next one.</li>
+<li>When a driver accepts, create the trip and notify the rider.</li>
+</ol>
+<h4>Example</h4>
+<p>A rider in Gurugram Sector 29 requests a ride:</p>
+<ol>
+<li>Search the rider's H3 cell plus 1 ring around it → 14 free drivers.</li>
+<li>Rank them by ETA using the routing service.</li>
+<li>Driver D7 (3 min away) is reserved and offered the ride. D7 declines.</li>
+<li>Driver D2 (4 min away) is reserved next, and accepts within 6 s.</li>
+<li>The trip is created.</li>
+</ol>
+<h4>When would I use it?</h4>
+<p>Ride-hailing, assigning food and grocery delivery partners (13.18), assigning field-force visits and planning routes (related to your Route Optimization product), and any "find what's near me" search.</p>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Double assignment</strong> if you don't reserve the driver atomically.</li>
+<li><strong>Using straight-line distance instead of road ETA.</strong> A driver across a river may look close but be 20 minutes away.</li>
+<li><strong>GPS noise.</strong> Snap locations to the nearest road.</li>
+<li><strong>Hot cells at big events</strong> — too many people in one cell. Use smaller cells and surge pricing.</li>
+<li><strong>Queries that cross cities.</strong> Partition by city to avoid them.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. How do you find nearby drivers efficiently?</strong> Keep a geo index (geohash, H3 or quadtree) of current locations in memory. Search the rider's cell first, then the rings of neighbouring cells.</p>
+<p><strong>Q2. How do you prevent two riders getting the same driver?</strong> Change the driver's status atomically before sending the offer — with Redis SET NX, CAS (compare-and-set), or a conditional update. Release the driver if they decline or the offer times out.</p>
+<p><strong>Q3. How would you handle 250k location updates per second?</strong> Keep only the latest location per driver, in memory, sharded by city. Write the stream to Kafka for history. Avoid a synchronous DB write for each update.</p>
+<h2 id="s13-14">13.14 Incentive Engine at Scale (your system)</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> Field reps earn bonuses for hitting targets. Show them their progress quickly using live streaming numbers, but calculate the actual money carefully, at month end, from the original data.</p>
+<p><strong>Functional requirements</strong> (what the system must do):</p>
+<ul>
+<li>Tenants (client companies) define incentive schemes for field reps and distributors, per period. A scheme sets targets on sales, visits, coverage or focus SKUs (products the company wants to push).</li>
+<li>Show live progress towards each target.</li>
+<li>Calculate payouts when the period closes.</li>
+<li>Explain how each result was calculated.</li>
+<li>Handle data that arrives late or gets corrected.</li>
+</ul>
+<p><strong>Non-functional requirements</strong> (how well it must do it):</p>
+<ul>
+<li>700+ tenants and hundreds of thousands of users.</li>
+<li>Progress must be fresh within a few minutes.</li>
+<li>Payouts must be exactly correct and auditable (anyone can check how they were reached).</li>
+<li>Heavy load at month end.</li>
+</ul>
+<p>This question tests streaming vs batch processing, rules engines (10.12), versioning, and <em>multi-tenant fairness</em> — making sure one big client cannot slow down everyone else.</p>
+<h4>What is happening internally?</h4>
+<p>The flow, top to bottom:</p>
+<ol>
+<li>Source events (orders, visits, new outlets) are captured with CDC (Change Data Capture — reading every change from the database log) or app events, and sent to Kafka.</li>
+<li>A stream job keeps running counters per (tenant, user, period, metric). It stores them as aggregates in Postgres or ClickHouse.</li>
+<li>The scheme evaluation service (a rules engine) re-checks a user when a metric changes, or every N minutes. It reads the versioned scheme definitions (cached), walks the condition tree and saves a progress snapshot.</li>
+<li>A cached progress API serves mobile dashboards and leaderboards (13.9).</li>
+<li>At period close, the system freezes the data cut-off. Then a batch job recalculates every user from the source of truth.</li>
+<li>This produces payout records in a ledger. They go through a maker-checker approval (one person prepares, another approves). Then they are exported to payroll or a wallet.</li>
+</ol>
+<div class="hl"><pre><span></span><code>Sources (orders, visits, outlet onboarding) → CDC/events → Kafka
+  → metric aggregation (stream): per (tenant, user, period, metric) counters → Postgres/ClickHouse aggregates
+  → scheme evaluation service (rules engine): on metric change or every N minutes per user
+        reads versioned scheme definitions (cached) → evaluates the condition tree → writes a progress snapshot
+  → progress API (cached) → mobile dashboards, leaderboards (13.9)
+Period close: freeze the data cut-off → recompute every user from the source of truth (batch)
+  → payout records (ledger) → approval workflow (maker-checker) → payroll/wallet export
+</code></pre></div>
+
+<h4>How does it work?</h4>
+<ul>
+<li><strong>Streaming for progress, batch for money.</strong> Small, quick updates (incremental updates) keep the app responsive. But at period close, a full batch recalculation is the final, official answer. It correctly includes late and corrected data.</li>
+<li><strong>Rule versioning.</strong> A period is always evaluated with the scheme version that was active when the period started. Editing a scheme creates a new version; it does not overwrite the old one.</li>
+<li><strong>Idempotent, re-runnable payouts.</strong> <em>Idempotent</em> means running it twice gives the same result as running it once. Each payout is keyed by (scheme, user, period, version). A re-run replaces draft payouts, and it never creates a duplicate of an approved payout.</li>
+<li><strong>Explainability.</strong> The evaluation trace (the step-by-step record of how the rules were checked) is saved with each payout.</li>
+<li><strong>Fairness.</strong> Each tenant gets its own queue and quota. So one large tenant's recalculation cannot starve the others.</li>
+</ul>
+<p>Think of a school exam. During the term, you see your running marks on a notice board — quick but rough. The final report card is made carefully at the end, from the actual answer sheets.</p>
+<h4>Example</h4>
+<ol>
+<li>By the 20th, a rep has sold ₹62,000 of focus SKUs.</li>
+<li>The progress card shows 124% of target, and "4 more new outlets to reach the next slab".</li>
+<li>On the 28th, an order is returned. An event reduces the rep's sales.</li>
+<li>At period close, the batch job recalculates from the source data.</li>
+<li>The payout uses the corrected figure. The trace is attached, so the rep's manager can see exactly how it was calculated.</li>
+</ol>
+<h4>When would I use it?</h4>
+<p>Any calculation driven by rules over summed-up activity. Examples: sales incentives and commissions, loyalty tier evaluation, SLA and bonus calculations, gamification.</p>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Paying from streaming counters.</strong> Counters drift because of duplicate events or late data. Fix: recalculate from the source at close.</li>
+<li><strong>Editing rules mid-period without versions.</strong> Fix: version every scheme change.</li>
+<li><strong>Evaluating on raw transaction tables for every request.</strong> This is too slow. Fix: pre-aggregate (keep summed-up totals ready).</li>
+<li><strong>Month-end load spikes.</strong> Fix: autoscale and partition work by tenant.</li>
+<li><strong>Payouts nobody can explain.</strong> This creates a big support burden. Fix: store the trace.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. Why both streaming and batch?</strong> Streaming gives users timely progress. Batch over the source of truth guarantees payouts that are correct and can be reproduced, even when data arrives late or gets corrected.</p>
+<p><strong>Q2. How do you handle a scheme changed mid-month?</strong> I version the scheme definitions. Each period is evaluated with the version that was effective for it. I also show users which version applies to them.</p>
+<h2 id="s13-15">13.15 Instagram (photo sharing + feed)</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> The phone uploads the photo straight to cloud storage, background workers make smaller copies, and a CDN serves those copies from servers near the user. The feed is the same feed design as 13.4.</p>
+<p><strong>Functional requirements:</strong></p>
+<ul>
+<li>Upload photos and short videos with captions.</li>
+<li>Follow users.</li>
+<li>Home feed.</li>
+<li>Likes and comments.</li>
+<li>Profile grid.</li>
+<li>Stories that expire after 24 hours.</li>
+</ul>
+<p><strong>Non-functional requirements:</strong></p>
+<ul>
+<li>500M DAU (daily active users).</li>
+<li>Feed loads in under 200 ms.</li>
+<li>Uploads are visible within seconds.</li>
+<li>Read-heavy: far more viewing than posting.</li>
+<li>Media delivered fast all over the world.</li>
+</ul>
+<p>It tests the media pipeline, plus the feed design (13.4).</p>
+<h4>What is happening internally?</h4>
+<p><strong>Estimates</strong>:</p>
+<ul>
+<li>100M uploads a day ≈ 1,200 uploads per second.</li>
+<li>About 3 MB per upload, including resized versions → about 300 TB of media a day.</li>
+<li>Feed reads: about 115k QPS (queries per second).</li>
+<li>About 100 GB of metadata a day.</li>
+</ul>
+<div class="hl"><pre><span></span><code>Client → POST /media/upload-url → media service returns a PRE-SIGNED URL
+Client → PUT bytes directly to object storage            (app servers never proxy large files)
+Storage event → Kafka media.uploaded → processing workers: virus scan, EXIF strip, resize (thumb/320/640/1080), WebP/AVIF, video transcode
+Client → POST /posts {mediaIds, caption} → post service → posts DB (sharded by post_id) → PostCreated
+PostCreated → feed fan-out (hybrid, 13.4) · hashtag/search indexer · notifications
+Reads: CDN serves all media; feed returns post IDs → hydrate from post cache → media URLs point to the CDN
+</code></pre></div>
+
+<p>In plain steps:</p>
+<ol>
+<li>The client asks the media service for an upload URL. It gets a <em>pre-signed URL</em> — a temporary link that allows uploading one file straight to storage.</li>
+<li>The client uploads the bytes directly to object storage. App servers never pass large files through themselves.</li>
+<li>Storage fires an event to Kafka. Processing workers scan for viruses, strip EXIF data (hidden photo info like GPS location), resize to several sizes, convert to WebP/AVIF, and transcode videos.</li>
+<li>The client creates the post with the media IDs and caption. The post service saves it (sharded by <code>post_id</code>) and publishes <code>PostCreated</code>.</li>
+<li><code>PostCreated</code> triggers feed fan-out (hybrid, 13.4), the hashtag/search indexer and notifications.</li>
+<li>On reads, the CDN serves all media. The feed returns post IDs, which are filled in with details from the post cache (<em>hydration</em>). Media URLs point to the CDN.</li>
+</ol>
+<p><strong>Data:</strong></p>
+<ul>
+<li>Follows: <code>follower_id, followee_id</code>, indexed in both directions.</li>
+<li>Posts: keyed by <code>post_id</code>, plus a <code>user_id → post_ids</code> timeline for profile grids.</li>
+<li>Likes: sharded counters (one count split across several keys), plus a <code>likes(post_id, user_id)</code> table.</li>
+<li>Comments: partitioned by <code>post_id</code>.</li>
+<li>Stories: in a TTL store (a store where each item has an expiry time and is deleted automatically).</li>
+</ul>
+<h4>How does it work?</h4>
+<p><strong>Upload:</strong></p>
+<ol>
+<li>The client gets a pre-signed URL.</li>
+<li>It uploads directly to storage.</li>
+<li>Processing creates the size variants in the background (asynchronously).</li>
+<li>Post creation refers to the media IDs.</li>
+<li>Fan-out delivers the post to followers' feeds.</li>
+</ol>
+<p><strong>Read:</strong></p>
+<ol>
+<li>Get the feed post IDs.</li>
+<li>Hydrate them (fill in details).</li>
+<li>Return CDN URLs. The client picks the image size that fits its screen.</li>
+</ol>
+<h4>Example</h4>
+<ol>
+<li>A user posts a 4 MB photo.</li>
+<li>The direct upload to Blob storage takes 1.5 s on 4G.</li>
+<li>Processing creates 4 sizes in 2 s.</li>
+<li>The post appears in followers' feeds within about 3 s.</li>
+<li>95% of image bytes are served from the CDN edge (servers close to the user).</li>
+</ol>
+<h4>When would I use it?</h4>
+<p>Any platform where users upload media. Also product catalogues with images, and Perfect Store photo audits. The pattern is the same: direct upload + background processing + CDN.</p>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Passing uploads through app servers.</strong> This chokes them.</li>
+<li><strong>Processing synchronously.</strong> The post is blocked until processing ends.</li>
+<li><strong>Hot posts overwhelming counters.</strong> Fix: shard the counters and cache them.</li>
+<li><strong>Privacy.</strong> Private accounts must be checked during hydration.</li>
+<li><strong>Stories not expiring.</strong> Fix: use a TTL.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. How do you handle uploads at scale?</strong> Clients upload directly to object storage using pre-signed URLs. Storage events trigger background processing pipelines. Metadata goes into the database, and the media is delivered through a CDN.</p>
+<p><strong>Q2. How do you count likes on a viral post?</strong> I use sharded counters in Redis and add them up into the database from time to time. A separate likes table answers "did I like it?".</p>
+<h2 id="s13-16">13.16 YouTube / Netflix (video upload and streaming)</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> Chop each video into small pieces, convert every piece into many qualities in parallel, and let the player pick a quality for each piece based on how fast the internet is right now.</p>
+<p><strong>Functional requirements:</strong></p>
+<ul>
+<li>Upload videos.</li>
+<li>Transcode them (convert them) into several resolutions.</li>
+<li>Stream with adaptive bitrate — the quality changes automatically with network speed.</li>
+<li>Search.</li>
+<li>View counts.</li>
+</ul>
+<p><strong>Non-functional requirements:</strong></p>
+<ul>
+<li>Videos start fast and rarely pause to buffer (rebuffer), all over the world.</li>
+<li>Processing is allowed to take minutes.</li>
+<li>Huge storage, and huge egress (data sent out to viewers).</li>
+</ul>
+<p>It tests large-file pipelines, parallel transcoding and CDN strategy.</p>
+<h4>What is happening internally?</h4>
+<p><strong>Estimates</strong>:</p>
+<ul>
+<li>500 hours of video uploaded every minute.</li>
+<li>1 hour of 1080p ≈ 2–3 GB.</li>
+<li>All the versions (<em>renditions</em>) together ≈ 2× the original. So petabytes of new storage are needed every day.</li>
+<li>Playback egress is the biggest cost. So the CDN carries about 95%+ of the bytes.</li>
+</ul>
+<div class="hl"><pre><span></span><code>Upload: resumable chunked upload (pre-signed URLs, e.g. 8 MB parts) → object storage (originals)
+   → video.uploaded → transcoding DAG: split into segments → parallel encode per segment × resolution (240p…4K) × codec (H.264/VP9/AV1)
+   → package HLS/DASH (2–6 s segments + manifests) → thumbnails, captions → store renditions → metadata READY → notify
+Playback: Video API (metadata, manifest URL, signed CDN token) → CDN edge serves segments
+   player measures bandwidth and switches rendition per segment (adaptive bitrate)
+Views: client beacons → Kafka → stream aggregation → approximate counts
+</code></pre></div>
+
+<p>In plain steps:</p>
+<ol>
+<li><strong>Upload.</strong> The video is uploaded in chunks (for example 8 MB parts) using pre-signed URLs. The upload is <em>resumable</em> — if the network drops, it continues from where it stopped. The original goes into object storage.</li>
+<li><strong>Transcode.</strong> A <code>video.uploaded</code> event starts a transcoding DAG (a directed acyclic graph — a set of tasks with a fixed order and no loops). The video is split into segments. Each segment is encoded in parallel, for each resolution (240p…4K) and each codec (H.264/VP9/AV1).</li>
+<li><strong>Package.</strong> The output is packaged as HLS/DASH (streaming formats): 2–6 s segments plus <em>manifests</em> (index files that list the segments and qualities). Thumbnails and captions are made. Renditions are stored, the metadata is marked READY, and the uploader is notified.</li>
+<li><strong>Playback.</strong> The Video API returns metadata, the manifest URL and a signed CDN token. The CDN edge serves the segments. The player measures bandwidth and switches quality per segment. This is <em>adaptive bitrate</em>.</li>
+<li><strong>Views.</strong> The client sends small "I watched" pings (<em>beacons</em>) to Kafka. A stream job adds them up into approximate counts.</li>
+</ol>
+<h4>How does it work?</h4>
+<p><strong>Segment-level parallelism.</strong> One worker encoding a 2-hour video takes a long time. Split into segments, many workers share the work, so it finishes in minutes. If one segment fails, only that segment is retried.</p>
+<p><strong>Adaptive bitrate.</strong></p>
+<ol>
+<li>The manifest lists all available qualities (renditions).</li>
+<li>Before each segment, the player checks the measured download speed and how much video it has buffered.</li>
+<li>It picks the best quality it can safely play for that segment.</li>
+</ol>
+<p>Think of a car's gears. On an open highway you shift up; in traffic you shift down. The player does the same with video quality, segment by segment.</p>
+<h4>Example</h4>
+<ol>
+<li>Someone uploads a 10-minute 1080p video (~400 MB).</li>
+<li>The network drops at 60%. Because the upload is resumable, it continues from there.</li>
+<li>The video is split into 100 six-second segments × 5 renditions = 500 encode tasks.</li>
+<li>200 workers process them, so it is ready in about 2 minutes.</li>
+<li>A viewer on a weak network starts at 360p. After 10 seconds, the player climbs to 720p.</li>
+</ol>
+<h4>When would I use it?</h4>
+<p>Video platforms, training videos for field forces, and any pipeline for large media (audio, documents).</p>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Non-resumable uploads.</strong> These fail often on mobile networks.</li>
+<li><strong>Serial transcoding.</strong> Encoding one piece after another is far too slow.</li>
+<li><strong>Origin overload on viral content.</strong> Fix: pre-warm the CDN, and add an <em>origin shield</em> (a middle cache layer that protects the origin servers).</li>
+<li><strong>Exact view counts at huge scale.</strong> These are too costly. Fix: count approximately, and deduplicate per session.</li>
+<li><strong>Storage cost.</strong> Fix: move old videos to cold (cheaper) storage tiers, and keep fewer renditions for videos that are rarely watched.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. How does adaptive bitrate streaming work?</strong> The video is encoded into several renditions (qualities). Each is split into short segments, listed in a manifest. The player chooses a rendition for each segment based on bandwidth and how full its buffer is.</p>
+<p><strong>Q2. How do you transcode quickly?</strong> Split the video into segments. Encode them in parallel across a fleet of workers, organised as a DAG. Then package and publish.</p>
+<h2 id="s13-17">13.17 Twitter / X — what's specific beyond the generic feed</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> "Design Twitter" is the normal feed design from 13.4 plus a few Twitter-only parts — special tweet IDs, fast search, and trending topics. Show you can adapt a known design to them.</p>
+<p>When interviewers say "design Twitter", they usually expect the feed (13.4) plus Twitter-specific parts: timelines, IDs, search and trending.</p>
+<p>It tests whether you can adapt a design you know to the details of a specific product.</p>
+<h4>What is happening internally?</h4>
+<ul>
+<li><strong>Timelines.</strong> There are two kinds:</li>
+<li>The <em>home timeline</em> — what you see from people you follow. It is a fan-out cache of tweet IDs per user in Redis, about 800 entries.</li>
+<li>The <em>user timeline</em> — one user's own tweets, read from the tweet store.</li>
+<li>Celebrities' tweets are not fanned out. They are merged in when you read your timeline.</li>
+<li><strong>Tweet IDs.</strong> Snowflake IDs (11.22). They are unique, roughly sorted by time, and generated without servers needing to coordinate.</li>
+<li><strong>Search.</strong> A near-real-time <em>inverted index</em> (a map from each word to the tweets containing it), built on Lucene, in the Earlybird style. It is fed from the tweet stream. Recent data stays in memory; older data is in larger indexes.</li>
+<li><strong>Trending.</strong> A stream job counts hashtags and terms over <em>sliding windows</em> (for example, the last 5 minutes, moving forward continuously), per region. It compares current counts with a baseline. What matters is <em>velocity</em> — how fast mentions are rising — not raw volume. A Count-Min Sketch (a small, approximate counting structure) finds the most frequent items (<em>heavy hitters</em>).</li>
+<li><strong>Counters.</strong> Likes and retweets use sharded counters, saved to the database in the background.</li>
+</ul>
+<p>Trending is like the noise level in a stadium. A crowd that is always loud is not news. A sudden roar is.</p>
+<h4>How does it work?</h4>
+<ol>
+<li>A tweet gets a Snowflake ID.</li>
+<li>It is saved in the tweet store.</li>
+<li>It is fanned out to followers' timelines (or skipped, for celebrities).</li>
+<li>The search indexer adds it to the index.</li>
+<li>The trending stream counts its terms.</li>
+<li>Mentioned users get notifications.</li>
+</ol>
+<h4>Example</h4>
+<ol>
+<li>It is a cricket final. Mentions of "#INDvAUS" in Mumbai jump from 200/min to 40,000/min.</li>
+<li>Within 30 seconds, the trending job's velocity score spikes.</li>
+<li>The topic shows up in regional trends.</li>
+<li>Celebrity tweets reach followers through the read-time merge, so there are no fan-out storms.</li>
+</ol>
+<h4>When would I use it?</h4>
+<p>Social products, real-time topic detection, and any messaging system with many writes and large fan-out.</p>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Fan-out storms.</strong> One tweet triggers millions of timeline writes.</li>
+<li><strong>Spam taking over trends.</strong> Fix: rate limits and quality signals.</li>
+<li><strong>Search index lag.</strong> New tweets take too long to become searchable.</li>
+<li><strong>Inconsistent counters.</strong> Fix: accept eventual consistency (counts become correct after a short delay), and reconcile them later.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. How would you detect trending topics?</strong> A stream processor keeps sliding-window counts per term and per region. Each term is scored by how fast it is rising compared with its normal baseline. Approximate structures like Count-Min Sketch keep this cheap.</p>
+<h2 id="s13-18">13.18 Food Delivery (Swiggy / Zomato)</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> Fast search for restaurants, a careful and correct order flow, and smart timing so the delivery partner reaches the restaurant just as the food is ready — with each city handled separately.</p>
+<p><strong>Functional requirements:</strong></p>
+<ul>
+<li>Browse nearby restaurants and menus.</li>
+<li>Place an order and pay.</li>
+<li>The restaurant accepts and prepares the food.</li>
+<li>Assign a delivery partner.</li>
+<li>Live tracking and ETA (estimated time of arrival).</li>
+<li>Ratings.</li>
+</ul>
+<p><strong>Non-functional requirements:</strong></p>
+<ul>
+<li>Discovery (browsing) in under 300 ms.</li>
+<li>Ordering is strongly consistent — no lost orders and no duplicate orders.</li>
+<li>A partner is assigned within seconds.</li>
+<li>Lunch and dinner peaks of 5–10× normal traffic.</li>
+<li>City-level isolation — a problem in one city must not affect others.</li>
+</ul>
+<p>It combines search, ordering, payments, dispatch and real-time tracking.</p>
+<h4>What is happening internally?</h4>
+<p><strong>Estimates</strong>:</p>
+<ul>
+<li>3M orders a day, with a dinner peak of about 300 orders per second.</li>
+<li>300k active partners, each sending location every 5 s → about 60k location writes per second.</li>
+</ul>
+<div class="hl"><pre><span></span><code>Discovery: app → listing/search service → Elasticsearch (geo + cuisine + availability) + Redis (menus, open/closed)
+Ordering:  app → cart → order service (Postgres, idempotency key) → payment (13.8) → OrderPlaced
+           order state machine: PLACED → ACCEPTED → PREPARING → READY → PICKED_UP → DELIVERED (or CANCELLED + refund)
+Restaurant: tablet app ◄ order push (WebSocket/FCM) → accept/reject, prep-time estimate
+Dispatch:  OrderAccepted → assignment service (per city): candidates from the geo index near the restaurant (13.13)
+           → score by ETA-to-restaurant vs food-ready time, partner load, batching opportunities → offer → atomic reserve
+Tracking:  partner app → location service → geo index + Kafka → customer app via WebSocket/SSE (throttled updates)
+ETA:       ML model (prep time + travel time + handover), re-estimated on each state change
+</code></pre></div>
+
+<p>In plain words:</p>
+<ul>
+<li><strong>Discovery.</strong> The app calls the listing/search service. Elasticsearch handles location, cuisine and availability. Redis holds menus and open/closed status.</li>
+<li><strong>Ordering.</strong> Cart → order service (Postgres, with an <em>idempotency key</em> — a unique request ID, so a repeated request does not create a second order) → payment (13.8) → <code>OrderPlaced</code> event.</li>
+<li><strong>Order states.</strong> PLACED → ACCEPTED → PREPARING → READY → PICKED_UP → DELIVERED. Or CANCELLED, with a refund.</li>
+<li><strong>Restaurant.</strong> Its tablet app receives the order by push (WebSocket or FCM). The restaurant accepts or rejects and gives a prep-time estimate.</li>
+<li><strong>Dispatch.</strong> <code>OrderAccepted</code> goes to the city's assignment service. It finds nearby partners from the geo index (13.13). It scores them by: time to reach the restaurant vs food-ready time, partner's current load, and chances to batch orders. Then it makes an offer and reserves the partner atomically (all-or-nothing, so two orders can't grab the same partner).</li>
+<li><strong>Tracking.</strong> The partner app sends locations to the location service. These go into the geo index and Kafka, and on to the customer app over WebSocket/SSE, with updates throttled (limited in rate).</li>
+<li><strong>ETA.</strong> An ML model adds prep time + travel time + handover time. It re-estimates on every state change.</li>
+</ul>
+<h4>How does it work?</h4>
+<ol>
+<li>The order is placed.</li>
+<li>The restaurant accepts, with a prep time of 15 minutes.</li>
+<li>The dispatcher waits, then assigns a partner who will arrive just as the food is ready.
+   - Assign too early, and the partner wastes time waiting.
+   - Assign too late, and the food goes cold.</li>
+<li>The partner gets the offer and accepts.</li>
+<li>Pickup → live tracking → delivery.</li>
+<li>The partner and the restaurant are paid.</li>
+</ol>
+<h4>Example</h4>
+<ol>
+<li>It is dinner peak in Gurugram: 4,000 orders in 30 minutes.</li>
+<li>The city's dispatch shard sees two orders from the same restaurant going in the same direction. It batches both onto one partner.</li>
+<li>A restaurant has not accepted an order for 5 minutes. The order is auto-cancelled, with an immediate refund.</li>
+<li>A partner goes offline mid-route. The system reassigns the order.</li>
+</ol>
+<h4>When would I use it?</h4>
+<p>Hyperlocal delivery, quick commerce, field-service dispatch, and B2B order-to-delivery flows for distributors.</p>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Duplicate orders from a double tap.</strong> Fix: idempotency keys.</li>
+<li><strong>Stale menu stock.</strong> Fix: invalidate the cache within seconds.</li>
+<li><strong>One partner assigned twice.</strong> Fix: atomic reserve.</li>
+<li><strong>Peak overload.</strong> Fix: buffer in Kafka, autoscale, and switch off non-essential features (graceful degradation).</li>
+<li><strong>No auto-cancel or reassignment paths.</strong> Orders get stuck.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. How do you decide when to assign a delivery partner?</strong> I use the predicted food-ready time and the partner's travel time, so the partner arrives just as the food is ready. I re-check this as the estimates change.</p>
+<p><strong>Q2. Why partition by city?</strong> Almost every operation stays inside one city. Partitioning by city limits the <em>blast radius</em> — how far a failure spreads — and lets each city scale on its own.</p>
+<h2 id="s13-19">13.19 E-commerce Checkout and Flash Sales (Flipkart Big Billion Days)</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> Never sell more than you have. For a flash sale, stop the crowd before it reaches the database — use a waiting room and a fast Redis counter, so only about as many buyers as there are items ever get through.</p>
+<p><strong>Functional requirements:</strong></p>
+<ul>
+<li>Browse and search.</li>
+<li>Cart.</li>
+<li>Checkout with inventory reservation (holding stock for a buyer for a while).</li>
+<li>Payment.</li>
+<li>Order creation.</li>
+<li>Flash sales: limited stock that goes on sale at a fixed time.</li>
+</ul>
+<p><strong>Non-functional requirements:</strong></p>
+<ul>
+<li>Never oversell.</li>
+<li>Checkout must stay up at 10–50× normal traffic when a sale starts.</li>
+<li>Browsing may be eventually consistent (slightly out of date for a short time).</li>
+<li>Payments must be correct.</li>
+</ul>
+<p>It tests inventory concurrency (many buyers fighting for the same stock), traffic shaping (controlling how fast traffic reaches the backend) and sagas (multi-step flows where each step can be undone if a later step fails).</p>
+<h4>What is happening internally?</h4>
+<p><strong>Normal checkout</strong>:</p>
+<div class="hl"><pre><span></span><code>Cart (Redis/DB) → checkout: recompute price and promotions server-side (cart prices are only hints)
+  → inventory reservation:  UPDATE inventory SET reserved = reserved + q
+                            WHERE sku = ? AND available - reserved &gt;= q        (atomic; 1 row updated = success)
+  → order PENDING_PAYMENT + reservation with TTL (10–15 min)
+  → payment (13.8) → success: commit reservation → stock decrement → order CONFIRMED → fulfilment events
+                   → failure/timeout: release the reservation (a sweeper releases expired ones)
+</code></pre></div>
+
+<p>In plain steps:</p>
+<ol>
+<li>The cart lives in Redis or the database.</li>
+<li>At checkout, the server recalculates price and promotions itself. Prices in the cart are only hints — never trust them.</li>
+<li>Inventory is reserved with one conditional <code>UPDATE</code>. It only succeeds if enough stock is free. If exactly 1 row is updated, the reservation worked. This is <em>atomic</em> — it either fully happens or doesn't happen at all.</li>
+<li>The order is created as PENDING_PAYMENT, with a reservation that expires after 10–15 minutes (a TTL).</li>
+<li>Payment runs (13.8).
+   - <strong>Success:</strong> the reservation is committed, stock is reduced, the order becomes CONFIRMED, and fulfilment events go out.
+   - <strong>Failure or timeout:</strong> the reservation is released. A background <em>sweeper</em> job also releases any reservations that have expired.</li>
+</ol>
+<p><strong>Flash sale</strong> (1M users hit "Buy" for 10,000 units at 12:00:00):
+1. <strong>Absorb the spike before the database.</strong> Product pages are cached on the CDN. A <em>waiting room</em> (virtual queue) lets users in at a controlled rate. Per-user and per-device rate limits apply, and bots are detected and blocked.
+2. <strong>Pre-load stock into Redis.</strong> An atomic <code>DECR</code> (or a Lua script that checks and decrements in one step) decides admission fast. If the stock is still ≥ 0 after your decrement, you get a time-limited purchase token. Everyone else sees "sold out" immediately.
+3. <strong>Create orders asynchronously.</strong> Purchases from token holders are put in a queue. Workers create orders and reservations at a rate the database can handle. The database's conditional update is still the final guard against overselling.
+4. <strong>Reconcile.</strong> Unpaid tokens expire, and their stock is returned (<code>INCR</code>). After the sale, Redis and database counts are compared and fixed.
+5. <strong>Avoid hot rows.</strong> A <em>hot row</em> is one database row that everyone tries to lock at once. Split one SKU's stock into N buckets (rows or keys), and pick one at random. This spreads out the lock contention.</p>
+<p>Think of the Tatkal ticket rush. If all the crowd ran onto the platform at once, nobody would get anything. Instead, a token counter hands out exactly as many tokens as there are seats. Only token holders go on to book.</p>
+<h4>How does it work?</h4>
+<ul>
+<li><strong>Normal traffic</strong> goes straight to the reservation step, guarded by the database.</li>
+<li><strong>Flash-sale traffic</strong> is filtered first by the waiting room and then by Redis admission. So only about as many requests as there are units ever reach the order pipeline.</li>
+</ul>
+<h4>Example</h4>
+<ol>
+<li>10,000 phones are on sale, and 1M users want them.</li>
+<li>The waiting room admits 50k users a minute.</li>
+<li>Redis hands out exactly 10,000 tokens in about 40 seconds.</li>
+<li>9,200 buyers pay within 10 minutes.</li>
+<li>800 tokens expire. Their units go back to the pool for the next users the waiting room lets in.</li>
+<li>The database never sees more than about 2,000 order writes per second.</li>
+</ol>
+<h4>When would I use it?</h4>
+<p>Flash sales, ticket drops, limited-edition launches, coupon redemptions with a cap, and booking systems with scarce inventory.</p>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Locking a single inventory row for a million requests.</strong> Requests pile up behind the lock (<em>lock convoys</em>) and time out.</li>
+<li><strong>Trusting prices sent by the client.</strong></li>
+<li><strong>Charging the customer without creating an order.</strong> Fix: the payment-success event triggers an idempotent retry of order creation. If the order still can't be created, refund.</li>
+<li><strong>Bots buying everything.</strong></li>
+<li><strong>Cache and database stock drifting apart.</strong></li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. How do you prevent overselling?</strong> With an atomic conditional decrement or reservation at the source of truth — a database conditional update, or a Redis Lua script. I add reservation TTLs and reconciliation on top.</p>
+<p><strong>Q2. How do you survive the flash-sale spike?</strong> I shape the traffic before it reaches the backend, using a CDN, a waiting room and rate limits. Buyers are admitted through fast atomic counters in Redis. Orders are then created asynchronously, at a rate the system can sustain.</p>
+<p><strong>Q3. What if payment succeeds but order creation fails?</strong> The payment-success event drives an idempotent retry of order creation — retrying is safe and never creates two orders. If it still can't complete, the system refunds automatically.</p>
+<h2 id="s13-20">13.20 More systems to practise</h2>
+<p class="simple"><strong>In simple words:</strong> Use the same seven steps to practise these other common designs. For each one, the brackets show the key ideas the interviewer will look for.</p>
+<ul>
+<li><strong>Google Drive/Dropbox</strong> — chunked upload, dedupe (store each identical chunk only once), sync, conflict resolution.</li>
+<li><strong>Web crawler</strong> — the frontier (the queue of URLs still to visit), politeness (don't overload any one website), dedupe with Bloom filters (a small structure that quickly says "definitely not seen" or "maybe seen").</li>
+<li><strong>Distributed key-value store</strong> — the Dynamo paper.</li>
+<li><strong>Proximity service (Yelp)</strong> — find places near a location.</li>
+<li><strong>Stock exchange order matching</strong> — an in-memory order book per symbol, and a sequencer (puts all orders in one fixed order).</li>
+<li><strong>Google Docs collaborative editing</strong> — OT/CRDTs (techniques that merge edits from many people at the same time).</li>
+<li><strong>Hotel and airline booking.</strong></li>
+<li><strong>An API gateway.</strong></li>
+<li><strong>An LLM-powered assistant like NOVA</strong> — RAG pipeline (fetch relevant documents and give them to the model), tool calling, guardrails, latency budget, caching, evaluation.</li>
+</ul>

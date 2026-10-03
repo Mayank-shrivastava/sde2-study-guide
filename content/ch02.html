@@ -1,0 +1,864 @@
+<p>This is the Java topic that Indian product companies ask about the most. At SDE2 level, saying "HashMap is O(1)" is not enough. You must explain <em>why</em> it is fast. You must also say what makes it slow, and how each structure is laid out in memory.</p>
+<h2 id="s2-1">2.1 The collections hierarchy and choosing the right one</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> Java gives you a few standard "containers" for groups of data. Each one is good at some jobs and bad at others. Pick the one that matches how you will read and write the data.</p>
+<p>Every program keeps groups of things: orders, users, IDs. If you pick the wrong structure, two bad things can happen:</p>
+<ul>
+<li>A fast operation becomes slow. For example, an O(1) lookup (constant time — same speed for any size) turns into O(n) (time grows with the number of items).</li>
+<li>You waste memory.</li>
+</ul>
+<p>The Collections Framework gives you a small set of interfaces: <code>List</code>, <code>Set</code>, <code>Queue</code>, <code>Deque</code> and <code>Map</code>. Each interface has several implementations that you can swap. So you write your code against the interface. Then you pick the implementation based on your <em>access pattern</em> — how you will add, find and remove items.</p>
+<h4>What is happening internally?</h4>
+<p>Here is the family tree of the main types:</p>
+<div class="hl"><pre><span></span><code>Iterable
+└── Collection
+    ├── List   : ArrayList (resizable array) · LinkedList (doubly linked nodes) · CopyOnWriteArrayList
+    ├── Set    : HashSet (HashMap inside) · LinkedHashSet · TreeSet (TreeMap inside) · EnumSet (bit vector)
+    └── Queue  : PriorityQueue (binary heap) · ArrayDeque · BlockingQueues
+        └── Deque : ArrayDeque (circular array) · LinkedList
+Map (separate root): HashMap · LinkedHashMap · TreeMap (red-black tree) · EnumMap · ConcurrentHashMap · WeakHashMap
+</code></pre></div>
+
+<p>Under the hood, almost every class uses one of only four memory layouts:</p>
+<ol>
+<li>A <strong>contiguous array</strong> — items sit side by side in one block of memory.</li>
+<li><strong>Linked nodes</strong> — each item is in its own small object that points to the next one.</li>
+<li>A <strong>hash table</strong> — the key is turned into a number that picks a slot.</li>
+<li>A <strong>balanced tree</strong> — items are kept sorted in a tree that never gets too tall.</li>
+</ol>
+<p>If you know which layout sits under a class, you can work out its speed for each operation. You do not need to memorise tables.</p>
+<h4>How does it work?</h4>
+<p>Choose by asking yourself a few simple questions:</p>
+<ul>
+<li>Do I need the items kept in order?</li>
+<li>Must every item be unique?</li>
+<li>Do I look things up by a key?</li>
+<li>Do I need sorted order, or ranges like "between X and Y"?</li>
+<li>Do I need the smallest or largest item quickly?</li>
+<li>Will many threads use it at the same time?</li>
+</ul>
+<p>Then match your answer to this table. ("Amortised O(1)" means usually instant, sometimes slow, but fast on average.)</p>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>Requirement</th>
+<th>Pick</th>
+<th>Layout</th>
+<th>Key operations</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Indexed list, append</td>
+<td><code>ArrayList</code></td>
+<td>Array</td>
+<td>get O(1), add O(1) amortised</td>
+</tr>
+<tr>
+<td>Stack or queue</td>
+<td><code>ArrayDeque</code></td>
+<td>Circular array</td>
+<td>push/pop/offer/poll O(1)</td>
+</tr>
+<tr>
+<td>Key → value, fast</td>
+<td><code>HashMap</code></td>
+<td>Hash table</td>
+<td>get/put O(1) average</td>
+</tr>
+<tr>
+<td>Key → value in insertion/access order</td>
+<td><code>LinkedHashMap</code></td>
+<td>Hash table + linked list</td>
+<td>O(1) + ordered iteration</td>
+</tr>
+<tr>
+<td>Sorted keys, floor/ceiling/ranges</td>
+<td><code>TreeMap</code></td>
+<td>Red-black tree</td>
+<td>O(log n)</td>
+</tr>
+<tr>
+<td>Unique elements</td>
+<td><code>HashSet</code> / <code>TreeSet</code></td>
+<td>Same as maps</td>
+<td>O(1) / O(log n)</td>
+</tr>
+<tr>
+<td>Repeatedly take min/max</td>
+<td><code>PriorityQueue</code></td>
+<td>Binary heap</td>
+<td>offer/poll O(log n), peek O(1)</td>
+</tr>
+<tr>
+<td>Enum keys or flags</td>
+<td><code>EnumMap</code> / <code>EnumSet</code></td>
+<td>Array / bit vector</td>
+<td>O(1), tiny memory</td>
+</tr>
+<tr>
+<td>Shared across threads</td>
+<td><code>ConcurrentHashMap</code>, <code>CopyOnWriteArrayList</code>, <code>BlockingQueue</code></td>
+<td>Chapter 4</td>
+<td></td>
+</tr>
+</tbody>
+</table></div>
+<p>Coming from C#? Here is the mapping:</p>
+<ul>
+<li><code>List&lt;T&gt;</code> → <code>ArrayList</code></li>
+<li><code>Dictionary</code> → <code>HashMap</code></li>
+<li><code>SortedDictionary</code> → <code>TreeMap</code></li>
+<li><code>Queue</code> / <code>Stack</code> → <code>ArrayDeque</code></li>
+<li><code>PriorityQueue&lt;T,P&gt;</code> → <code>PriorityQueue&lt;T&gt;</code> with a <code>Comparator</code></li>
+<li><code>ConcurrentDictionary</code> → <code>ConcurrentHashMap</code></li>
+</ul>
+<h4>Example</h4>
+<p>Declare the variable with the interface type. Create the object with the implementation class.</p>
+<div class="hl"><pre><span></span><code><span class="n">List</span><span class="o">&lt;</span><span class="n">Order</span><span class="o">&gt;</span><span class="w"> </span><span class="n">recent</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">ArrayList</span><span class="o">&lt;&gt;</span><span class="p">();</span><span class="w">                 </span><span class="c1">// declare by interface, construct the implementation</span>
+<span class="n">Map</span><span class="o">&lt;</span><span class="n">String</span><span class="p">,</span><span class="w"> </span><span class="n">Long</span><span class="o">&gt;</span><span class="w"> </span><span class="n">pointsByOutlet</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">HashMap</span><span class="o">&lt;&gt;</span><span class="p">();</span>
+<span class="n">NavigableMap</span><span class="o">&lt;</span><span class="n">Instant</span><span class="p">,</span><span class="w"> </span><span class="n">Price</span><span class="o">&gt;</span><span class="w"> </span><span class="n">priceHistory</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">TreeMap</span><span class="o">&lt;&gt;</span><span class="p">();</span>
+<span class="n">Deque</span><span class="o">&lt;</span><span class="n">Integer</span><span class="o">&gt;</span><span class="w"> </span><span class="n">stack</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">ArrayDeque</span><span class="o">&lt;&gt;</span><span class="p">();</span>
+<span class="n">Queue</span><span class="o">&lt;</span><span class="kt">int</span><span class="o">[]&gt;</span><span class="w"> </span><span class="n">pq</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">PriorityQueue</span><span class="o">&lt;&gt;</span><span class="p">(</span><span class="n">Comparator</span><span class="p">.</span><span class="na">comparingInt</span><span class="p">(</span><span class="n">a</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">a</span><span class="o">[</span><span class="mi">0</span><span class="o">]</span><span class="p">));</span>
+</code></pre></div>
+
+<h4>When would I use it?</h4>
+<p>On every task. In an interview, say your choice and the reason in one sentence. For example: "I'll use a TreeMap, because I need the nearest earlier timestamp (<code>floorKey</code>) in O(log n)."</p>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Using legacy classes.</strong> <code>Vector</code>, <code>Stack</code> and <code>Hashtable</code> lock (synchronise) on every single call, so they are slow. Use <code>ArrayList</code>, <code>ArrayDeque</code>, and <code>HashMap</code> or <code>ConcurrentHashMap</code> instead.</li>
+<li><strong>Choosing <code>LinkedList</code> "because inserts are O(1)".</strong> This is usually wrong in practice (see 2.3).</li>
+<li><strong>Using a <code>List</code> for "is it present?" checks inside a loop.</strong> <code>list.contains</code> is O(n) — it checks items one by one. Inside a loop, the whole thing becomes O(n²). Use a <code>HashSet</code> instead.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. Which collection would you use for X?</strong> Decide by how the data will be accessed: random access by index → ArrayList; lookup by key → HashMap; sorted order or ranges → TreeMap; take the min or max again and again → PriorityQueue; first-in-first-out (FIFO) or last-in-first-out (LIFO) → ArrayDeque.</p>
+<p><strong>Q2. Why is Map not part of the Collection interface?</strong> A map holds key-value pairs and works through keys. It does not fit the <code>Collection</code> contract, which is about single elements added with <code>add(E)</code>. Instead, a map gives you collection <em>views</em> of itself: <code>keySet</code>, <code>values</code> and <code>entrySet</code>.</p>
+<h2 id="s2-2">2.2 ArrayList</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> An ArrayList is a normal array that grows by itself. When it is full, Java makes a bigger array and copies everything across.</p>
+<p>Arrays are the fastest structure when you read by index. But an array has a fixed size. <code>ArrayList</code> is a <em>growable</em> array. You get array speed, plus good <em>locality</em> (items sit close together in memory, so the CPU reads them fast). And it resizes itself automatically.</p>
+<h4>What is happening internally?</h4>
+<p>Inside, there are just two fields:</p>
+<div class="hl"><pre><span></span><code><span class="kd">transient</span><span class="w"> </span><span class="n">Object</span><span class="o">[]</span><span class="w"> </span><span class="n">elementData</span><span class="p">;</span><span class="w">   </span><span class="c1">// backing array (references to elements)</span>
+<span class="kd">private</span><span class="w"> </span><span class="kt">int</span><span class="w"> </span><span class="n">size</span><span class="p">;</span><span class="w">                 </span><span class="c1">// how many slots are used</span>
+</code></pre></div>
+
+<p><code>size</code> is how many items you have stored. <em>Capacity</em> is the length of the backing array — how many items fit before it must grow.</p>
+<div class="hl"><pre><span></span><code>size = 5, capacity = 10
+elementData: [ A | B | C | D | E | _ | _ | _ | _ | _ ]
+</code></pre></div>
+
+<p>Key facts:</p>
+<ul>
+<li><code>new ArrayList&lt;&gt;()</code> starts with a shared empty array. The <strong>first add</strong> creates the real array with capacity <strong>10</strong>.</li>
+<li>When the array is full, <code>grow()</code> makes a new array <strong>1.5× the old capacity</strong> (<code>old + (old &gt;&gt; 1)</code>). It copies everything with <code>Arrays.copyOf</code>, which is a fast native memory copy.</li>
+<li>The array holds <strong>references</strong> (pointers) to your objects, side by side. So looping over it is friendly to the CPU cache. The objects themselves live elsewhere on the heap.</li>
+<li>A counter called <code>modCount</code> goes up on every structural change (add or remove). Iterators use it to detect changes and fail fast (see 2.10).</li>
+</ul>
+<p>Think of a tiffin box with 10 compartments. When all are full, you buy a box with 15 compartments and move the food across.</p>
+<h4>How does it work?</h4>
+<ul>
+<li><code>get(i)</code>: check that <code>i</code> is in range, then return <code>elementData[i]</code> → <strong>O(1)</strong>.</li>
+<li><code>add(e)</code>: if <code>size == capacity</code>, grow first (an O(n) copy). Then store at position <code>size</code> and increase <code>size</code>. Growth is rare and the array grows by a multiple each time. So across n adds, the total copying is only O(n). That makes each add <strong>amortised O(1)</strong> — usually instant, occasionally slow, fast on average.</li>
+<li><code>add(i, e)</code> / <code>remove(i)</code>: <code>System.arraycopy</code> shifts all items after <code>i</code> right or left → <strong>O(n − i)</strong>.</li>
+<li><code>remove(Object)</code>: search item by item using <code>equals</code>, then shift → O(n).</li>
+<li><code>contains</code> / <code>indexOf</code>: check item by item → O(n).</li>
+</ul>
+<p>Why is the average add O(1)? Start at 10 and grow ×1.5 each time. The copies are 10 + 15 + 22 + … and this total stays below 3n. Spread over n adds, each add costs O(1) on average.</p>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="n">List</span><span class="o">&lt;</span><span class="n">Integer</span><span class="o">&gt;</span><span class="w"> </span><span class="n">ids</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">ArrayList</span><span class="o">&lt;&gt;</span><span class="p">(</span><span class="n">expectedCount</span><span class="p">);</span><span class="w">   </span><span class="c1">// pre-size: avoids ~log1.5(n) reallocations</span>
+<span class="k">for</span><span class="w"> </span><span class="p">(</span><span class="kt">int</span><span class="w"> </span><span class="n">i</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="p">;</span><span class="w"> </span><span class="n">i</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="mi">1_000_000</span><span class="p">;</span><span class="w"> </span><span class="n">i</span><span class="o">++</span><span class="p">)</span><span class="w"> </span><span class="n">ids</span><span class="p">.</span><span class="na">add</span><span class="p">(</span><span class="n">i</span><span class="p">);</span>
+
+<span class="n">ids</span><span class="p">.</span><span class="na">remove</span><span class="p">(</span><span class="mi">5</span><span class="p">);</span><span class="w">                      </span><span class="c1">// removes INDEX 5</span>
+<span class="n">ids</span><span class="p">.</span><span class="na">remove</span><span class="p">(</span><span class="n">Integer</span><span class="p">.</span><span class="na">valueOf</span><span class="p">(</span><span class="mi">5</span><span class="p">));</span><span class="w">     </span><span class="c1">// removes VALUE 5  — the classic trap</span>
+<span class="n">ids</span><span class="p">.</span><span class="na">removeIf</span><span class="p">(</span><span class="n">x</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">x</span><span class="w"> </span><span class="o">%</span><span class="w"> </span><span class="mi">2</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="mi">0</span><span class="p">);</span><span class="w">      </span><span class="c1">// single pass, O(n) — better than removing in a loop</span>
+<span class="n">List</span><span class="o">&lt;</span><span class="n">Integer</span><span class="o">&gt;</span><span class="w"> </span><span class="n">page</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ids</span><span class="p">.</span><span class="na">subList</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="mi">20</span><span class="p">);</span><span class="w">   </span><span class="c1">// VIEW backed by ids: modifying ids structurally invalidates it</span>
+<span class="n">ids</span><span class="p">.</span><span class="na">trimToSize</span><span class="p">();</span><span class="w">                   </span><span class="c1">// shrink capacity to size after bulk loading</span>
+</code></pre></div>
+
+<h4>When would I use it?</h4>
+<p>It is the default list for almost everything: query results, DTO lists, DSA arrays when you don't know the size up front, building responses. It is best at two things: adding at the end, and looping over items.</p>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong><code>remove(int)</code> vs <code>remove(Object)</code> confusion</strong> with a <code>List&lt;Integer&gt;</code>. <code>remove(5)</code> removes the item at index 5, not the value 5.</li>
+<li><strong>Removing items one by one from the front, in a loop, is O(n²).</strong> Each removal shifts every item after it. Use <code>removeIf</code>, loop from the back, or use an <code>ArrayDeque</code>.</li>
+<li><strong><code>subList</code> is a view, not a copy.</strong> If you then add to or remove from the parent list, using the view throws <code>ConcurrentModificationException</code>.</li>
+<li><strong>Not thread-safe.</strong> If two threads add at the same time, items can get lost. You may also see <code>ArrayIndexOutOfBoundsException</code> during a resize.</li>
+<li><strong>Huge lists of boxed numbers waste memory.</strong> Each <code>Integer</code> is a full object. For millions of numbers, prefer <code>int[]</code> or a primitive collection library.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. How does ArrayList grow?</strong> When the array is full, it creates a new array 1.5× larger and copies the elements over. Because it grows by a multiple each time (geometric growth), adding at the end is amortised O(1).</p>
+<p><strong>Q2. What is the default capacity?</strong> 10. It is created lazily, only on the first add.</p>
+<p><strong>Q3. Time complexity of get, add, add(index), remove(index)?</strong> O(1), amortised O(1), O(n), O(n).</p>
+<h2 id="s2-3">2.3 LinkedList</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> A LinkedList is a chain of small boxes, each holding one item and pointing to the box before and after it. Adding or removing in the middle is cheap only if you are already standing at that spot.</p>
+<p>In a doubly linked list, each element knows its previous and next neighbour. So you can insert or remove an element in O(1), without shifting anything. But there is a condition: <strong>you must already hold a reference to the neighbour</strong> (for example, an iterator's current position). <code>LinkedList</code> implements both <code>List</code> and <code>Deque</code> (a double-ended queue — you can add or remove at both ends).</p>
+<h4>What is happening internally?</h4>
+<div class="hl"><pre><span></span><code><span class="kd">private</span><span class="w"> </span><span class="kd">static</span><span class="w"> </span><span class="kd">class</span> <span class="nc">Node</span><span class="o">&lt;</span><span class="n">E</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">E</span><span class="w"> </span><span class="n">item</span><span class="p">;</span><span class="w"> </span><span class="n">Node</span><span class="o">&lt;</span><span class="n">E</span><span class="o">&gt;</span><span class="w"> </span><span class="n">next</span><span class="p">;</span><span class="w"> </span><span class="n">Node</span><span class="o">&lt;</span><span class="n">E</span><span class="o">&gt;</span><span class="w"> </span><span class="n">prev</span><span class="p">;</span><span class="w"> </span><span class="p">}</span>
+<span class="kd">transient</span><span class="w"> </span><span class="n">Node</span><span class="o">&lt;</span><span class="n">E</span><span class="o">&gt;</span><span class="w"> </span><span class="n">first</span><span class="p">,</span><span class="w"> </span><span class="n">last</span><span class="p">;</span>
+</code></pre></div>
+
+<div class="hl"><pre><span></span><code>first → [prev|A|next] ⇄ [prev|B|next] ⇄ [prev|C|next] ← last
+</code></pre></div>
+
+<p>Every element needs its own <code>Node</code> object. A node has an object header (~12 bytes) plus 3 references. That is roughly <strong>24–32 bytes per element</strong>, on top of the element itself.</p>
+<p>These nodes are scattered across the heap. So the CPU cannot read them in one smooth run. This is called <em>poor cache locality</em>, and it makes the list slow to walk through.</p>
+<p>Think of a treasure hunt. Each clue tells you where the next clue is. To reach clue 50, you must visit all 49 before it.</p>
+<h4>How does it work?</h4>
+<ul>
+<li><code>addFirst</code> / <code>addLast</code> / <code>removeFirst</code> / <code>removeLast</code>: change a few pointers → <strong>O(1)</strong>.</li>
+<li><code>get(i)</code>: walk from whichever end is closer → <strong>O(n)</strong>.</li>
+<li><code>add(i, e)</code>: O(n) to walk to the position, then O(1) to relink.</li>
+<li><code>ListIterator.add/remove</code> at the iterator's current position: O(1), because you are already there.</li>
+</ul>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="n">LinkedList</span><span class="o">&lt;</span><span class="n">String</span><span class="o">&gt;</span><span class="w"> </span><span class="n">ll</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">LinkedList</span><span class="o">&lt;&gt;</span><span class="p">(</span><span class="n">List</span><span class="p">.</span><span class="na">of</span><span class="p">(</span><span class="s">"a"</span><span class="p">,</span><span class="w"> </span><span class="s">"b"</span><span class="p">,</span><span class="w"> </span><span class="s">"c"</span><span class="p">));</span>
+<span class="n">ll</span><span class="p">.</span><span class="na">addFirst</span><span class="p">(</span><span class="s">"start"</span><span class="p">);</span><span class="w"> </span><span class="n">ll</span><span class="p">.</span><span class="na">addLast</span><span class="p">(</span><span class="s">"end"</span><span class="p">);</span><span class="w">          </span><span class="c1">// O(1)</span>
+<span class="n">ListIterator</span><span class="o">&lt;</span><span class="n">String</span><span class="o">&gt;</span><span class="w"> </span><span class="n">it</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ll</span><span class="p">.</span><span class="na">listIterator</span><span class="p">();</span>
+<span class="k">while</span><span class="w"> </span><span class="p">(</span><span class="n">it</span><span class="p">.</span><span class="na">hasNext</span><span class="p">())</span><span class="w"> </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">it</span><span class="p">.</span><span class="na">next</span><span class="p">().</span><span class="na">equals</span><span class="p">(</span><span class="s">"b"</span><span class="p">))</span><span class="w"> </span><span class="n">it</span><span class="p">.</span><span class="na">add</span><span class="p">(</span><span class="s">"b2"</span><span class="p">);</span><span class="w">   </span><span class="c1">// O(1) insert at the cursor</span>
+
+<span class="c1">// The trap: index loops are O(n^2)</span>
+<span class="k">for</span><span class="w"> </span><span class="p">(</span><span class="kt">int</span><span class="w"> </span><span class="n">i</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="p">;</span><span class="w"> </span><span class="n">i</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="n">ll</span><span class="p">.</span><span class="na">size</span><span class="p">();</span><span class="w"> </span><span class="n">i</span><span class="o">++</span><span class="p">)</span><span class="w"> </span><span class="n">ll</span><span class="p">.</span><span class="na">get</span><span class="p">(</span><span class="n">i</span><span class="p">);</span><span class="w">     </span><span class="c1">// each get walks the list</span>
+</code></pre></div>
+
+<h4>When would I use it?</h4>
+<p>Rarely. Even for queues and stacks, <code>ArrayDeque</code> is faster and uses less memory.</p>
+<p>Real uses are few:</p>
+<ul>
+<li>You hold iterators and keep inserting or removing in the middle all the time.</li>
+<li>You need a list that is also a deque, and you need to store <code>null</code>.</li>
+</ul>
+<p>In DSA, you usually write your own node class instead (LRU cache, LeetCode <code>ListNode</code>). You don't use <code>LinkedList</code> there.</p>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Calling <code>get(i)</code> inside a loop.</strong> Each <code>get</code> walks the list, so the loop takes quadratic time — O(n²).</li>
+<li><strong>Memory.</strong> It uses 3–5× more memory than an <code>ArrayList</code> with the same elements.</li>
+<li><strong>It loses in practice.</strong> In benchmarks, <code>ArrayList</code> usually beats <code>LinkedList</code> even for middle inserts on lists of moderate size. Why? <code>System.arraycopy</code> moves contiguous memory extremely fast. Following pointers, on the other hand, keeps missing the CPU cache.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. ArrayList vs LinkedList?</strong> ArrayList is a contiguous array: O(1) random access, amortised O(1) append, cache-friendly, and low memory. LinkedList is a chain of nodes: O(1) insert/remove at the ends or at a position you already hold, but O(n) access by index and high memory use. Choose ArrayList by default.</p>
+<p><strong>Q2. When is LinkedList actually better?</strong> When you insert or remove often at an iterator position inside a large list, or when you need a Deque that allows nulls. In other cases, ArrayDeque or ArrayList wins.</p>
+<h2 id="s2-4">2.4 HashMap internals</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> A HashMap is a set of numbered boxes. From the key itself, Java calculates which box the value goes in — so to find it again, it jumps straight to that box instead of searching everywhere.</p>
+<p>You often need to find something by a key, fast. For example: find a user by ID, count how many times each word appears, or look up a product by SKU.</p>
+<p>If you keep the data in a list, you must check items one by one. With a million items, that can be a million checks. This is O(n) — the work grows with the size of the data.</p>
+<p>A hash table avoids this. It uses the key to calculate <strong>where</strong> the value should be stored. Finding it later means doing the same calculation and going straight there. So a lookup takes about the same time whether you have 10 items or 10 million. This is called O(1) on average.</p>
+<p>Think of a railway parcel office with 16 numbered racks. The clerk does a small sum on your receipt number to pick a rack. When you come back, he does the same sum and walks straight to the right rack.</p>
+<h4>What is happening internally?</h4>
+<p>The main fields:</p>
+<div class="hl"><pre><span></span><code><span class="kd">transient</span><span class="w"> </span><span class="n">Node</span><span class="o">&lt;</span><span class="n">K</span><span class="p">,</span><span class="n">V</span><span class="o">&gt;[]</span><span class="w"> </span><span class="n">table</span><span class="p">;</span><span class="w">        </span><span class="c1">// the bucket array; length is ALWAYS a power of two</span>
+<span class="kd">static</span><span class="w"> </span><span class="kd">class</span> <span class="nc">Node</span><span class="o">&lt;</span><span class="n">K</span><span class="p">,</span><span class="n">V</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="kd">final</span><span class="w"> </span><span class="kt">int</span><span class="w"> </span><span class="n">hash</span><span class="p">;</span><span class="w"> </span><span class="kd">final</span><span class="w"> </span><span class="n">K</span><span class="w"> </span><span class="n">key</span><span class="p">;</span><span class="w"> </span><span class="n">V</span><span class="w"> </span><span class="n">value</span><span class="p">;</span><span class="w"> </span><span class="n">Node</span><span class="o">&lt;</span><span class="n">K</span><span class="p">,</span><span class="n">V</span><span class="o">&gt;</span><span class="w"> </span><span class="n">next</span><span class="p">;</span><span class="w"> </span><span class="p">}</span>
+<span class="kt">int</span><span class="w"> </span><span class="n">size</span><span class="p">;</span><span class="w">  </span><span class="kt">int</span><span class="w"> </span><span class="n">threshold</span><span class="p">;</span><span class="w">           </span><span class="c1">// threshold = capacity × loadFactor</span>
+<span class="kd">final</span><span class="w"> </span><span class="kt">float</span><span class="w"> </span><span class="n">loadFactor</span><span class="p">;</span><span class="w">             </span><span class="c1">// default 0.75</span>
+<span class="c1">// defaults: capacity 16 (allocated lazily on first put), threshold 12</span>
+</code></pre></div>
+
+<p>A few terms:</p>
+<ul>
+<li><strong>Bucket</strong> — one slot in the <code>table</code> array.</li>
+<li><strong>Capacity</strong> — the number of buckets (the array length).</li>
+<li><strong>Load factor</strong> — how full the table may get before it grows. Default 0.75, meaning 75% full.</li>
+<li><strong>Threshold</strong> — the size at which the table grows: capacity × load factor. For the default, 16 × 0.75 = 12.</li>
+</ul>
+<p>Here is what the table can look like:</p>
+<div class="hl"><pre><span></span><code>table (capacity 16)
+ [0] → null
+ [1] → (hash=17,"apple",3) → (hash=33,"mango",9) → null      ← collision: chain (linked list)
+ [2] → null
+ ...
+ [5] → TreeNode (red-black tree)                              ← chain grew ≥ 8 → treeified
+ ...
+[15] → (hash=31,"kiwi",1) → null
+</code></pre></div>
+
+<p>A <em>collision</em> is when two different keys land in the same bucket. They are then kept in a small linked list (a <em>chain</em>) in that bucket.</p>
+<p>Key constants:</p>
+<ul>
+<li><code>TREEIFY_THRESHOLD = 8</code> — a chain this long may turn into a tree.</li>
+<li><code>UNTREEIFY_THRESHOLD = 6</code> — a tree this small turns back into a chain.</li>
+<li><code>MIN_TREEIFY_CAPACITY = 64</code> — the table needs at least this many buckets before any tree is made.</li>
+</ul>
+<h4>How does it work?</h4>
+<p><strong><code>put(key, value)</code></strong> in steps:</p>
+<ol>
+<li><strong>Hash spreading.</strong> Java computes <code>h = key.hashCode(); hash = h ^ (h &gt;&gt;&gt; 16)</code>. This mixes (XORs) the top 16 bits into the bottom 16 bits. Why? Only the low bits are used to choose the bucket. Without mixing, keys whose hashCodes differ only in the high bits would all land in the same bucket.</li>
+<li><strong>Index.</strong> Java computes <code>i = (n - 1) &amp; hash</code>. Here <code>n</code> is always a power of two, so <code>n - 1</code> is all ones in binary (16 → <code>1111</code>). So this <code>&amp;</code> is a fast way to do <code>hash % n</code>.</li>
+<li><strong>Empty bucket?</strong> If <code>table[i]</code> is empty, put a new Node there. Done.</li>
+<li><strong>Look for the same key.</strong> Otherwise, walk through the bucket. If a node has the <strong>same hash and <code>key.equals()</code> is true</strong>, replace its value and return the old value.</li>
+<li><strong>Add a new node.</strong> If no node matched, <strong>append</strong> the new node at the end of the chain. (Java 8+ adds at the tail; Java 7 added at the head.)</li>
+<li><strong>Chain too long?</strong> If the chain length reaches <strong>8</strong>:
+   - If the table has at least <strong>64</strong> buckets, convert this bucket into a <strong>red-black tree</strong> (a self-balancing sorted tree). Now the worst case in this bucket is O(log n).
+   - Otherwise, <strong>resize</strong> the table instead. In a small table, too few buckets is the more likely reason for collisions.</li>
+<li><strong>Too full?</strong> If <code>++size &gt; threshold</code>, <strong>resize</strong> the table.</li>
+</ol>
+<p><strong><code>get(key)</code></strong> in steps:</p>
+<ol>
+<li>Compute the same hash and the same index.</li>
+<li>Check the first node in that bucket.</li>
+<li>If it is not a match, walk the list or search the tree.</li>
+<li>At each node, compare the hash first (cheap). Call <code>equals</code> only if the hashes match.</li>
+</ol>
+<p><strong>Resize</strong> in steps:</p>
+<ol>
+<li>Make a new table with double the capacity.</li>
+<li>For each node, check just <strong>one bit</strong>: <code>(hash &amp; oldCap)</code>.</li>
+<li>If that bit is <code>0</code>, the node stays at index <code>i</code>.</li>
+<li>If that bit is <code>1</code>, the node moves to <code>i + oldCap</code>.</li>
+</ol>
+<p>No hash is recomputed. Each old chain simply splits into a "low" chain and a "high" chain, and the order inside each chain is kept.</p>
+<div class="hl"><pre><span></span><code>oldCap = 16 (10000b). Node hash ...0 0101 → bit 16 is 0 → stays at 5
+                      Node hash ...1 0101 → bit 16 is 1 → moves to 5 + 16 = 21
+</code></pre></div>
+
+<p><strong>Why 0.75 and 8?</strong></p>
+<ul>
+<li>0.75 is a balance. A lower value wastes many empty buckets. A higher value makes chains longer.</li>
+<li>With a decent hash function, chain lengths follow roughly a <em>Poisson distribution</em> (a standard pattern for random events). At this load the average chain length is about 0.5.</li>
+<li>So the chance of one chain reaching 8 is about 0.00000006 — practically never.</li>
+<li>That means treeification is a safety net. It protects against bad hashCodes or deliberate collision attacks. It is not the normal path.</li>
+</ul>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="n">Map</span><span class="o">&lt;</span><span class="n">String</span><span class="p">,</span><span class="w"> </span><span class="n">Integer</span><span class="o">&gt;</span><span class="w"> </span><span class="n">freq</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">HashMap</span><span class="o">&lt;&gt;</span><span class="p">();</span>
+<span class="k">for</span><span class="w"> </span><span class="p">(</span><span class="n">String</span><span class="w"> </span><span class="n">w</span><span class="w"> </span><span class="p">:</span><span class="w"> </span><span class="s">"to be or not to be"</span><span class="p">.</span><span class="na">split</span><span class="p">(</span><span class="s">" "</span><span class="p">))</span><span class="w"> </span><span class="n">freq</span><span class="p">.</span><span class="na">merge</span><span class="p">(</span><span class="n">w</span><span class="p">,</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="n">Integer</span><span class="p">::</span><span class="n">sum</span><span class="p">);</span>
+<span class="n">System</span><span class="p">.</span><span class="na">out</span><span class="p">.</span><span class="na">println</span><span class="p">(</span><span class="n">freq</span><span class="p">);</span><span class="w">    </span><span class="c1">// {not=1, or=1, be=2, to=2} — bucket order, not insertion order; never rely on it</span>
+
+<span class="c1">// Trace of put("to", 1) into an empty default map:</span>
+<span class="c1">//  1. table allocated with capacity 16</span>
+<span class="c1">//  2. "to".hashCode() = 3707; spread: 3707 ^ (3707 &gt;&gt;&gt; 16) = 3707</span>
+<span class="c1">//  3. index = 15 &amp; 3707 = 11  (3707 = ...1110 0111 1011; low 4 bits 1011 = 11)</span>
+<span class="c1">//  4. table[11] empty → store Node(3707, "to", 1)</span>
+<span class="c1">//  later put("to", ...) → same index 11 → hash equal &amp; "to".equals("to") → value updated</span>
+
+<span class="c1">// Java 8 API that makes DSA code shorter and atomic-per-call</span>
+<span class="n">Map</span><span class="o">&lt;</span><span class="n">Integer</span><span class="p">,</span><span class="w"> </span><span class="n">List</span><span class="o">&lt;</span><span class="n">String</span><span class="o">&gt;&gt;</span><span class="w"> </span><span class="n">byLength</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">HashMap</span><span class="o">&lt;&gt;</span><span class="p">();</span>
+<span class="k">for</span><span class="w"> </span><span class="p">(</span><span class="n">String</span><span class="w"> </span><span class="n">w</span><span class="w"> </span><span class="p">:</span><span class="w"> </span><span class="n">words</span><span class="p">)</span><span class="w"> </span><span class="n">byLength</span><span class="p">.</span><span class="na">computeIfAbsent</span><span class="p">(</span><span class="n">w</span><span class="p">.</span><span class="na">length</span><span class="p">(),</span><span class="w"> </span><span class="n">k</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">ArrayList</span><span class="o">&lt;&gt;</span><span class="p">()).</span><span class="na">add</span><span class="p">(</span><span class="n">w</span><span class="p">);</span>
+<span class="n">freq</span><span class="p">.</span><span class="na">getOrDefault</span><span class="p">(</span><span class="s">"xyz"</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="p">);</span>
+<span class="n">freq</span><span class="p">.</span><span class="na">computeIfPresent</span><span class="p">(</span><span class="s">"be"</span><span class="p">,</span><span class="w"> </span><span class="p">(</span><span class="n">k</span><span class="p">,</span><span class="w"> </span><span class="n">v</span><span class="p">)</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">v</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="mi">1</span><span class="w"> </span><span class="o">?</span><span class="w"> </span><span class="n">v</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="mi">1</span><span class="w"> </span><span class="p">:</span><span class="w"> </span><span class="kc">null</span><span class="p">);</span><span class="w">   </span><span class="c1">// returning null REMOVES the entry</span>
+
+<span class="c1">// Pre-size to avoid resizes when you know n</span>
+<span class="n">Map</span><span class="o">&lt;</span><span class="n">String</span><span class="p">,</span><span class="w"> </span><span class="n">Order</span><span class="o">&gt;</span><span class="w"> </span><span class="n">byId</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">HashMap</span><span class="p">.</span><span class="na">newHashMap</span><span class="p">(</span><span class="mi">100_000</span><span class="p">);</span><span class="w">          </span><span class="c1">// Java 19+; else new HashMap&lt;&gt;((int)(n/0.75f)+1)</span>
+</code></pre></div>
+
+<h4>When would I use it?</h4>
+<p>All the time:</p>
+<ul>
+<li>Caches and lookups by ID.</li>
+<li>Counting and grouping.</li>
+<li>Memoisation in DSA — saving answers you already computed (<code>Map&lt;String, Integer&gt; memo</code>).</li>
+<li>Removing duplicates.</li>
+<li>Two-sum style problems, where you look up the "complement" you need.</li>
+<li>Adjacency lists for sparse graphs (graphs with few edges).</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Bad or mutable keys.</strong> If a key class has no proper <code>hashCode</code>/<code>equals</code>, or you change a key after putting it in (1.12), the entry can no longer be found.</li>
+<li><strong>All keys colliding.</strong> For example, a hashCode that returns a constant. Then every key lands in one bucket, and lookups slow down to O(n). After treeification it is O(log n), but the tree works well only if the keys are <code>Comparable</code>.</li>
+<li><strong>Iteration order is not stable.</strong> It can change after a resize, or between Java versions. Never depend on it. Use <code>LinkedHashMap</code> or <code>TreeMap</code> when order matters.</li>
+<li><strong>Not thread-safe.</strong> Two threads calling <code>put</code> together can lose updates and corrupt the size. In Java 7, a concurrent resize could even create a loop in a chain, so <code>get</code> ran forever. Use <code>ConcurrentHashMap</code> (4.9).</li>
+<li><strong>Memory.</strong> Each entry is a Node object (~32–48 bytes), plus the key and value objects. A map of a million <code>Long → Long</code> takes about 80+ MB.</li>
+<li><strong>Double lookups.</strong> Looping over <code>keySet()</code> and calling <code>get(k)</code> for each key does two lookups per key. Loop over <code>entrySet()</code> instead.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. Explain HashMap internals.</strong> It is an array of buckets whose length is always a power of two. The key's hashCode is spread (<code>h ^ h&gt;&gt;&gt;16</code>) and masked to get an index. Keys that collide form a linked list in the bucket; that list becomes a red-black tree when a chain reaches 8 and the table has 64+ buckets. A lookup compares the hash first, then <code>equals</code>. When size goes above capacity × 0.75, the table doubles, and each node either stays at <code>i</code> or moves to <code>i + oldCap</code>, decided by one bit.</p>
+<p><strong>Q2. Why is HashMap O(1) and when isn't it?</strong> A good hash spreads keys evenly, so each bucket holds about one entry; a lookup is just index arithmetic plus one or two comparisons. It gets slow when many keys collide because of a poor hashCode — O(n) per bucket, or O(log n) once the bucket becomes a tree.</p>
+<p><strong>Q3. Why must the capacity be a power of two?</strong> So that <code>(n-1) &amp; hash</code> can replace the slower modulo (<code>%</code>), and so that a resize can split each bucket by checking a single bit.</p>
+<p><strong>Q4. What changed in Java 8?</strong> Long chains are turned into trees (treeification); new nodes are added at the tail instead of the head, which fixed Java 7's infinite loop during concurrent resize; and the hash spreading was simplified.</p>
+<p><strong>Q5. Can HashMap have a null key?</strong> Yes, one. Its hash is treated as 0, so it is stored in bucket 0. Values can be null too. <code>ConcurrentHashMap</code> allows neither null keys nor null values.</p>
+<p><strong>Q6. What happens when two keys have the same hashCode?</strong> Both go into the same bucket, and <code>equals</code> tells them apart. Both are stored and found correctly — it just costs one extra comparison.</p>
+<h2 id="s2-5">2.5 LinkedHashMap and building an LRU cache</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> A LinkedHashMap is a HashMap that also remembers order. It can remember the order you added keys, or the order you last used them — and the second one gives you an LRU cache almost for free.</p>
+<p><code>HashMap</code> gives no promise about order. Sometimes you need fast lookup <strong>and</strong> a predictable order. Two common cases:</p>
+<ul>
+<li><strong>Insertion order</strong> — the order in which keys were first added. Useful to keep JSON fields in order, or to get the same output every run.</li>
+<li><strong>Access order</strong> — the order in which keys were last used. Useful to throw out the <em>least recently used</em> entry. This is an <strong>LRU cache</strong> (Least Recently Used).</li>
+</ul>
+<h4>What is happening internally?</h4>
+<p><code>LinkedHashMap</code> extends <code>HashMap</code>. Each entry gets two extra pointers, <code>before</code> and <code>after</code>. These pointers join <strong>all entries into one doubly linked list</strong>. The map also keeps <code>head</code> and <code>tail</code> pointers to the two ends of that list.</p>
+<div class="hl"><pre><span></span><code>hash table buckets: normal HashMap structure (for O(1) lookup)
+linked list:  head ⇄ [k1] ⇄ [k2] ⇄ [k3] ⇄ tail     (insertion or access order)
+</code></pre></div>
+
+<p>When <code>accessOrder = true</code>:</p>
+<ul>
+<li>Every <code>get</code> or <code>put</code> of an existing key <strong>moves that entry to the tail</strong>. The tail is the "most recently used" end.</li>
+<li>After each insertion, the map calls <code>removeEldestEntry(head)</code>. If your method returns true, the head is removed. The head is the least recently used entry.</li>
+</ul>
+<p>Think of a stack of newspapers on a table. Whenever you read one, you put it back on top. When the table is full, you throw away the one at the bottom — the one nobody has touched for longest.</p>
+<h4>How does it work?</h4>
+<ol>
+<li><code>get(k)</code>: a normal hash lookup, O(1). Then the node is unlinked and relinked at the tail, also O(1).</li>
+<li><code>put(k, v)</code> for a new key: the entry goes into its bucket and is appended at the tail. Then <code>removeEldestEntry</code> is asked whether to remove the head.</li>
+<li>Iteration walks the linked list. So it costs O(size). A plain HashMap must scan every bucket, which costs O(capacity + size).</li>
+</ol>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="kd">public</span><span class="w"> </span><span class="kd">class</span> <span class="nc">LruCache</span><span class="o">&lt;</span><span class="n">K</span><span class="p">,</span><span class="w"> </span><span class="n">V</span><span class="o">&gt;</span><span class="w"> </span><span class="kd">extends</span><span class="w"> </span><span class="n">LinkedHashMap</span><span class="o">&lt;</span><span class="n">K</span><span class="p">,</span><span class="w"> </span><span class="n">V</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">private</span><span class="w"> </span><span class="kd">final</span><span class="w"> </span><span class="kt">int</span><span class="w"> </span><span class="n">capacity</span><span class="p">;</span>
+<span class="w">    </span><span class="kd">public</span><span class="w"> </span><span class="nf">LruCache</span><span class="p">(</span><span class="kt">int</span><span class="w"> </span><span class="n">capacity</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="kd">super</span><span class="p">(</span><span class="n">capacity</span><span class="p">,</span><span class="w"> </span><span class="mf">0.75f</span><span class="p">,</span><span class="w"> </span><span class="kc">true</span><span class="p">);</span><span class="w">            </span><span class="c1">// true = access order</span>
+<span class="w">        </span><span class="k">this</span><span class="p">.</span><span class="na">capacity</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">capacity</span><span class="p">;</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">    </span><span class="nd">@Override</span><span class="w"> </span><span class="kd">protected</span><span class="w"> </span><span class="kt">boolean</span><span class="w"> </span><span class="nf">removeEldestEntry</span><span class="p">(</span><span class="n">Map</span><span class="p">.</span><span class="na">Entry</span><span class="o">&lt;</span><span class="n">K</span><span class="p">,</span><span class="w"> </span><span class="n">V</span><span class="o">&gt;</span><span class="w"> </span><span class="n">eldest</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="n">size</span><span class="p">()</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="n">capacity</span><span class="p">;</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+
+<span class="n">LruCache</span><span class="o">&lt;</span><span class="n">String</span><span class="p">,</span><span class="w"> </span><span class="n">String</span><span class="o">&gt;</span><span class="w"> </span><span class="n">c</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">LruCache</span><span class="o">&lt;&gt;</span><span class="p">(</span><span class="mi">2</span><span class="p">);</span>
+<span class="n">c</span><span class="p">.</span><span class="na">put</span><span class="p">(</span><span class="s">"a"</span><span class="p">,</span><span class="w"> </span><span class="s">"1"</span><span class="p">);</span><span class="w"> </span><span class="n">c</span><span class="p">.</span><span class="na">put</span><span class="p">(</span><span class="s">"b"</span><span class="p">,</span><span class="w"> </span><span class="s">"2"</span><span class="p">);</span><span class="w">     </span><span class="c1">// order: a, b</span>
+<span class="n">c</span><span class="p">.</span><span class="na">get</span><span class="p">(</span><span class="s">"a"</span><span class="p">);</span><span class="w">                           </span><span class="c1">// order: b, a   (a moved to most-recent end)</span>
+<span class="n">c</span><span class="p">.</span><span class="na">put</span><span class="p">(</span><span class="s">"c"</span><span class="p">,</span><span class="w"> </span><span class="s">"3"</span><span class="p">);</span><span class="w">                      </span><span class="c1">// insert c → size 3 &gt; 2 → evict eldest = b</span>
+<span class="n">System</span><span class="p">.</span><span class="na">out</span><span class="p">.</span><span class="na">println</span><span class="p">(</span><span class="n">c</span><span class="p">.</span><span class="na">keySet</span><span class="p">());</span><span class="w">       </span><span class="c1">// [a, c]</span>
+</code></pre></div>
+
+<h4>When would I use it?</h4>
+<ul>
+<li>Small caches inside one process (per request or per instance).</li>
+<li>When output must always come in the same order.</li>
+<li>When you need LRU behaviour quickly.</li>
+</ul>
+<p>In LeetCode 146 (LRU Cache), interviewers usually want the manual HashMap + doubly linked list version (10.3). Mention this one as the production shortcut. For real production caches, use <strong>Caffeine</strong> — it has better hit rates, handles concurrency, and supports TTL (time-to-live, i.e. entries expire after a set time).</p>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Not thread-safe.</strong> In access-order mode, even <code>get</code> changes the structure (it moves the entry). So two threads that only read can still corrupt it. Guard it with a lock, or use Caffeine.</li>
+<li><strong>ConcurrentModificationException with access order.</strong> If you call <code>get</code> while looping over the map, it throws. This is because <code>get</code> counts as a structural change in this mode.</li>
+<li><strong>No TTL.</strong> It cannot expire entries by time. It also cannot evict by weight (for example, by how many bytes an entry uses).</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. How does LinkedHashMap maintain order?</strong> A doubly linked list runs through all the entries. It keeps insertion order by default, or access order when <code>accessOrder</code> is true.</p>
+<p><strong>Q2. How do you build an LRU cache in Java quickly?</strong> Extend LinkedHashMap with <code>accessOrder=true</code>, and override <code>removeEldestEntry</code> to return <code>size() &gt; capacity</code>.</p>
+<p><strong>Q3. Is that LRU cache thread-safe?</strong> No — even reads change the order. Synchronise access to it, or use Caffeine or <code>ConcurrentLinkedHashMap</code>-style libraries.</p>
+<h2 id="s2-6">2.6 TreeMap and TreeSet</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> A TreeMap keeps its keys sorted all the time. So it can answer "what is just before or just after this key?" and "give me everything between A and B" quickly.</p>
+<p>A hash map cannot answer questions about order. For example:</p>
+<ul>
+<li>"What was the price at 14:05?" — that is, the latest price change at or before that time.</li>
+<li>"Give me all orders between two timestamps."</li>
+<li>"What is the smallest key greater than x?"</li>
+<li>"Give me the top or bottom N."</li>
+</ul>
+<p>A <strong>sorted</strong> structure answers all of these in O(log n) — the work grows very slowly, roughly with the number of times you can halve n.</p>
+<h4>What is happening internally?</h4>
+<p><code>TreeMap</code> is a <strong>red-black tree</strong>. That is a <em>binary search tree</em> (smaller keys go left, larger keys go right) that balances itself.</p>
+<p>It follows four rules:</p>
+<ol>
+<li>Every node is red or black.</li>
+<li>The root is black.</li>
+<li>A red node has only black children.</li>
+<li>Every path from the root down to a leaf has the same number of black nodes.</li>
+</ol>
+<p>Because of these rules, the tree's height stays at most 2·log₂(n+1). So search, insert and delete are <strong>O(log n)</strong>, guaranteed — even in the worst case.</p>
+<p>After an insert or a delete, the tree may break the rules for a moment. It fixes them with <strong>rotations</strong> (small re-arrangements of a few nodes) and by recolouring nodes. Insert needs at most 2 rotations; delete needs at most 3.</p>
+<div class="hl"><pre><span></span><code>            (20,B)
+           /      \
+       (10,R)    (30,R)
+       /   \
+    (5,B) (15,B)
+in-order traversal = 5, 10, 15, 20, 30  → sorted iteration
+</code></pre></div>
+
+<p>How are keys ordered? By the key's <code>compareTo</code> method (if the key is <code>Comparable</code>), or by a <code>Comparator</code> you pass in. <code>equals</code> is not used at all.</p>
+<p><code>TreeSet</code> is simply a <code>TreeMap</code> where every value is the same dummy object.</p>
+<p>Think of a dictionary book. Words are always in alphabetical order. So you can open it in the middle and quickly narrow down to the word — or to the word just before it.</p>
+<h4>How does it work?</h4>
+<p>Example: <code>floorKey(25)</code> — find the largest key that is ≤ 25, using the tree above.</p>
+<ol>
+<li>Start at the root, 20. Since 20 ≤ 25, remember 20 as a possible answer and go right.</li>
+<li>Now at 30. Since 30 &gt; 25, go left.</li>
+<li>There is nothing on the left. Stop.</li>
+<li>The answer is the last remembered key: 20.</li>
+</ol>
+<p>Each step throws away about half of the remaining tree. So the search is O(log n).</p>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="n">TreeMap</span><span class="o">&lt;</span><span class="n">LocalTime</span><span class="p">,</span><span class="w"> </span><span class="n">Long</span><span class="o">&gt;</span><span class="w"> </span><span class="n">priceChanges</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">TreeMap</span><span class="o">&lt;&gt;</span><span class="p">();</span><span class="w">     </span><span class="c1">// effective time -&gt; price</span>
+<span class="n">priceChanges</span><span class="p">.</span><span class="na">put</span><span class="p">(</span><span class="n">LocalTime</span><span class="p">.</span><span class="na">of</span><span class="p">(</span><span class="mi">9</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="p">),</span><span class="w"> </span><span class="mi">100L</span><span class="p">);</span>
+<span class="n">priceChanges</span><span class="p">.</span><span class="na">put</span><span class="p">(</span><span class="n">LocalTime</span><span class="p">.</span><span class="na">of</span><span class="p">(</span><span class="mi">13</span><span class="p">,</span><span class="w"> </span><span class="mi">30</span><span class="p">),</span><span class="w"> </span><span class="mi">110L</span><span class="p">);</span>
+<span class="n">priceChanges</span><span class="p">.</span><span class="na">put</span><span class="p">(</span><span class="n">LocalTime</span><span class="p">.</span><span class="na">of</span><span class="p">(</span><span class="mi">17</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="p">),</span><span class="w"> </span><span class="mi">95L</span><span class="p">);</span>
+
+<span class="n">priceChanges</span><span class="p">.</span><span class="na">floorEntry</span><span class="p">(</span><span class="n">LocalTime</span><span class="p">.</span><span class="na">of</span><span class="p">(</span><span class="mi">14</span><span class="p">,</span><span class="w"> </span><span class="mi">5</span><span class="p">)).</span><span class="na">getValue</span><span class="p">();</span><span class="w">     </span><span class="c1">// 110 — latest change at or before 14:05</span>
+<span class="n">priceChanges</span><span class="p">.</span><span class="na">ceilingKey</span><span class="p">(</span><span class="n">LocalTime</span><span class="p">.</span><span class="na">of</span><span class="p">(</span><span class="mi">14</span><span class="p">,</span><span class="w"> </span><span class="mi">5</span><span class="p">));</span><span class="w">                </span><span class="c1">// 17:00</span>
+<span class="n">priceChanges</span><span class="p">.</span><span class="na">headMap</span><span class="p">(</span><span class="n">LocalTime</span><span class="p">.</span><span class="na">of</span><span class="p">(</span><span class="mi">13</span><span class="p">,</span><span class="w"> </span><span class="mi">30</span><span class="p">));</span><span class="w">                  </span><span class="c1">// keys &lt; 13:30 (a live VIEW)</span>
+<span class="n">priceChanges</span><span class="p">.</span><span class="na">subMap</span><span class="p">(</span><span class="n">LocalTime</span><span class="p">.</span><span class="na">of</span><span class="p">(</span><span class="mi">9</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="p">),</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w"> </span><span class="n">LocalTime</span><span class="p">.</span><span class="na">of</span><span class="p">(</span><span class="mi">17</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="p">),</span><span class="w"> </span><span class="kc">false</span><span class="p">);</span>
+<span class="n">priceChanges</span><span class="p">.</span><span class="na">firstKey</span><span class="p">();</span><span class="w"> </span><span class="n">priceChanges</span><span class="p">.</span><span class="na">lastEntry</span><span class="p">();</span><span class="w"> </span><span class="n">priceChanges</span><span class="p">.</span><span class="na">pollFirstEntry</span><span class="p">();</span>
+<span class="n">priceChanges</span><span class="p">.</span><span class="na">descendingMap</span><span class="p">();</span>
+
+<span class="c1">// DSA: sliding window with duplicates -&gt; multiset via TreeMap&lt;value, count&gt;</span>
+<span class="n">TreeMap</span><span class="o">&lt;</span><span class="n">Integer</span><span class="p">,</span><span class="w"> </span><span class="n">Integer</span><span class="o">&gt;</span><span class="w"> </span><span class="n">window</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">TreeMap</span><span class="o">&lt;&gt;</span><span class="p">();</span>
+<span class="n">window</span><span class="p">.</span><span class="na">merge</span><span class="p">(</span><span class="mi">5</span><span class="p">,</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="n">Integer</span><span class="p">::</span><span class="n">sum</span><span class="p">);</span>
+<span class="n">window</span><span class="p">.</span><span class="na">computeIfPresent</span><span class="p">(</span><span class="mi">5</span><span class="p">,</span><span class="w"> </span><span class="p">(</span><span class="n">k</span><span class="p">,</span><span class="w"> </span><span class="n">v</span><span class="p">)</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">v</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="mi">1</span><span class="w"> </span><span class="o">?</span><span class="w"> </span><span class="kc">null</span><span class="w"> </span><span class="p">:</span><span class="w"> </span><span class="n">v</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="mi">1</span><span class="p">);</span><span class="w">  </span><span class="c1">// remove one occurrence</span>
+<span class="kt">int</span><span class="w"> </span><span class="n">maxInWindow</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">window</span><span class="p">.</span><span class="na">lastKey</span><span class="p">();</span>
+</code></pre></div>
+
+<h4>When would I use it?</h4>
+<ul>
+<li><strong>Time-series lookups</strong>: rates, prices or configs that were effective at a given time.</li>
+<li><strong>Calendar and booking conflicts</strong>: find the neighbouring bookings of a new interval.</li>
+<li><strong>Leaderboards</strong> where you loop in rank order.</li>
+<li><strong>Range queries</strong>: everything between A and B.</li>
+<li><strong>DSA problems that need a sorted multiset</strong> (a sorted collection that allows duplicates): sliding window median, "contains nearby almost duplicate", "my calendar".</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Comparator inconsistent with equals.</strong> If two different keys compare as 0, TreeMap treats them as the <strong>same key</strong>. One silently overwrites the other.</li>
+<li><strong><code>null</code> keys throw NPE</strong> (NullPointerException), because null cannot be compared. The only exception is a comparator that handles null.</li>
+<li><strong>Slower than HashMap for plain lookups.</strong> It is O(log n) and must follow pointers down the tree. So use it only when you need order.</li>
+<li><strong><code>headMap</code>/<code>subMap</code> are views.</strong> Changing them changes the original map too.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. TreeMap vs HashMap?</strong> TreeMap keeps keys sorted, is O(log n), has navigation methods (floor, ceiling, ranges), needs Comparable keys or a Comparator, and allows no null keys. HashMap has no order, is O(1) on average, and uses hashCode/equals.</p>
+<p><strong>Q2. What data structure backs TreeMap?</strong> A red-black tree — a self-balancing binary search tree (BST) with height ≤ 2·log₂(n+1). So every operation is O(log n) even in the worst case.</p>
+<p><strong>Q3. How would you find the latest price effective at a given time?</strong> Store the price changes in a TreeMap keyed by effective time, and call <code>floorEntry(time)</code>.</p>
+<h2 id="s2-7">2.7 HashSet, LinkedHashSet and EnumSet</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> A set is a bag that never holds the same thing twice. Use it to ask "have I already seen this?" in one quick step.</p>
+<p>You use a set to:</p>
+<ul>
+<li>Answer "have I seen this before?" in O(1).</li>
+<li>Remove duplicates.</li>
+<li>Do set operations like union (everything in either) and intersection (only what is in both), without writing nested loops.</li>
+</ul>
+<h4>What is happening internally?</h4>
+<div class="hl"><pre><span></span><code><span class="kd">public</span><span class="w"> </span><span class="kd">class</span> <span class="nc">HashSet</span><span class="o">&lt;</span><span class="n">E</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="kd">private</span><span class="w"> </span><span class="kd">transient</span><span class="w"> </span><span class="n">HashMap</span><span class="o">&lt;</span><span class="n">E</span><span class="p">,</span><span class="w"> </span><span class="n">Object</span><span class="o">&gt;</span><span class="w"> </span><span class="n">map</span><span class="p">;</span>
+<span class="w">    </span><span class="kd">private</span><span class="w"> </span><span class="kd">static</span><span class="w"> </span><span class="kd">final</span><span class="w"> </span><span class="n">Object</span><span class="w"> </span><span class="n">PRESENT</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">Object</span><span class="p">();</span>
+<span class="w">    </span><span class="kd">public</span><span class="w"> </span><span class="kt">boolean</span><span class="w"> </span><span class="nf">add</span><span class="p">(</span><span class="n">E</span><span class="w"> </span><span class="n">e</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="k">return</span><span class="w"> </span><span class="n">map</span><span class="p">.</span><span class="na">put</span><span class="p">(</span><span class="n">e</span><span class="p">,</span><span class="w"> </span><span class="n">PRESENT</span><span class="p">)</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="kc">null</span><span class="p">;</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="p">}</span>
+</code></pre></div>
+
+<p>A <code>HashSet</code> <strong>is really a HashMap</strong>. Your elements are the keys. Every value is the same shared dummy object. So everything in 2.4 applies here too, including the hashCode/equals rules.</p>
+<p>The other sets follow the same idea:</p>
+<ul>
+<li><code>LinkedHashSet</code> uses a LinkedHashMap inside, so it keeps insertion order.</li>
+<li><code>TreeSet</code> uses a TreeMap inside, so it keeps elements sorted.</li>
+<li><code>EnumSet</code> is different. It stores one bit per enum constant inside a <code>long</code> (or a <code>long[]</code> if there are more than 64 constants). So checking membership is a single bit operation — extremely fast and tiny in memory.</li>
+</ul>
+<p>Think of a guest register at a wedding gate. Before writing a name, the guard checks whether it is already there. If it is, he does not write it again.</p>
+<h4>How does it work?</h4>
+<p><code>add(e)</code> returns <code>false</code> if <code>e</code> was already in the set. So "detect a duplicate while adding" takes just one line.</p>
+<p>For set algebra, use the bulk methods:</p>
+<ul>
+<li><code>retainAll</code> — intersection (keep only common items).</li>
+<li><code>addAll</code> — union (add everything).</li>
+<li><code>removeAll</code> — difference (remove the other set's items).</li>
+</ul>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="n">Set</span><span class="o">&lt;</span><span class="n">String</span><span class="o">&gt;</span><span class="w"> </span><span class="n">seen</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">HashSet</span><span class="o">&lt;&gt;</span><span class="p">();</span>
+<span class="k">for</span><span class="w"> </span><span class="p">(</span><span class="n">String</span><span class="w"> </span><span class="n">eventId</span><span class="w"> </span><span class="p">:</span><span class="w"> </span><span class="n">incomingEventIds</span><span class="p">)</span>
+<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="o">!</span><span class="n">seen</span><span class="p">.</span><span class="na">add</span><span class="p">(</span><span class="n">eventId</span><span class="p">))</span><span class="w"> </span><span class="n">System</span><span class="p">.</span><span class="na">out</span><span class="p">.</span><span class="na">println</span><span class="p">(</span><span class="s">"duplicate "</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">eventId</span><span class="p">);</span><span class="w">    </span><span class="c1">// dedupe in one pass</span>
+
+<span class="n">Set</span><span class="o">&lt;</span><span class="n">String</span><span class="o">&gt;</span><span class="w"> </span><span class="n">eligible</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">HashSet</span><span class="o">&lt;&gt;</span><span class="p">(</span><span class="n">outletsInScheme</span><span class="p">);</span>
+<span class="n">eligible</span><span class="p">.</span><span class="na">retainAll</span><span class="p">(</span><span class="n">activeOutlets</span><span class="p">);</span><span class="w">                 </span><span class="c1">// intersection</span>
+<span class="n">Set</span><span class="o">&lt;</span><span class="n">String</span><span class="o">&gt;</span><span class="w"> </span><span class="n">ordered</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">LinkedHashSet</span><span class="o">&lt;&gt;</span><span class="p">(</span><span class="n">List</span><span class="p">.</span><span class="na">of</span><span class="p">(</span><span class="s">"c"</span><span class="p">,</span><span class="w"> </span><span class="s">"a"</span><span class="p">,</span><span class="w"> </span><span class="s">"b"</span><span class="p">,</span><span class="w"> </span><span class="s">"a"</span><span class="p">));</span><span class="w">   </span><span class="c1">// [c, a, b]</span>
+<span class="n">EnumSet</span><span class="o">&lt;</span><span class="n">DayOfWeek</span><span class="o">&gt;</span><span class="w"> </span><span class="n">weekend</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">EnumSet</span><span class="p">.</span><span class="na">of</span><span class="p">(</span><span class="n">DayOfWeek</span><span class="p">.</span><span class="na">SATURDAY</span><span class="p">,</span><span class="w"> </span><span class="n">DayOfWeek</span><span class="p">.</span><span class="na">SUNDAY</span><span class="p">);</span>
+</code></pre></div>
+
+<h4>When would I use it?</h4>
+<ul>
+<li>Removing duplicates.</li>
+<li>"Visited" sets in BFS/DFS (graph searches).</li>
+<li>Membership checks inside loops.</li>
+<li>Set algebra across lists of IDs.</li>
+<li>"First unique element" problems (use LinkedHashSet, since it keeps order).</li>
+<li>Flags (use EnumSet).</li>
+</ul>
+<h4>What can go wrong?</h4>
+<p>The same problems as HashMap keys: a missing <code>hashCode</code>/<code>equals</code>, or elements that change after being added.</p>
+<p>Also, <code>retainAll</code> with a <code>List</code> as the argument is O(n·m). For each of your n elements, it searches the m-item list one by one. Pass a <code>Set</code> instead.</p>
+<h4>Interview questions</h4>
+<p><strong>Q1. How does HashSet work internally?</strong> It wraps a HashMap. Elements are stored as keys with one constant dummy value. Uniqueness comes from how the map treats keys — the same key cannot be stored twice.</p>
+<p><strong>Q2. HashSet vs TreeSet vs LinkedHashSet?</strong> HashSet: no order, O(1). TreeSet: sorted, O(log n). LinkedHashSet: insertion order, O(1).</p>
+<h2 id="s2-8">2.8 ArrayDeque — your stack and your queue</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> ArrayDeque is one class that works as both a stack and a queue. It is an array whose ends wrap around in a circle, so adding or removing at either end is instant.</p>
+<p>Stacks and queues need O(1) operations at their ends:</p>
+<ul>
+<li><strong>Stacks</strong> (last in, first out): DFS, undo, matching brackets, monotonic stack.</li>
+<li><strong>Queues</strong> (first in, first out): BFS, task buffers, sliding windows.</li>
+</ul>
+<p>The older options are poor. <code>Stack</code> is a legacy class and locks (synchronises) on every call. <code>LinkedList</code> creates a new node object for every element. <code>ArrayDeque</code> is a <strong>circular array</strong> that does both jobs faster.</p>
+<h4>What is happening internally?</h4>
+<div class="hl"><pre><span></span><code>elements: [ _ | _ | C | D | E | _ | A | B ]    (capacity 8)
+                ↑ tail          ↑ head
+logical order: A, B, C, D, E  (wraps around the end of the array)
+</code></pre></div>
+
+<p>Here is how it works inside:</p>
+<ul>
+<li>Two indices, <code>head</code> and <code>tail</code>, mark the two ends.</li>
+<li>They move using modular arithmetic. When an index passes the end of the array, it wraps back to the start.</li>
+<li>When the array fills up, it doubles in size and "unwraps" the items into the new array in order.</li>
+<li>Every operation at either end is O(1) amortised (usually instant; occasionally a resize, but fast on average). No node objects are created per element.</li>
+<li><code>null</code> elements are <strong>not allowed</strong>. Inside, null means "empty slot". Also, <code>poll</code> returns null to tell you the deque is empty.</li>
+</ul>
+<p>Think of a round table in a canteen with numbered seats. People join at one end and leave from the other. When you reach the last seat number, you simply continue from seat 1.</p>
+<h4>How does it work?</h4>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>Use as</th>
+<th>Methods</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Stack (LIFO, at the head)</td>
+<td><code>push</code>, <code>pop</code>, <code>peek</code></td>
+</tr>
+<tr>
+<td>Queue (FIFO)</td>
+<td><code>offer</code> (tail), <code>poll</code> (head), <code>peek</code></td>
+</tr>
+<tr>
+<td>Deque (both ends)</td>
+<td><code>offerFirst/Last</code>, <code>pollFirst/Last</code>, <code>peekFirst/Last</code></td>
+</tr>
+</tbody>
+</table></div>
+<p>The methods come in two families:</p>
+<ul>
+<li><code>add</code> / <code>remove</code> / <code>element</code> <strong>throw an exception</strong> when they fail.</li>
+<li><code>offer</code> / <code>poll</code> / <code>peek</code> <strong>return a special value</strong> instead (false or null).</li>
+</ul>
+<p>Prefer the second family in DSA loops.</p>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="n">Deque</span><span class="o">&lt;</span><span class="n">Character</span><span class="o">&gt;</span><span class="w"> </span><span class="n">stack</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">ArrayDeque</span><span class="o">&lt;&gt;</span><span class="p">();</span>
+<span class="k">for</span><span class="w"> </span><span class="p">(</span><span class="kt">char</span><span class="w"> </span><span class="n">c</span><span class="w"> </span><span class="p">:</span><span class="w"> </span><span class="s">"{[()]}"</span><span class="p">.</span><span class="na">toCharArray</span><span class="p">())</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="s">"({["</span><span class="p">.</span><span class="na">indexOf</span><span class="p">(</span><span class="n">c</span><span class="p">)</span><span class="w"> </span><span class="o">&gt;=</span><span class="w"> </span><span class="mi">0</span><span class="p">)</span><span class="w"> </span><span class="n">stack</span><span class="p">.</span><span class="na">push</span><span class="p">(</span><span class="n">c</span><span class="p">);</span>
+<span class="w">    </span><span class="k">else</span><span class="w"> </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">stack</span><span class="p">.</span><span class="na">isEmpty</span><span class="p">()</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="s">"({["</span><span class="p">.</span><span class="na">indexOf</span><span class="p">(</span><span class="n">stack</span><span class="p">.</span><span class="na">pop</span><span class="p">())</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="s">")}]"</span><span class="p">.</span><span class="na">indexOf</span><span class="p">(</span><span class="n">c</span><span class="p">))</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">System</span><span class="p">.</span><span class="na">out</span><span class="p">.</span><span class="na">println</span><span class="p">(</span><span class="s">"invalid"</span><span class="p">);</span><span class="w"> </span><span class="k">break</span><span class="p">;</span><span class="w"> </span><span class="p">}</span>
+<span class="p">}</span>
+
+<span class="n">Deque</span><span class="o">&lt;</span><span class="kt">int</span><span class="o">[]&gt;</span><span class="w"> </span><span class="n">queue</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">ArrayDeque</span><span class="o">&lt;&gt;</span><span class="p">();</span><span class="w">     </span><span class="c1">// BFS over a grid</span>
+<span class="n">queue</span><span class="p">.</span><span class="na">offer</span><span class="p">(</span><span class="k">new</span><span class="w"> </span><span class="kt">int</span><span class="o">[]</span><span class="p">{</span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="p">});</span>
+<span class="k">while</span><span class="w"> </span><span class="p">(</span><span class="o">!</span><span class="n">queue</span><span class="p">.</span><span class="na">isEmpty</span><span class="p">())</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="kt">int</span><span class="o">[]</span><span class="w"> </span><span class="n">cell</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">queue</span><span class="p">.</span><span class="na">poll</span><span class="p">();</span><span class="w"> </span><span class="cm">/* expand neighbours */</span><span class="w"> </span><span class="p">}</span>
+</code></pre></div>
+
+<h4>When would I use it?</h4>
+<ul>
+<li>Every stack and queue in DSA: BFS, DFS, monotonic stack, sliding-window deque.</li>
+<li>Task buffers in single-threaded code.</li>
+<li>Undo history.</li>
+</ul>
+<p>If several threads share the queue, use a <code>BlockingQueue</code> instead (4.14).</p>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong><code>push</code> and <code>offer</code> add to different ends.</strong> <code>push</code> adds to the <strong>head</strong>, but <code>offer</code> adds to the <strong>tail</strong>. If you mix them on the same deque, the order becomes confusing.</li>
+<li><strong>Adding <code>null</code> throws NPE.</strong></li>
+<li><strong>Not thread-safe.</strong></li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. Why prefer ArrayDeque over Stack and LinkedList?</strong> Stack is old, synchronised code that extends Vector. LinkedList creates a node object for every element. ArrayDeque is a cache-friendly circular array with O(1) amortised operations at both ends.</p>
+<p><strong>Q2. Why can't ArrayDeque hold null?</strong> Inside, null is used to mark empty slots. Also, <code>poll</code>/<code>peek</code> return null to say "the deque is empty".</p>
+<h2 id="s2-9">2.9 PriorityQueue — a binary heap</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> A PriorityQueue always keeps the smallest item at the front. You can peek at it instantly and take it out quickly, without sorting everything.</p>
+<p>Many problems keep asking for "the smallest (or largest) item so far". For example:</p>
+<ul>
+<li>The next job by deadline.</li>
+<li>The K most frequent elements.</li>
+<li>The nearest unvisited node in Dijkstra's shortest-path algorithm.</li>
+<li>Merging K sorted lists.</li>
+</ul>
+<p>Sorting everything for each question costs O(n log n) every time. A <em>heap</em> is much cheaper. It gives you the minimum in O(1) and removes it in O(log n).</p>
+<p>Think of a hospital emergency ward. The most serious patient is always seen next. But the waiting patients are not kept in a perfectly sorted line.</p>
+<h4>What is happening internally?</h4>
+<p>PriorityQueue is a <strong>binary min-heap</strong> stored in an array. A binary min-heap is a <em>complete</em> binary tree (every level is full except maybe the last, which fills from the left). Its one rule: every parent is ≤ its children.</p>
+<div class="hl"><pre><span></span><code>array: [1, 3, 2, 7, 4, 5]          tree:          1
+index:  0  1  2  3  4  5                       /     \
+                                              3       2
+children of i: 2i+1, 2i+2                    / \     /
+parent of i:   (i-1)/2                      7   4   5
+</code></pre></div>
+
+<p>Only the root is guaranteed to be the minimum. Siblings are <strong>not</strong> ordered between themselves. So looping over a PriorityQueue does <strong>not</strong> give you sorted order.</p>
+<h4>How does it work?</h4>
+<ul>
+<li><strong><code>offer(x)</code></strong>: put x at the end of the array. Then <strong>sift up</strong>: while x is smaller than its parent, swap them. This is O(log n).</li>
+<li><strong><code>poll()</code></strong>: take the root. Move the last element into the root's place. Then <strong>sift down</strong>: while it is larger than its smaller child, swap with that child. This is O(log n).</li>
+<li><strong><code>peek()</code></strong>: just read the root → O(1).</li>
+<li><strong><code>remove(Object)</code> and <code>contains</code></strong>: O(n), because they search item by item.</li>
+<li><strong>Building from a collection</strong> (<code>new PriorityQueue&lt;&gt;(list)</code>): this "heapifies" all items at once in O(n).</li>
+</ul>
+<p>Trace of <code>offer(0)</code> into <code>[1,3,2,7,4,5]</code>:</p>
+<ol>
+<li>Append 0 at index 6. Its parent is at index 2, with value 2.</li>
+<li>0 &lt; 2, so swap. Now 0 is at index 2. Its parent is at index 0, with value 1.</li>
+<li>0 &lt; 1, so swap. Now 0 is at the root.</li>
+<li>The result is <code>[0,3,1,7,4,5,2]</code>, with 0 at the root.</li>
+</ol>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="n">PriorityQueue</span><span class="o">&lt;</span><span class="n">Integer</span><span class="o">&gt;</span><span class="w"> </span><span class="n">minHeap</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">PriorityQueue</span><span class="o">&lt;&gt;</span><span class="p">();</span>
+<span class="n">PriorityQueue</span><span class="o">&lt;</span><span class="n">Integer</span><span class="o">&gt;</span><span class="w"> </span><span class="n">maxHeap</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">PriorityQueue</span><span class="o">&lt;&gt;</span><span class="p">(</span><span class="n">Comparator</span><span class="p">.</span><span class="na">reverseOrder</span><span class="p">());</span>
+
+<span class="c1">// Top-K frequent SKUs: keep a MIN-heap of size k by count; the root is the weakest of the current top k</span>
+<span class="n">Map</span><span class="o">&lt;</span><span class="n">String</span><span class="p">,</span><span class="w"> </span><span class="n">Integer</span><span class="o">&gt;</span><span class="w"> </span><span class="n">freq</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Map</span><span class="p">.</span><span class="na">of</span><span class="p">(</span><span class="s">"A"</span><span class="p">,</span><span class="w"> </span><span class="mi">9</span><span class="p">,</span><span class="w"> </span><span class="s">"B"</span><span class="p">,</span><span class="w"> </span><span class="mi">3</span><span class="p">,</span><span class="w"> </span><span class="s">"C"</span><span class="p">,</span><span class="w"> </span><span class="mi">7</span><span class="p">,</span><span class="w"> </span><span class="s">"D"</span><span class="p">,</span><span class="w"> </span><span class="mi">1</span><span class="p">);</span>
+<span class="n">PriorityQueue</span><span class="o">&lt;</span><span class="n">Map</span><span class="p">.</span><span class="na">Entry</span><span class="o">&lt;</span><span class="n">String</span><span class="p">,</span><span class="w"> </span><span class="n">Integer</span><span class="o">&gt;&gt;</span><span class="w"> </span><span class="n">heap</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">PriorityQueue</span><span class="o">&lt;&gt;</span><span class="p">(</span><span class="n">Map</span><span class="p">.</span><span class="na">Entry</span><span class="p">.</span><span class="na">comparingByValue</span><span class="p">());</span>
+<span class="k">for</span><span class="w"> </span><span class="p">(</span><span class="kd">var</span><span class="w"> </span><span class="n">e</span><span class="w"> </span><span class="p">:</span><span class="w"> </span><span class="n">freq</span><span class="p">.</span><span class="na">entrySet</span><span class="p">())</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">heap</span><span class="p">.</span><span class="na">offer</span><span class="p">(</span><span class="n">e</span><span class="p">);</span><span class="w"> </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">heap</span><span class="p">.</span><span class="na">size</span><span class="p">()</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="mi">2</span><span class="p">)</span><span class="w"> </span><span class="n">heap</span><span class="p">.</span><span class="na">poll</span><span class="p">();</span><span class="w"> </span><span class="p">}</span>
+<span class="c1">// heap now holds A=9 and C=7 → O(n log k)</span>
+
+<span class="c1">// Scheduler: jobs by run time, then priority</span>
+<span class="kd">record</span> <span class="nc">Job</span><span class="p">(</span><span class="n">String</span><span class="w"> </span><span class="n">id</span><span class="p">,</span><span class="w"> </span><span class="n">Instant</span><span class="w"> </span><span class="n">runAt</span><span class="p">,</span><span class="w"> </span><span class="kt">int</span><span class="w"> </span><span class="n">priority</span><span class="p">)</span><span class="w"> </span><span class="p">{}</span>
+<span class="n">PriorityQueue</span><span class="o">&lt;</span><span class="n">Job</span><span class="o">&gt;</span><span class="w"> </span><span class="n">jobs</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">PriorityQueue</span><span class="o">&lt;&gt;</span><span class="p">(</span><span class="n">Comparator</span><span class="p">.</span><span class="na">comparing</span><span class="p">(</span><span class="n">Job</span><span class="p">::</span><span class="n">runAt</span><span class="p">).</span><span class="na">thenComparingInt</span><span class="p">(</span><span class="n">Job</span><span class="p">::</span><span class="n">priority</span><span class="p">));</span>
+</code></pre></div>
+
+<h4>When would I use it?</h4>
+<ul>
+<li>Top-K problems.</li>
+<li>K-way merges (merging K sorted lists).</li>
+<li>Dijkstra and Prim (graph algorithms).</li>
+<li>Scheduling by time or priority (timer wheels, cron schedulers).</li>
+<li>Running medians (using two heaps).</li>
+<li>Event simulation.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Expecting sorted iteration or a sorted <code>toString()</code>.</strong> You won't get it. To get sorted output, call <code>poll</code> again and again.</li>
+<li><strong>Changing an element's priority field after adding it.</strong> The heap does not notice, so its order breaks. Remove the element and add it again instead. (In Dijkstra, the usual trick is to add a new entry and skip the old, stale ones when you poll them.)</li>
+<li><strong>Comparator overflow.</strong> Writing <code>a[0] - b[0]</code> can overflow with large values and give the wrong sign. Use <code>Integer.compare</code>.</li>
+<li><strong>Not thread-safe.</strong> Across threads, use <code>PriorityBlockingQueue</code>.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. How is PriorityQueue implemented?</strong> As an array-based binary min-heap. <code>offer</code> and <code>poll</code> are O(log n) using sift-up and sift-down, and <code>peek</code> is O(1).</p>
+<p><strong>Q2. Why use a min-heap of size k to find the k largest elements?</strong> The root is the smallest of the current top k. Each new element either replaces the root in O(log k) or is thrown away. So the total time is O(n log k), and memory is only O(k).</p>
+<p><strong>Q3. Is PriorityQueue iteration sorted?</strong> No. Only the head is guaranteed to be the minimum.</p>
+<h2 id="s2-10">2.10 Iterators: fail-fast vs fail-safe</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> If you change a list while you are looping over it, things go wrong. Normal Java collections notice this and throw an error at once; concurrent collections instead let you loop safely over a stable picture of the data.</p>
+<p>Changing a collection while looping over it causes trouble. The loop can skip elements, see some twice, or read half-updated data.</p>
+<p>Java's standard collections <strong>fail fast</strong>. They throw an exception immediately, instead of quietly giving you wrong results.</p>
+<p>Concurrent collections make a different choice. They let you loop safely, either over a <em>snapshot</em> (a frozen copy) or over a <em>weakly consistent view</em> (the live data, which may or may not show recent changes).</p>
+<p>Think of a teacher taking attendance from a register. If someone tears out a page in the middle, she stops and complains at once. She does not quietly mark the wrong students.</p>
+<h4>What is happening internally?</h4>
+<ul>
+<li>Non-concurrent collections keep a counter, <code>int modCount</code>. It goes up on every <strong>structural</strong> change — an add or a remove. (<code>set</code> does not count, because it doesn't change the size.)</li>
+<li>When an iterator is created, it saves a copy: <code>expectedModCount = modCount</code>.</li>
+<li>On each <code>next()</code>, the iterator checks that both numbers still match. If they don't, it throws <strong><code>ConcurrentModificationException</code></strong> (CME).</li>
+<li>The iterator's own <code>remove()</code> updates both counters. So removing through the iterator is allowed.</li>
+<li><strong>Fail-safe / weakly consistent</strong> iterators work differently:</li>
+<li><code>CopyOnWriteArrayList</code> loops over the array snapshot taken when the iterator was created. Later writes are not seen.</li>
+<li><code>ConcurrentHashMap</code> iterators walk the live buckets (bins). They may or may not see changes made at the same time, but they never throw.</li>
+</ul>
+<h4>How does it work?</h4>
+<p>The enhanced <code>for</code> loop is just a shortcut for an iterator. So <code>for (x : list) list.remove(x)</code> changes the list behind the iterator's back. The next call to <code>next()</code> then throws.</p>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="n">List</span><span class="o">&lt;</span><span class="n">Integer</span><span class="o">&gt;</span><span class="w"> </span><span class="n">nums</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">ArrayList</span><span class="o">&lt;&gt;</span><span class="p">(</span><span class="n">List</span><span class="p">.</span><span class="na">of</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span><span class="w"> </span><span class="mi">3</span><span class="p">,</span><span class="w"> </span><span class="mi">4</span><span class="p">));</span>
+<span class="k">for</span><span class="w"> </span><span class="p">(</span><span class="n">Integer</span><span class="w"> </span><span class="n">n</span><span class="w"> </span><span class="p">:</span><span class="w"> </span><span class="n">nums</span><span class="p">)</span><span class="w"> </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">n</span><span class="w"> </span><span class="o">%</span><span class="w"> </span><span class="mi">2</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="mi">0</span><span class="p">)</span><span class="w"> </span><span class="n">nums</span><span class="p">.</span><span class="na">remove</span><span class="p">(</span><span class="n">n</span><span class="p">);</span><span class="w">    </span><span class="c1">// throws ConcurrentModificationException</span>
+
+<span class="n">Iterator</span><span class="o">&lt;</span><span class="n">Integer</span><span class="o">&gt;</span><span class="w"> </span><span class="n">it</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">nums</span><span class="p">.</span><span class="na">iterator</span><span class="p">();</span>
+<span class="k">while</span><span class="w"> </span><span class="p">(</span><span class="n">it</span><span class="p">.</span><span class="na">hasNext</span><span class="p">())</span><span class="w"> </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">it</span><span class="p">.</span><span class="na">next</span><span class="p">()</span><span class="w"> </span><span class="o">%</span><span class="w"> </span><span class="mi">2</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="mi">0</span><span class="p">)</span><span class="w"> </span><span class="n">it</span><span class="p">.</span><span class="na">remove</span><span class="p">();</span><span class="w"> </span><span class="c1">// correct</span>
+<span class="n">nums</span><span class="p">.</span><span class="na">removeIf</span><span class="p">(</span><span class="n">n</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">n</span><span class="w"> </span><span class="o">%</span><span class="w"> </span><span class="mi">2</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="mi">0</span><span class="p">);</span><span class="w">                           </span><span class="c1">// simplest and O(n)</span>
+
+<span class="n">Map</span><span class="o">&lt;</span><span class="n">String</span><span class="p">,</span><span class="w"> </span><span class="n">Integer</span><span class="o">&gt;</span><span class="w"> </span><span class="n">m</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">HashMap</span><span class="o">&lt;&gt;</span><span class="p">(</span><span class="n">Map</span><span class="p">.</span><span class="na">of</span><span class="p">(</span><span class="s">"a"</span><span class="p">,</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="s">"b"</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="p">));</span>
+<span class="n">m</span><span class="p">.</span><span class="na">entrySet</span><span class="p">().</span><span class="na">removeIf</span><span class="p">(</span><span class="n">e</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">e</span><span class="p">.</span><span class="na">getValue</span><span class="p">()</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="mi">0</span><span class="p">);</span><span class="w">            </span><span class="c1">// remove while iterating a map</span>
+<span class="n">m</span><span class="p">.</span><span class="na">replaceAll</span><span class="p">((</span><span class="n">k</span><span class="p">,</span><span class="w"> </span><span class="n">v</span><span class="p">)</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">v</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="mi">10</span><span class="p">);</span><span class="w">                           </span><span class="c1">// modify values in place (not structural)</span>
+
+<span class="c1">// Quirk: removing the second-to-last element may NOT throw (hasNext() returns false first)</span>
+<span class="c1">// -&gt; CME is "best effort", never rely on it for correctness</span>
+</code></pre></div>
+
+<h4>When would I use it?</h4>
+<p>To filter a collection in place, use <code>removeIf</code>, <code>iterator.remove()</code>, <code>replaceAll</code>, or "collect first, then remove". When other threads change the collection while you loop, use a concurrent collection.</p>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Treating CME as a thread-safety tool.</strong> It is only best-effort detection — it may not fire every time. And it is not only about threads: single-threaded code can trigger it too.</li>
+<li><strong>Using <code>CopyOnWriteArrayList</code> for data that changes often.</strong> Every write copies the whole array (O(n)). Use it only for data that is read much more than written, such as listener lists.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. What is ConcurrentModificationException and when is it thrown?</strong> A fail-fast iterator throws it when the collection was structurally changed after the iterator was created, by anything other than the iterator itself. It detects this using <code>modCount</code>.</p>
+<p><strong>Q2. Fail-fast vs fail-safe iterators?</strong> Fail-fast iterators throw CME when the collection is changed during the loop (ArrayList, HashMap). Fail-safe or weakly consistent iterators work on a snapshot, or put up with changes, without throwing (CopyOnWriteArrayList, ConcurrentHashMap).</p>
+<p><strong>Q3. How do you remove elements while iterating?</strong> Use <code>Iterator.remove()</code> or <code>Collection.removeIf</code>, or collect the items to remove first and remove them after the loop.</p>
+<h2 id="s2-11">2.11 Immutable collections, utilities and sorting</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> An immutable collection cannot be changed after it is made, so nobody can break your data by mistake. Java also gives you ready-made helpers in <code>Collections</code> and <code>Arrays</code>, and its sort methods — you use these daily, so know their traps.</p>
+<p>If your class returns its internal list as-is, callers can change it and corrupt your object. Immutable collections fix this: nobody can change them. They are also thread-safe by nature, because there is nothing to change.</p>
+<p>The <code>Collections</code> and <code>Arrays</code> utility classes, and the JDK's sort methods, are used constantly. They have a few sharp edges worth knowing.</p>
+<p>Think of a printed railway timetable versus a whiteboard. Anyone can scribble on the whiteboard. The printed copy stays the same, no matter who reads it.</p>
+<h4>What is happening internally?</h4>
+<p>Two words matter in this table:</p>
+<ul>
+<li>A <strong>view</strong> is a window onto another collection. If the original changes, the view shows the change.</li>
+<li>A <strong>copy</strong> has its own data. Later changes to the original do not affect it.</li>
+</ul>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>Factory</th>
+<th>Mutability</th>
+<th>Nulls</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>List.of(...)</code>, <code>Set.of</code>, <code>Map.of</code> (Java 9)</td>
+<td>Immutable</td>
+<td>Rejected (NPE)</td>
+<td>Small, specially built classes; <code>Set.of</code>/<code>Map.of</code> reject duplicates; the iteration order of <code>Set.of</code>/<code>Map.of</code> is deliberately left unspecified</td>
+</tr>
+<tr>
+<td><code>List.copyOf(c)</code> (Java 10)</td>
+<td>Immutable <strong>copy</strong></td>
+<td>Rejected</td>
+<td>Independent of the source</td>
+</tr>
+<tr>
+<td><code>Collections.unmodifiableList(l)</code></td>
+<td>Read-only <strong>view</strong></td>
+<td>Allowed</td>
+<td>Changes to <code>l</code> show through</td>
+</tr>
+<tr>
+<td><code>Arrays.asList(arr)</code></td>
+<td>Fixed size, backed by the array</td>
+<td>Allowed</td>
+<td><code>set</code> works (it writes into the array), <code>add</code>/<code>remove</code> throw</td>
+</tr>
+<tr>
+<td><code>stream.toList()</code> (Java 16)</td>
+<td>Unmodifiable</td>
+<td>Allowed</td>
+<td></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Sorting</strong>:</p>
+<ul>
+<li><code>Arrays.sort(int[])</code> (primitives) uses <strong>dual-pivot quicksort</strong>. It is O(n log n) on average. It is not <em>stable</em> — stable means equal items keep their original order. For primitives this doesn't matter, because two equal numbers look exactly the same.</li>
+<li><code>Arrays.sort(Object[])</code>, <code>List.sort</code> and <code>Collections.sort</code> use <strong>TimSort</strong>. It is a stable mix of merge sort and insertion sort. It spots runs of data that are already sorted and reuses them. It is O(n log n) in the worst case, and O(n) on input that is already sorted.</li>
+</ul>
+<h4>How does it work?</h4>
+<p>Immutability is enforced simply: every method that would change the collection throws <code>UnsupportedOperationException</code>.</p>
+<p>A view passes every read through to the collection it wraps. A copy owns its own data.</p>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="n">List</span><span class="o">&lt;</span><span class="n">String</span><span class="o">&gt;</span><span class="w"> </span><span class="n">view</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Collections</span><span class="p">.</span><span class="na">unmodifiableList</span><span class="p">(</span><span class="n">internal</span><span class="p">);</span>
+<span class="n">internal</span><span class="p">.</span><span class="na">add</span><span class="p">(</span><span class="s">"x"</span><span class="p">);</span><span class="w">            </span><span class="c1">// view now shows "x" too</span>
+<span class="n">List</span><span class="o">&lt;</span><span class="n">String</span><span class="o">&gt;</span><span class="w"> </span><span class="n">copy</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">List</span><span class="p">.</span><span class="na">copyOf</span><span class="p">(</span><span class="n">internal</span><span class="p">);</span><span class="w">   </span><span class="c1">// snapshot, unaffected by later changes</span>
+
+<span class="kt">int</span><span class="o">[]</span><span class="w"> </span><span class="n">arr</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="mi">3</span><span class="p">,</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="mi">2</span><span class="p">};</span>
+<span class="n">List</span><span class="o">&lt;</span><span class="kt">int</span><span class="o">[]&gt;</span><span class="w"> </span><span class="n">wrong</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Arrays</span><span class="p">.</span><span class="na">asList</span><span class="p">(</span><span class="n">arr</span><span class="p">);</span><span class="w">       </span><span class="c1">// List with ONE element: the int[] itself</span>
+<span class="n">List</span><span class="o">&lt;</span><span class="n">Integer</span><span class="o">&gt;</span><span class="w"> </span><span class="n">right</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Arrays</span><span class="p">.</span><span class="na">stream</span><span class="p">(</span><span class="n">arr</span><span class="p">).</span><span class="na">boxed</span><span class="p">().</span><span class="na">toList</span><span class="p">();</span>
+
+<span class="n">Integer</span><span class="o">[]</span><span class="w"> </span><span class="n">boxed</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="mi">3</span><span class="p">,</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="mi">2</span><span class="p">};</span>
+<span class="n">Arrays</span><span class="p">.</span><span class="na">sort</span><span class="p">(</span><span class="n">boxed</span><span class="p">,</span><span class="w"> </span><span class="n">Collections</span><span class="p">.</span><span class="na">reverseOrder</span><span class="p">());</span><span class="w">   </span><span class="c1">// descending needs objects</span>
+<span class="n">Arrays</span><span class="p">.</span><span class="na">fill</span><span class="p">(</span><span class="n">dp</span><span class="p">,</span><span class="w"> </span><span class="o">-</span><span class="mi">1</span><span class="p">);</span><span class="w"> </span><span class="n">Arrays</span><span class="p">.</span><span class="na">copyOfRange</span><span class="p">(</span><span class="n">a</span><span class="p">,</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span><span class="w"> </span><span class="mi">5</span><span class="p">);</span><span class="w"> </span><span class="n">Arrays</span><span class="p">.</span><span class="na">equals</span><span class="p">(</span><span class="n">a</span><span class="p">,</span><span class="w"> </span><span class="n">b</span><span class="p">);</span><span class="w"> </span><span class="n">Arrays</span><span class="p">.</span><span class="na">toString</span><span class="p">(</span><span class="n">a</span><span class="p">);</span>
+<span class="n">Collections</span><span class="p">.</span><span class="na">frequency</span><span class="p">(</span><span class="n">list</span><span class="p">,</span><span class="w"> </span><span class="s">"x"</span><span class="p">);</span><span class="w"> </span><span class="n">Collections</span><span class="p">.</span><span class="na">nCopies</span><span class="p">(</span><span class="mi">3</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="p">);</span><span class="w"> </span><span class="n">Collections</span><span class="p">.</span><span class="na">swap</span><span class="p">(</span><span class="n">list</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="mi">1</span><span class="p">);</span>
+<span class="kt">int</span><span class="w"> </span><span class="n">pos</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Collections</span><span class="p">.</span><span class="na">binarySearch</span><span class="p">(</span><span class="n">sortedList</span><span class="p">,</span><span class="w"> </span><span class="n">key</span><span class="p">);</span><span class="w">   </span><span class="c1">// negative = -(insertionPoint) - 1</span>
+</code></pre></div>
+
+<h4>When would I use it?</h4>
+<ul>
+<li>From getters, return <code>List.copyOf(...)</code> or an unmodifiable view.</li>
+<li>Use <code>List.of</code> / <code>Map.of</code> for constants and test data.</li>
+<li>Use the immutable factories for DTOs and records.</li>
+<li>Use the <code>Arrays</code> utilities all the time in DSA.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong><code>List.of</code> with a null element throws NPE.</strong> This surprises code that used to use <code>Arrays.asList</code>, which allows nulls.</li>
+<li><strong><code>Arrays.asList(...).add()</code> throws <code>UnsupportedOperationException</code></strong>, because the list has a fixed size.</li>
+<li><strong><code>Map.of</code> iteration order changes between runs.</strong> Don't rely on it in tests.</li>
+<li><strong>Sorting a huge boxed <code>Integer[]</code> is much slower</strong> than sorting an <code>int[]</code>.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. <code>Collections.unmodifiableList</code> vs <code>List.copyOf</code>?</strong> The first is a read-only view: the original list can still change, and the changes show through the view. The second is an independent immutable copy.</p>
+<p><strong>Q2. What sorting algorithms does Java use?</strong> Dual-pivot quicksort for arrays of primitives, and TimSort (which is stable) for objects and lists.</p>
+<p><strong>Q3. What is the gotcha with <code>Arrays.asList</code>?</strong> The list has a fixed size and is backed by the array, so add/remove don't work. And if you pass a primitive array, you get a list with one element: the array itself.</p>

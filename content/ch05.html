@@ -1,0 +1,839 @@
+<p>At SDE2 level, JVM questions change. Juniors get "what is GC?". You will get something like: "p99 latency doubled and memory keeps climbing — walk me through what you'd do". (p99 latency means: 99% of requests finish faster than this time; it shows the slowest 1%.) This chapter gives you two things. First, a clear picture of how the JVM works inside. Second, the tools and steps to debug it in production.</p>
+<h2 id="s5-1">5.1 Class loading</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> Java does not load all your classes at startup. It loads each class from disk only when your code first needs it, and it always asks the "senior" loaders first so nobody can sneak in a fake <code>String</code> class.</p>
+<p>Java loads classes <strong>lazily, at runtime</strong>. "Lazily" means only when they are first needed. It does not link everything into one big binary at build time.</p>
+<p>This gives you useful powers:</p>
+<ul>
+<li><strong>Plugins</strong> can be added without rebuilding the app.</li>
+<li><strong>Frameworks like Spring</strong> can scan the classpath and discover your classes on their own.</li>
+<li><strong>Dynamic proxies</strong> (classes generated in memory while the app runs) become possible.</li>
+<li><strong>Hot reload</strong> (swapping code without a full restart) becomes possible.</li>
+<li><strong>Startup memory stays small.</strong> You only pay for the classes you actually use.</li>
+</ul>
+<p>But this flexibility needs safety. Nobody should be able to replace <code>java.lang.String</code> with their own version. The loading design below protects against that.</p>
+<h4>What is happening internally?</h4>
+<p>A <em>class loader</em> is the part of the JVM that finds a class's bytes and turns them into a usable class. There are three built-in loaders. They are arranged like a chain of seniors and juniors. This arrangement is called the <strong>parent-delegation</strong> hierarchy:</p>
+<div class="hl"><pre><span></span><code>Bootstrap loader (native)     → java.base: java.lang.*, java.util.* …
+   ▲ parent
+Platform loader               → other Java SE / JDK modules (java.sql, …)
+   ▲ parent
+Application (system) loader   → your classpath / module path: your code + dependency JARs
+   ▲ parent
+Custom loaders                → app servers, plugin systems, Spring Boot's LaunchedURLClassLoader (nested JARs)
+</code></pre></div>
+
+<p><strong>Delegation</strong> works like this. When a loader is asked for a class, it first asks its parent. Only if the parent cannot find the class does it load the class itself. Because of this rule, core classes like <code>String</code> always come from the bootstrap loader. Your fake <code>String</code> is never even looked at.</p>
+<p>Think of a government office. A clerk gets a file. He first sends it up to his senior. Only if the senior says "not mine" does the clerk handle it himself.</p>
+<p>Every class goes through three stages:</p>
+<ol>
+<li><strong>Loading</strong>: The JVM reads the class bytes. They can come from a JAR, a file, or be generated in memory. It then creates a <code>Class</code> object in Metaspace (the memory area for class information, see 5.2).</li>
+<li><strong>Linking</strong>: This has three small steps.
+   - <em>Verification</em>: check that the bytecode is well-formed and type-safe, so it cannot corrupt memory.
+   - <em>Preparation</em>: create the static fields and fill them with default values (0, null, false).
+   - <em>Resolution</em>: replace symbolic names (like "the method <code>foo</code> in class <code>Bar</code>") with direct memory references. This is often done lazily, only when first used.</li>
+<li><strong>Initialisation</strong>: The JVM runs static initialiser blocks and static field assignments. This happens:
+   - exactly once;
+   - thread-safely (the JVM holds an init lock, so two threads can't both run it);
+   - on the first <strong>active use</strong> of the class. Active use means: creating a new instance, calling a static method, reading a static field, using reflection on it, or initialising a subclass.</li>
+</ol>
+<p>One more key point. The JVM identifies a class at runtime by two things together: <strong>(fully qualified name, defining class loader)</strong>. So if two different loaders load the same class, the JVM sees two <em>different</em> types. They are not interchangeable.</p>
+<h4>How does it work?</h4>
+<p>Here is what happens the first time your code runs <code>new OrderService()</code>:</p>
+<ol>
+<li>The application loader is asked for <code>OrderService</code>.</li>
+<li>It delegates up to the platform loader.</li>
+<li>The platform loader delegates up to the bootstrap loader.</li>
+<li>The bootstrap loader does not find it. The platform loader does not find it either.</li>
+<li>The request comes back down to the application loader.</li>
+<li>The application loader finds <code>OrderService.class</code> in your JAR.</li>
+<li>The class is loaded, then linked, then its statics are initialised.</li>
+<li>Finally, the object itself is allocated.</li>
+</ol>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="kd">public</span><span class="w"> </span><span class="kd">class</span> <span class="nc">LoadDemo</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">static</span><span class="w"> </span><span class="kd">class</span> <span class="nc">Lazy</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="kd">static</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">System</span><span class="p">.</span><span class="na">out</span><span class="p">.</span><span class="na">println</span><span class="p">(</span><span class="s">"Lazy initialised"</span><span class="p">);</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kd">static</span><span class="w"> </span><span class="kd">final</span><span class="w"> </span><span class="kt">int</span><span class="w"> </span><span class="n">CONST</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">42</span><span class="p">;</span><span class="w"> </span><span class="kd">static</span><span class="w"> </span><span class="kt">int</span><span class="w"> </span><span class="n">value</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">7</span><span class="p">;</span><span class="w"> </span><span class="p">}</span>
+<span class="w">    </span><span class="kd">public</span><span class="w"> </span><span class="kd">static</span><span class="w"> </span><span class="kt">void</span><span class="w"> </span><span class="nf">main</span><span class="p">(</span><span class="n">String</span><span class="o">[]</span><span class="w"> </span><span class="n">args</span><span class="p">)</span><span class="w"> </span><span class="kd">throws</span><span class="w"> </span><span class="n">Exception</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="n">System</span><span class="p">.</span><span class="na">out</span><span class="p">.</span><span class="na">println</span><span class="p">(</span><span class="n">Lazy</span><span class="p">.</span><span class="na">CONST</span><span class="p">);</span><span class="w">        </span><span class="c1">// 42 — compile-time constant is INLINED: does NOT initialise Lazy</span>
+<span class="w">        </span><span class="n">System</span><span class="p">.</span><span class="na">out</span><span class="p">.</span><span class="na">println</span><span class="p">(</span><span class="n">Lazy</span><span class="p">.</span><span class="na">value</span><span class="p">);</span><span class="w">        </span><span class="c1">// prints "Lazy initialised" then 7 — first active use</span>
+<span class="w">        </span><span class="n">System</span><span class="p">.</span><span class="na">out</span><span class="p">.</span><span class="na">println</span><span class="p">(</span><span class="n">String</span><span class="p">.</span><span class="na">class</span><span class="p">.</span><span class="na">getClassLoader</span><span class="p">());</span><span class="w">                 </span><span class="c1">// null (bootstrap)</span>
+<span class="w">        </span><span class="n">System</span><span class="p">.</span><span class="na">out</span><span class="p">.</span><span class="na">println</span><span class="p">(</span><span class="n">LoadDemo</span><span class="p">.</span><span class="na">class</span><span class="p">.</span><span class="na">getClassLoader</span><span class="p">());</span><span class="w">               </span><span class="c1">// app class loader</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+<span class="c1">// java -verbose:class LoadDemo   → watch every class being loaded and from where</span>
+</code></pre></div>
+
+<p>Note the first line of output. <code>Lazy.CONST</code> is a compile-time constant. The compiler copies the value 42 directly into the calling code. So reading it never touches the <code>Lazy</code> class, and <code>Lazy</code> is not initialised. Reading <code>Lazy.value</code> is a real active use, so initialisation runs first.</p>
+<h4>When would I use it?</h4>
+<ul>
+<li>Diagnosing <code>ClassNotFoundException</code> and <code>NoClassDefFoundError</code>.</li>
+<li>Fixing dependency conflicts. If two versions of a library are on the classpath, the first one found wins.</li>
+<li>Understanding Spring Boot fat JARs (one JAR that contains other JARs inside it).</li>
+<li>Explaining when static initialisation runs and why it is thread-safe. The holder-idiom singleton depends on this (4.6).</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong><code>ClassNotFoundException</code></strong>: You asked for a class by its name (for example with <code>Class.forName</code>, or a framework using reflection). It is not on the classpath.</li>
+<li><strong><code>NoClassDefFoundError</code></strong>: The class was there at compile time but is missing at runtime. <em>Or</em> — a very common case — its static initialiser already failed earlier. Search the logs for the first <code>ExceptionInInitializerError</code>; that is the real cause.</li>
+<li><strong>Dependency hell</strong>: A <code>NoSuchMethodError</code> at runtime usually means a different version of a library won on the classpath. That version does not have the method your code expects. Check with <code>mvn dependency:tree</code>, and use the Spring Boot BOM (bill of materials — a managed list of compatible versions).</li>
+<li><strong>ClassCastException between "identical" classes</strong>: The same class was loaded by two different loaders. This happens in plugin systems and app servers. To the JVM they are two different types, so casting fails.</li>
+<li><strong>ClassLoader leaks</strong>: In app servers, you redeploy the app. But something still holds a reference to an old class — for example a ThreadLocal, a static registry, or a JDBC driver. That one reference keeps the whole old ClassLoader alive, along with every class it loaded. After many redeploys, Metaspace keeps growing until you get <code>OutOfMemoryError: Metaspace</code>.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. Explain parent delegation.</strong> When a class loader is asked for a class, it first passes the request to its parent. It loads the class itself only if the parent cannot find it. Because of this, core classes always come from the bootstrap loader, so nobody can spoof them and there are no duplicate copies.</p>
+<p><strong>Q2. ClassNotFoundException vs NoClassDefFoundError?</strong> CNFE: a class that was requested dynamically by name (for example <code>Class.forName</code>) is not found. NCDFE: a class that was available at compile time cannot be loaded at runtime — either it is missing, or its static initialisation failed earlier.</p>
+<p><strong>Q3. When is a class initialised?</strong> On its first active use: creating an instance, calling a static method, reading a static field that is not a compile-time constant, using reflection, or initialising a subclass. Reading a compile-time constant does not trigger it, because the value is copied into the caller at compile time.</p>
+<h2 id="s5-2">5.2 Runtime memory areas</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> The JVM's memory is not one big bucket. It is split into several areas, each storing a different kind of data and each with its own "full" error — and the heap is only one of them.</p>
+<p>You need this map to do three practical things:</p>
+<ul>
+<li>size containers correctly,</li>
+<li>read GC logs, and</li>
+<li>understand what an <code>OutOfMemoryError</code> message is telling you.</li>
+</ul>
+<p>For each kind of data, you should know which memory area it lives in. You should also know what happens when that area fills up.</p>
+<h4>What is happening internally?</h4>
+<div class="hl"><pre><span></span><code>┌──────────────────────── JVM process memory ───────────────────────────┐
+│ HEAP (-Xmx)          objects &amp; arrays; shared; GC-managed               │
+│   Young gen: Eden | S0 | S1      Old gen (tenured)                      │
+├────────────────────────────────────────────────────────────────────────┤
+│ METASPACE (native)   class metadata, method bytecode, constant pools    │
+│ CODE CACHE (native)  JIT-compiled machine code                          │
+│ THREAD STACKS        one per platform thread (-Xss, ~512KB–1MB)         │
+│ DIRECT BUFFERS       ByteBuffer.allocateDirect, Netty, NIO              │
+│ GC / JIT internals, symbol tables, native libraries                    │
+└────────────────────────────────────────────────────────────────────────┘
+Per thread: JVM stack (frames: locals + operand stack), PC register, native method stack
+</code></pre></div>
+
+<p>Quick meaning of each area:</p>
+<ul>
+<li><strong>Heap</strong>: where all your objects and arrays live. All threads share it. The garbage collector manages it. <code>-Xmx</code> sets its maximum size.</li>
+<li>The <strong>young generation</strong> (Eden plus two survivor spaces, S0 and S1) holds new objects.</li>
+<li>The <strong>old generation</strong> (also called <em>tenured</em>) holds objects that have lived a long time.</li>
+<li><strong>Metaspace</strong>: information about classes — their structure, method bytecode and constant pools. It lives in <em>native memory</em>, meaning memory outside the heap that the JVM gets directly from the operating system.</li>
+<li><strong>Code cache</strong>: the machine code produced by the JIT compiler (5.10).</li>
+<li><strong>Thread stacks</strong>: one per platform thread. Each holds the method calls currently running in that thread. Size is set by <code>-Xss</code>, usually about 512 KB–1 MB.</li>
+<li><strong>Direct buffers</strong>: memory outside the heap used for fast I/O, for example by <code>ByteBuffer.allocateDirect</code>, Netty and NIO.</li>
+<li><strong>Other internals</strong>: the GC's and JIT's own data, symbol tables and native libraries.</li>
+</ul>
+<p>Each thread also has its own small private areas: its JVM stack (made of <em>frames</em> — one frame per method call, holding local variables and the operand stack), a PC register (which instruction is next), and a native method stack.</p>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>Area</th>
+<th>Contains</th>
+<th>Error when exhausted</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Heap</td>
+<td>All objects and arrays</td>
+<td><code>OutOfMemoryError: Java heap space</code> / <code>GC overhead limit exceeded</code></td>
+</tr>
+<tr>
+<td>Metaspace</td>
+<td>Class metadata (replaced PermGen in Java 8; grows on its own as needed)</td>
+<td><code>OutOfMemoryError: Metaspace</code></td>
+</tr>
+<tr>
+<td>Thread stack</td>
+<td>One frame per method call</td>
+<td><code>StackOverflowError</code></td>
+</tr>
+<tr>
+<td>Native memory for threads</td>
+<td>The OS's own structures for each thread</td>
+<td><code>OutOfMemoryError: unable to create native thread</code></td>
+</tr>
+<tr>
+<td>Direct memory</td>
+<td>Buffers outside the heap</td>
+<td><code>OutOfMemoryError: Direct buffer memory</code></td>
+</tr>
+<tr>
+<td>Code cache</td>
+<td>JIT-compiled code</td>
+<td>Warning "CodeCache is full"; the JIT stops compiling → sudden slowdown</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Why PermGen was removed</strong>: Before Java 8, class metadata and interned strings lived in <em>PermGen</em>. PermGen was a fixed-size part of the heap. Apps that loaded many classes kept running out of it and failed with <code>PermGen space</code> errors. Examples are Groovy apps, app servers and apps with many proxies.</p>
+<p>Java 8 fixed this in two ways:</p>
+<ol>
+<li>Class metadata moved to <strong>Metaspace</strong>. It lives in native memory and grows as needed. You can still put a cap on it with <code>-XX:MaxMetaspaceSize</code>.</li>
+<li>Interned strings moved to the normal heap.</li>
+</ol>
+<h4>How does it work?</h4>
+<p>Here is the key formula:</p>
+<p><strong>Total container memory ≈ heap + metaspace + code cache + (threads × stack) + direct buffers + GC overhead.</strong></p>
+<p><code>-Xmx</code> limits only the first item, the heap. Everything else comes on top of it. So say you set <code>-Xmx</code> equal to the container's memory limit. The total process will go over the limit. Kubernetes (the Linux kernel, really) then kills the pod — this is called being <em>OOM-killed</em>. Java itself never reports an <code>OutOfMemoryError</code>, because the heap was never full.</p>
+<p>Think of a 2 BHK flat. <code>-Xmx</code> is the size of the hall only. If you rent a flat exactly the size of the hall, the kitchen and bedrooms don't fit.</p>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code>Container limit 2 GiB:
+  -XX:MaxRAMPercentage=70     → heap ≈ 1.4 GiB
+  metaspace ~150 MB, code cache ~50 MB, 200 threads × 1 MB = 200 MB, direct buffers ~64 MB, GC structures ~50 MB
+  → ~1.9 GiB: fits. With -Xmx2g the process would exceed the limit and be killed (exit code 137, OOMKilled).
+</code></pre></div>
+
+<p>You can check the real numbers on a running JVM:</p>
+<div class="hl"><pre><span></span><code>jcmd<span class="w"> </span>&lt;pid&gt;<span class="w"> </span>VM.native_memory<span class="w"> </span>summary<span class="w">     </span><span class="c1"># requires -XX:NativeMemoryTracking=summary</span>
+jcmd<span class="w"> </span>&lt;pid&gt;<span class="w"> </span>GC.heap_info
+</code></pre></div>
+
+<h4>When would I use it?</h4>
+<ul>
+<li>Sizing pods and choosing JVM flags.</li>
+<li>Reading an OOM message and knowing which area ran out.</li>
+<li>Explaining in an incident why "the JVM uses more memory than -Xmx".</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Pods OOM-killed by the kernel with no Java error.</strong> This happens when you forget non-heap memory in your sizing.</li>
+<li><strong>Thread-per-request with thousands of threads.</strong> Each thread needs native memory for its stack and OS structures. Native memory runs out.</li>
+<li><strong>Deep recursion.</strong> Each call adds a frame to the stack until you hit <code>StackOverflowError</code>.</li>
+<li><strong>Metaspace growth from classes generated at runtime.</strong> Sources are proxies, lambdas in dynamically generated code, and redeploy leaks (5.1).</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. What are the JVM memory areas?</strong> The heap (young generation with Eden and two survivor spaces, plus the old generation), Metaspace, the code cache, per-thread stacks and PC registers, native method stacks, and direct memory.</p>
+<p><strong>Q2. What replaced PermGen and why?</strong> Metaspace, in Java 8. It lives in native memory and grows automatically, so the old fixed-size PermGen out-of-memory errors went away. Interned strings moved to the heap.</p>
+<p><strong>Q3. Why does a Java process use more memory than -Xmx?</strong> <code>-Xmx</code> limits only the heap. Metaspace, thread stacks, the code cache, direct buffers and GC data structures all come on top of it.</p>
+<h2 id="s5-3">5.3 Object allocation and the generational heap</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> Most objects are like paper tea cups — used once and thrown away within seconds. A few are like steel utensils that stay for years. So the JVM keeps the new objects in a separate small area and cleans that area very often and very cheaply.</p>
+<p>In a server, most objects die almost immediately. Examples: request DTOs, iterators, temporary strings. A few objects live for the whole run of the app. Examples: caches, Spring beans, connection pools.</p>
+<p>This pattern has a name: the <strong>weak generational hypothesis</strong> ("most objects die young"). Because it is true, the JVM can:</p>
+<ul>
+<li>collect the young area — which is mostly garbage — cheaply and often, and</li>
+<li>collect the old area only rarely.</li>
+</ul>
+<h4>What is happening internally?</h4>
+<p><strong>1. Allocation is just a pointer bump.</strong>
+Each thread gets a <strong>TLAB</strong> (Thread-Local Allocation Buffer). A TLAB is a private chunk of Eden that only that thread uses. To create an object, the thread just moves a pointer forward inside its TLAB. No locking is needed, because no other thread uses that chunk. It typically takes a few nanoseconds — faster than <code>malloc</code> in C.</p>
+<p><strong>2. New objects go to Eden.</strong>
+When Eden fills up, a <strong>minor GC</strong> (also called a young GC) runs:</p>
+<ol>
+<li>Live objects in Eden and in the "from" survivor space are <strong>copied</strong> into the "to" survivor space.</li>
+<li>Each copied object's <strong>age</strong> goes up by one.</li>
+<li>Everything left behind in Eden is garbage. The JVM frees all of it at once just by resetting the pointer.</li>
+</ol>
+<p>So the cost depends only on the number of <em>live</em> objects, not on the garbage. Garbage is free to remove.</p>
+<p><strong>3. Survivors get promoted.</strong>
+An object that survives enough minor GCs is <strong>promoted</strong> (moved) to the <strong>old generation</strong>. The limit is called the <em>tenuring threshold</em>. It is at most 15, and the JVM adjusts it on its own. Very large objects may go straight to old gen. In G1 they go to special <em>humongous regions</em> instead (5.5).</p>
+<p><strong>4. Old gen is cleaned rarely.</strong>
+The old generation is collected less often, by <em>major</em> or <em>mixed</em> collections. These are more expensive.</p>
+<p><strong>5. Card table / remembered sets.</strong>
+Sometimes an old object points to a young object. The JVM keeps a record of such links. So during a minor GC, it doesn't have to scan the whole old generation to find which young objects are still used. It just checks this record.</p>
+<p><strong>6. Escape analysis.</strong>
+Sometimes the JIT compiler can prove that an object never leaves the method that created it. Then it doesn't put the object on the heap at all. Instead, it turns the object's fields into plain local variables. This is called <em>scalar replacement</em>.</p>
+<div class="hl"><pre><span></span><code>new Order() → TLAB in Eden
+minor GC #1: Order still referenced → copied to S0 (age 1)
+minor GC #2: → copied to S1 (age 2)  ... age N → promoted to Old
+request DTOs: dead before the first minor GC → reclaimed for free
+</code></pre></div>
+
+<h4>How does it work?</h4>
+<p>A healthy service in a steady state looks like this:</p>
+<ol>
+<li>Eden fills every few seconds.</li>
+<li>A minor GC runs and takes a few milliseconds.</li>
+<li>Most objects are gone after it.</li>
+<li>Old gen grows slowly with long-lived data, and gets cleaned occasionally.</li>
+</ol>
+<p>Trouble starts with <strong>medium-lived</strong> objects. Examples: a response cache with a short TTL (time-to-live), or objects held while waiting on a slow downstream call. They live just long enough to be promoted to old gen. Then they die there. Now old gen fills with garbage quickly, so old-gen collections become frequent and costly. This problem is called <strong>premature promotion</strong>.</p>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code>GC log (G1), healthy:
+[12.345s] GC(41) Pause Young (Normal) (G1 Evacuation Pause) 612M-&gt;98M(1024M) 7.812ms
+             young collections frequent and short; heap after GC (98M) stable over time
+
+GC log, leak or overload:
+[901.2s] GC(880) Pause Young (Normal) 1010M-&gt;940M(1024M) 45ms
+[901.9s] GC(881) Pause Full (G1 Compaction Pause) 1020M-&gt;985M(1024M) 2950ms
+             heap after GC near the max and rising, full GCs taking seconds → leak or undersized heap
+</code></pre></div>
+
+<p>How to read a log line like <code>612M-&gt;98M(1024M) 7.812ms</code>: heap used before GC → heap used after GC (total heap size), and the pause time. The number to watch is the "after GC" value over time.</p>
+<h4>When would I use it?</h4>
+<ul>
+<li>Reading GC logs.</li>
+<li>Explaining latency spikes.</li>
+<li>Tuning heap size.</li>
+<li>Deciding whether to reduce allocation in hot code paths, for example by reusing objects or using primitive arrays.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Young gen too small.</strong> Minor GCs happen too often, and objects get promoted too early (premature promotion).</li>
+<li><strong>Huge object arrays.</strong> In G1 these become humongous allocations, which fragment the regions.</li>
+<li><strong>Allocation storms.</strong> Logging, boxing (turning <code>int</code> into <code>Integer</code>) or JSON parsing inside hot loops create huge numbers of short-lived objects.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. Why is the heap divided into generations?</strong> Because most objects die young. Collecting a small young generation often is cheap, since only the few survivors are copied. Long-lived objects sit in the old generation, which is collected rarely.</p>
+<p><strong>Q2. How does an object move to old gen?</strong> By surviving a number of minor GCs — it ages each time it is copied between survivor spaces. It can also go there directly if it is too large, or if the survivor spaces overflow.</p>
+<p><strong>Q3. What is a TLAB?</strong> A Thread-Local Allocation Buffer: a private chunk of Eden for one thread. The thread allocates objects by just moving a pointer forward, with no synchronisation.</p>
+<h2 id="s5-4">5.4 How garbage collection finds and frees garbage</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> The garbage collector starts from a few fixed starting points, follows every reference it can reach, and treats everything it could not reach as rubbish — while your app keeps running and changing things.</p>
+<p>In C, you manage memory by hand with <code>malloc</code> and <code>free</code>. That causes three classic bugs:</p>
+<ul>
+<li><strong>use-after-free</strong> — using memory that was already freed, which crashes or corrupts data;</li>
+<li><strong>double free</strong> — freeing the same memory twice;</li>
+<li><strong>leaks</strong> — forgetting to free memory.</li>
+</ul>
+<p>Java frees memory automatically. But the collector has a hard job. It must decide <em>safely</em> which objects are dead. And it must do this while the application keeps changing references.</p>
+<h4>What is happening internally?</h4>
+<p><strong>Reachability, not reference counting.</strong>
+An object is <em>live</em> if you can reach it by following references from <strong>GC roots</strong>. GC roots are the fixed starting points:</p>
+<ul>
+<li>local variables and operands on thread stacks,</li>
+<li>static fields,</li>
+<li>JNI references (references held by native code),</li>
+<li>live threads,</li>
+<li>objects used as synchronisation monitors (locks).</li>
+</ul>
+<p>Everything that cannot be reached is garbage. This includes <strong>cycles</strong> — objects pointing to each other but not reachable from any root. Reference counting (counting how many references point to an object) cannot free such cycles, because each object in the cycle still has a count above zero. Reachability handles them correctly.</p>
+<p><strong>Core algorithms:</strong></p>
+<ul>
+<li><strong>Mark</strong>: start from the roots, walk all references, and mark every reachable object.</li>
+<li><strong>Sweep</strong>: free the memory of unmarked objects in place. This leaves gaps, called <em>fragmentation</em>.</li>
+<li><strong>Compact</strong>: slide live objects together and update all references to them. No fragmentation, but extra work.</li>
+<li><strong>Copy/evacuate</strong>: copy live objects into an empty area, then treat the old area as empty. Cost depends on the amount of live data. Used for the young gen and for G1 regions.</li>
+</ul>
+<p><strong>Stop-the-world (STW) pause.</strong>
+Some GC phases need all application threads to be stopped. Threads can only stop at <strong>safepoints</strong>. A safepoint is a place where the JVM knows exactly what the thread's state is — for example a method return or the jump back to the start of a loop.</p>
+<p>Modern collectors do most of their work <strong>concurrently</strong>, meaning while the application keeps running. To do this safely they use <strong>barriers</strong>. A barrier is a small piece of code the JIT inserts wherever your code reads or writes a reference. It lets the GC track changes made during concurrent marking.</p>
+<p><strong>Tri-colour marking.</strong>
+During marking, each object has one of three colours:</p>
+<ul>
+<li><strong>White</strong>: not seen yet.</li>
+<li><strong>Grey</strong>: seen, but its children (the objects it points to) are not scanned yet.</li>
+<li><strong>Black</strong>: fully scanned.</li>
+</ul>
+<p>During concurrent marking, the app could move a reference to a white object into a black object. The GC will never rescan the black object, so it would miss the white one and wrongly free it. Write barriers prevent this by telling the GC about such changes.</p>
+<h4>How does it work?</h4>
+<div class="hl"><pre><span></span><code>GC roots → A → B → C            D ⇄ E (cycle, unreachable)
+mark: A, B, C marked            D, E unmarked → garbage, freed despite referencing each other
+</code></pre></div>
+
+<p>Here A, B and C are reachable from a root, so they are marked and kept. D and E point to each other, but nothing from the roots reaches them. So they stay unmarked and are freed, even though each one references the other.</p>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="kt">void</span><span class="w"> </span><span class="nf">handle</span><span class="p">(</span><span class="n">Request</span><span class="w"> </span><span class="n">r</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">Order</span><span class="w"> </span><span class="n">o</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">Order</span><span class="p">(</span><span class="n">r</span><span class="p">);</span><span class="w">       </span><span class="c1">// reachable from this stack frame while handle() runs</span>
+<span class="w">    </span><span class="n">cache</span><span class="p">.</span><span class="na">put</span><span class="p">(</span><span class="n">o</span><span class="p">.</span><span class="na">id</span><span class="p">(),</span><span class="w"> </span><span class="n">o</span><span class="p">);</span><span class="w">         </span><span class="c1">// now ALSO reachable from a static cache → survives after return</span>
+<span class="p">}</span><span class="w">                                  </span><span class="c1">// frame popped; if the cache weren't there, o would be garbage now</span>
+</code></pre></div>
+
+<h4>When would I use it?</h4>
+<ul>
+<li>To reason about leaks. The question "which path from a GC root keeps this object alive?" is exactly what heap-dump tools answer.</li>
+<li>To reason about latency, because of STW pauses.</li>
+<li>To explain why calling <code>System.gc()</code> is pointless. It is only a hint to the JVM — and a harmful one, because it can trigger an expensive full GC.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Long STW pauses.</strong> These come from a large live set (lots of live data to process) or from full GCs.</li>
+<li><strong>Time-to-safepoint delays.</strong> A GC pause must wait until <em>every</em> thread reaches a safepoint. A long counted loop with no safepoint check inside can make everyone wait for that one thread.</li>
+<li><strong>Finalizers (deprecated).</strong> A finalizer can bring an object back to life ("resurrect" it) and delays the freeing of its memory.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. How does the JVM decide an object is garbage?</strong> If it cannot be reached from any GC root — thread stacks, static fields, JNI references, active threads — it is garbage. Unreachable cycles are collected too.</p>
+<p><strong>Q2. What is a stop-the-world pause and a safepoint?</strong> A stop-the-world pause is a phase where all application threads are halted so the GC can work safely. Threads stop at safepoints, which are points where the JVM knows the exact state of their stacks.</p>
+<p><strong>Q3. Mark-sweep vs mark-compact vs copying?</strong> Mark-sweep frees dead objects in place, which leaves fragmentation. Mark-compact moves live objects together, so there are no gaps. Copying evacuates live objects to a fresh area; its cost is proportional to the amount of live data.</p>
+<h2 id="s5-5">5.5 The garbage collectors: Serial, Parallel, G1, ZGC</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> Different apps want different things from the GC — maximum work done, shortest pauses, or least memory used. No collector wins on all three, so Java gives you several to choose from.</p>
+<p>Each type of application cares about something different:</p>
+<ul>
+<li>A <strong>batch job</strong> wants maximum <strong>throughput</strong> — the most total work done per hour. Pauses don't matter much.</li>
+<li>A trading or ordering <strong>API</strong> wants low <strong>latency</strong> — short pauses, so no request waits long.</li>
+<li>A <strong>small container</strong> wants a low <strong>footprint</strong> — little memory and CPU used by the GC itself.</li>
+</ul>
+<p>No single collector is best at all three. So the JVM offers several.</p>
+<h4>What is happening internally?</h4>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>Collector</th>
+<th>Flag</th>
+<th>How it works</th>
+<th>Pauses</th>
+<th>Best for</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Serial</td>
+<td><code>-XX:+UseSerialGC</code></td>
+<td>One thread. Stops the app and does mark-copy for young gen and mark-compact for old gen</td>
+<td>Long</td>
+<td>Tiny heaps, 1-CPU containers</td>
+</tr>
+<tr>
+<td>Parallel</td>
+<td><code>-XX:+UseParallelGC</code></td>
+<td>Same as Serial, but uses many threads</td>
+<td>Long but efficient</td>
+<td>Batch jobs, max throughput</td>
+</tr>
+<tr>
+<td><strong>G1</strong> (default since Java 9)</td>
+<td><code>-XX:+UseG1GC</code></td>
+<td>Splits the heap into ~2048 equal <strong>regions</strong> (1–32 MB each). Young collections evacuate the young regions. <strong>Concurrent marking</strong> finds old regions that are mostly garbage. <strong>Mixed collections</strong> then evacuate the regions with the most garbage first ("Garbage First"), staying within a <strong>pause-time target</strong> (<code>MaxGCPauseMillis</code>, default 200 ms). Huge objects get humongous regions.</td>
+<td>Typically 10–200 ms</td>
+<td>General-purpose services, 2–32+ GB heaps</td>
+</tr>
+<tr>
+<td><strong>ZGC</strong></td>
+<td><code>-XX:+UseZGC</code> (+ <code>-XX:+ZGenerational</code> on 21; generational by default from 23)</td>
+<td>Does almost everything while the app runs, <strong>including compaction</strong>. It uses coloured pointers (extra metadata bits inside each reference) and <strong>load barriers</strong> (checks on every reference read), so objects can be moved while the app runs. If the app reads an outdated reference, it is fixed on the spot</td>
+<td><strong>&lt; 1 ms</strong>, no matter how big the heap is</td>
+<td>Latency-sensitive APIs, very large heaps</td>
+</tr>
+<tr>
+<td>Shenandoah</td>
+<td><code>-XX:+UseShenandoahGC</code></td>
+<td>Compacts while the app runs, using forwarding pointers (built by Red Hat)</td>
+<td>&lt; 10 ms</td>
+<td>Similar to ZGC</td>
+</tr>
+<tr>
+<td>CMS</td>
+<td>removed in Java 14</td>
+<td>Concurrent mark-sweep with no compaction → fragmentation</td>
+<td></td>
+<td>Legacy only</td>
+</tr>
+</tbody>
+</table></div>
+<h4>How does it work?</h4>
+<p><strong>A G1 cycle, step by step:</strong></p>
+<ol>
+<li>Young pauses happen all the time, cleaning the young regions.</li>
+<li>When heap usage crosses a threshold, concurrent marking starts and runs alongside the app. This threshold is called IHOP (Initiating Heap Occupancy Percent), about 45%.</li>
+<li>Short <em>remark</em> and <em>cleanup</em> pauses finish the marking.</li>
+<li>A series of <strong>mixed</strong> pauses follows. Each one evacuates the young regions <em>plus</em> the old regions with the most garbage.</li>
+<li>The cycle repeats.</li>
+</ol>
+<p>A <strong>full GC</strong> compacts the entire heap in one long pause. G1 does this only as a last resort, when evacuation can't keep up with the app. This is the multi-second pause you see in incidents.</p>
+<p><strong>ZGC's trade-off:</strong> It gives up some throughput and CPU — for the barrier checks and its concurrent GC threads. In return, pauses stay below a millisecond even with heaps of hundreds of GB.</p>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code># Typical service on Java 21 in a 4 GiB pod
+-XX:+UseG1GC -XX:MaxRAMPercentage=70 -XX:MaxGCPauseMillis=200
+# Latency-critical API (p99 &lt; 50 ms SLO) with large caches
+-XX:+UseZGC -XX:+ZGenerational -Xmx8g
+</code></pre></div>
+
+<h4>When would I use it?</h4>
+<ul>
+<li><strong>Keep G1</strong> unless measurements show GC pauses breaking your SLO (service level objective — your latency promise). Then try ZGC.</li>
+<li>Use <strong>Parallel</strong> for offline batch jobs that need maximum throughput.</li>
+<li><strong>Tune heap size and allocation rate first.</strong> Only then touch collector flags.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong><code>MaxGCPauseMillis</code> set too low.</strong> G1 then does less work per pause. It falls behind the app and ends up triggering full GCs — the opposite of what you wanted.</li>
+<li><strong>Humongous allocations.</strong> In G1, an object of at least half a region (huge arrays or Strings) gets its own humongous region. Many of these fragment the heap.</li>
+<li><strong>ZGC without enough headroom.</strong> ZGC needs extra free heap. If the app allocates faster than the concurrent collector can free memory, application threads are forced to wait. This is called an <em>allocation stall</em>.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. G1 vs ZGC?</strong> G1 is region-based. It evacuates mostly during stop-the-world pauses and aims for a pause target of tens of milliseconds, giving a good balance with throughput. ZGC compacts concurrently using load barriers. Its pauses stay under a millisecond regardless of heap size, but it costs some throughput and CPU.</p>
+<p><strong>Q2. Why is G1 called "Garbage First"?</strong> After concurrent marking, it evacuates first the old regions that contain the most garbage. This gets back the most space for each pause.</p>
+<p><strong>Q3. Which collector for a batch job vs a low-latency API?</strong> Parallel for batch throughput. G1 by default for services. ZGC when pause times threaten the latency SLO.</p>
+<h2 id="s5-6">5.6 Strong, soft, weak and phantom references</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> Sometimes you want to point to an object but still let the GC throw it away. Special reference types let you say "keep this only while someone else needs it" or "tell me when it is gone".</p>
+<p>Normally, if you hold a reference to an object, the object stays alive. But sometimes you want to refer to an object <strong>without keeping it alive</strong>. For example:</p>
+<ul>
+<li>a cache that should give memory back when memory is short;</li>
+<li>extra data attached to objects, which should disappear together with them;</li>
+<li>cleanup work that should run when an object is collected.</li>
+</ul>
+<h4>What is happening internally?</h4>
+<div class="tbl"><table>
+<thead>
+<tr>
+<th>Type</th>
+<th>Cleared by GC when</th>
+<th>Typical use</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Strong (normal)</td>
+<td>Never, while it is reachable</td>
+<td>Everything</td>
+</tr>
+<tr>
+<td><code>SoftReference</code></td>
+<td>Memory is running low (before an OOM)</td>
+<td>Memory-sensitive caches (rare now, because behaviour is unpredictable)</td>
+</tr>
+<tr>
+<td><code>WeakReference</code></td>
+<td>At the next GC, if only weak references point to it</td>
+<td><code>WeakHashMap</code> keys, listener registries, canonicalising maps (maps that keep one shared copy per value)</td>
+</tr>
+<tr>
+<td><code>PhantomReference</code></td>
+<td>After the object has been finalised; <code>get()</code> always returns null</td>
+<td>Cleanup after the object is gone, via <code>ReferenceQueue</code> / <code>Cleaner</code> (for off-heap resources)</td>
+</tr>
+</tbody>
+</table></div>
+<p>When the GC clears a reference, it can put it on a <code>ReferenceQueue</code>. Your code reads that queue to learn that the object is gone.</p>
+<h4>How does it work?</h4>
+<p><code>WeakHashMap</code> holds its keys through weak references. Once nothing else points to a key, the GC clears it. The entry then disappears during the next operation on the map.</p>
+<p>There is a classic gotcha. The <em>values</em> are held strongly. So if a value references its own key, the key stays reachable through the value. The entry is never removed.</p>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="n">Map</span><span class="o">&lt;</span><span class="n">Session</span><span class="p">,</span><span class="w"> </span><span class="n">Metadata</span><span class="o">&gt;</span><span class="w"> </span><span class="n">meta</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">WeakHashMap</span><span class="o">&lt;&gt;</span><span class="p">();</span><span class="w">   </span><span class="c1">// metadata disappears when the Session is unreachable</span>
+<span class="n">Cleaner</span><span class="w"> </span><span class="n">cleaner</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Cleaner</span><span class="p">.</span><span class="na">create</span><span class="p">();</span>
+<span class="kd">class</span> <span class="nc">OffHeapBuffer</span><span class="w"> </span><span class="kd">implements</span><span class="w"> </span><span class="n">AutoCloseable</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">private</span><span class="w"> </span><span class="kd">final</span><span class="w"> </span><span class="n">Cleaner</span><span class="p">.</span><span class="na">Cleanable</span><span class="w"> </span><span class="n">cleanable</span><span class="p">;</span>
+<span class="w">    </span><span class="n">OffHeapBuffer</span><span class="p">(</span><span class="kt">long</span><span class="w"> </span><span class="n">address</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">cleanable</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">cleaner</span><span class="p">.</span><span class="na">register</span><span class="p">(</span><span class="k">this</span><span class="p">,</span><span class="w"> </span><span class="p">()</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">freeNative</span><span class="p">(</span><span class="n">address</span><span class="p">));</span><span class="w"> </span><span class="p">}</span><span class="w">   </span><span class="c1">// safety net</span>
+<span class="w">    </span><span class="kd">public</span><span class="w"> </span><span class="kt">void</span><span class="w"> </span><span class="nf">close</span><span class="p">()</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">cleanable</span><span class="p">.</span><span class="na">clean</span><span class="p">();</span><span class="w"> </span><span class="p">}</span><span class="w">                                                     </span><span class="c1">// preferred: explicit</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p>The <code>Cleaner</code> here is only a safety net. The preferred way is to call <code>close()</code> yourself (for example with try-with-resources).</p>
+<h4>When would I use it?</h4>
+<p>Rarely in business code. You mostly need to recognise these in interviews and in library code. For caches, use Caffeine with size and time limits instead of soft references.</p>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Soft-reference caches</strong> cause GC thrashing (the GC runs again and again) and unpredictable latency.</li>
+<li><strong><code>WeakHashMap</code> entries never cleared</strong>, because their values reference their keys.</li>
+<li><strong>Relying on GC timing for cleanup.</strong> You don't know when the GC will run. Always provide an explicit <code>close()</code>.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. Weak vs soft references?</strong> A weak reference is cleared at the next GC once the object is reachable only through weak references. A soft reference is cleared only when memory is under pressure.</p>
+<p><strong>Q2. How does WeakHashMap work?</strong> It holds keys through weak references. When a key is no longer reachable from anywhere else, the GC clears it and the map removes that entry.</p>
+<h2 id="s5-7">5.7 Memory leaks in a garbage-collected language</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> The GC only frees objects nobody points to. If your code keeps pointing to objects it will never use again — like a register where entries are added but never struck off — memory keeps filling up. That is a leak, even in Java.</p>
+<p>"Java has a GC, so it can't leak" is a classic wrong answer.</p>
+<p>A Java leak is an object that is still <strong>reachable</strong> but no longer <strong>needed</strong>. The GC cannot know you won't use it again. It only knows something still points to it.</p>
+<p>How a leak shows up, in order:</p>
+<ol>
+<li>The heap grows slowly.</li>
+<li>GCs become longer and more frequent.</li>
+<li>Latency spikes appear.</li>
+<li>Finally, <code>OutOfMemoryError</code>.</li>
+</ol>
+<h4>What is happening internally?</h4>
+<p>Some long-lived root holds a reference graph that keeps growing. The root can be a static field, a singleton bean, a long-lived thread or a cache. On every GC, the collector marks all of it as live. It copies or keeps it, and can never free it.</p>
+<p><strong>The usual suspects</strong>:</p>
+<ol>
+<li><strong>Unbounded caches and static collections</strong>: for example, a <code>static Map&lt;String, Result&gt; CACHE</code> that only ever grows.</li>
+<li><strong>Listeners and callbacks</strong> that are registered but never removed.</li>
+<li><strong>ThreadLocals in pooled threads</strong> that are never removed. Pool threads live forever, so their ThreadLocal values do too (4.15).</li>
+<li><strong>Inner classes and lambdas</strong> that capture a large outer object and are stored long-term (1.17).</li>
+<li><strong>Mutable map keys</strong> whose hash changed after insertion. The map can't find the entry any more, so it can never be removed (1.12).</li>
+<li><strong>Unclosed resources</strong>: streams, result sets, HTTP responses. These also use up connection pools and file descriptors.</li>
+<li><strong>Unbounded queues</strong> in executors that keep growing under overload (4.3).</li>
+<li><strong>ClassLoader leaks</strong> on redeploy, which fill Metaspace (5.1).</li>
+<li><strong>Session or per-tenant maps</strong> with no expiry.</li>
+</ol>
+<h4>How does it work?</h4>
+<p>The signature in monitoring is the "sawtooth" heap graph. The heap rises as objects are created, then drops at each GC. Look at the <strong>floor</strong> — the heap level right after each GC.</p>
+<ul>
+<li>In a healthy app, the floor stays flat.</li>
+<li>In a leak, the floor rises steadily over hours or days.</li>
+</ul>
+<p>Along with this, old-gen GCs become frequent, and the percentage of time spent in GC goes up.</p>
+<div class="hl"><pre><span></span><code>heap used
+ │      /\    /\     /\      /\
+ │  /\ /  \  /  \   /  \    /  \     ← floor after each GC keeps rising = leak
+ │ /  V    \/    \_/    \__/
+ └──────────────────────────────── time
+</code></pre></div>
+
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="c1">// Leak: request-scoped results cached forever, keyed by unique request IDs</span>
+<span class="nd">@Component</span>
+<span class="kd">class</span> <span class="nc">RuleResultCache</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">private</span><span class="w"> </span><span class="kd">static</span><span class="w"> </span><span class="kd">final</span><span class="w"> </span><span class="n">Map</span><span class="o">&lt;</span><span class="n">String</span><span class="p">,</span><span class="w"> </span><span class="n">RuleResult</span><span class="o">&gt;</span><span class="w"> </span><span class="n">CACHE</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">ConcurrentHashMap</span><span class="o">&lt;&gt;</span><span class="p">();</span>
+<span class="w">    </span><span class="n">RuleResult</span><span class="w"> </span><span class="nf">get</span><span class="p">(</span><span class="n">String</span><span class="w"> </span><span class="n">requestId</span><span class="p">,</span><span class="w"> </span><span class="n">Supplier</span><span class="o">&lt;</span><span class="n">RuleResult</span><span class="o">&gt;</span><span class="w"> </span><span class="n">calc</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="k">return</span><span class="w"> </span><span class="n">CACHE</span><span class="p">.</span><span class="na">computeIfAbsent</span><span class="p">(</span><span class="n">requestId</span><span class="p">,</span><span class="w"> </span><span class="n">k</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">calc</span><span class="p">.</span><span class="na">get</span><span class="p">());</span><span class="w"> </span><span class="p">}</span>
+<span class="p">}</span>
+
+<span class="c1">// Fix: bounded, time-limited cache (Caffeine), keyed by something with bounded cardinality</span>
+<span class="n">Cache</span><span class="o">&lt;</span><span class="n">String</span><span class="p">,</span><span class="w"> </span><span class="n">RuleResult</span><span class="o">&gt;</span><span class="w"> </span><span class="n">cache</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Caffeine</span><span class="p">.</span><span class="na">newBuilder</span><span class="p">()</span>
+<span class="w">        </span><span class="p">.</span><span class="na">maximumSize</span><span class="p">(</span><span class="mi">50_000</span><span class="p">)</span>
+<span class="w">        </span><span class="p">.</span><span class="na">expireAfterWrite</span><span class="p">(</span><span class="n">Duration</span><span class="p">.</span><span class="na">ofMinutes</span><span class="p">(</span><span class="mi">10</span><span class="p">))</span>
+<span class="w">        </span><span class="p">.</span><span class="na">recordStats</span><span class="p">()</span>
+<span class="w">        </span><span class="p">.</span><span class="na">build</span><span class="p">();</span>
+</code></pre></div>
+
+<p>Why the first version leaks: every request has a new, unique ID. So every request adds a new entry, and nothing ever removes one. The fix limits both the size (50,000 entries) and the age (10 minutes) of entries.</p>
+<h4>When would I use it?</h4>
+<p>Every time you add a static or long-lived collection, ask two questions:</p>
+<ol>
+<li>What limits its size?</li>
+<li>What removes entries?</li>
+</ol>
+<p>In incident reviews, use the investigation flow in 5.9.</p>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Restarting pods "fixes" the symptom.</strong> It hides the leak until the next traffic peak.</li>
+<li><strong>Increasing <code>-Xmx</code> only delays the OOM.</strong> The leak is still there.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. Can Java have memory leaks?</strong> Yes. A leak is an object that stays reachable but is no longer needed. Common causes: unbounded caches, static collections, listeners and ThreadLocals that are never removed, lambdas or inner classes holding outer references, and unclosed resources.</p>
+<p><strong>Q2. How do you recognise a leak from metrics?</strong> Heap usage right after GC rises steadily over time. GC frequency and duration grow. Eventually you get an OOM. A restart resets it, but only for a while.</p>
+<h2 id="s5-8">5.8 Diagnosing high CPU, hangs and slow requests</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> When production is slow or stuck, you don't guess. You take snapshots of what every thread is doing, find the busy or stuck ones, and follow the evidence.</p>
+<p>Production problems rarely tell you what is wrong. You see "CPU at 100%", "requests hanging" or "p99 doubled". To handle these, you need a repeatable approach driven by evidence.</p>
+<p>Interviewers ask "walk me through debugging this" to check exactly that: do you have a method?</p>
+<h4>What is happening internally?</h4>
+<p>Two main tools:</p>
+<ul>
+<li>A <strong>thread dump</strong> is a snapshot of every thread: its state (running, blocked, waiting) and its stack trace (which methods it is inside right now).</li>
+<li>A <strong>CPU profile</strong> samples which methods are running, many times over a period, and adds up where the time goes.</li>
+</ul>
+<p>Combine them with OS tools. Together they tell you <em>which</em> thread is busy and <em>what</em> it is doing.</p>
+<h4>How does it work?</h4>
+<p><strong>High CPU</strong>:</p>
+<ol>
+<li>Run <code>top -H -p &lt;pid&gt;</code>. This shows CPU use per thread. Note the thread IDs (TIDs) using the most CPU.</li>
+<li>Convert the TID to hex: <code>printf '%x\n' 12345</code> → <code>3039</code>. Thread dumps show IDs in hex.</li>
+<li>Run <code>jcmd &lt;pid&gt; Thread.print &gt; dump.txt</code>. Search for <code>nid=0x3039</code>. That thread's stack shows the hot code.</li>
+<li>Take 3 dumps 5–10 s apart. If you see the same stack every time, you have confirmed it.</li>
+<li>Check the common culprits:
+   - <strong>GC threads</strong> — if these are the busy ones, the real problem is memory; go to memory analysis (5.9) instead;
+   - an infinite loop;
+   - regex catastrophic backtracking (a badly written regex that tries millions of combinations);
+   - huge JSON serialisation or deserialisation;
+   - a <code>HashMap</code> infinite loop after unsafe use from many threads (old Java versions);
+   - busy spin loops (a loop that keeps checking a condition without sleeping).</li>
+<li>For a full picture, use <strong>async-profiler</strong> flame graphs, or <strong>JFR</strong> (<code>jcmd &lt;pid&gt; JFR.start duration=60s filename=cpu.jfr</code>) and open the recording in JDK Mission Control.</li>
+</ol>
+<p><strong>Hangs and slow requests</strong>:</p>
+<ol>
+<li>Take thread dumps again. Look for these patterns:
+   - Many threads <code>BLOCKED</code> and "waiting to lock" the same monitor → <strong>lock contention</strong> (threads queueing for one lock).
+   - Threads <code>WAITING</code> in <code>HikariPool.getConnection</code> → the <strong>DB connection pool is exhausted</strong>. Causes are slow queries or leaked connections.
+   - Threads <code>RUNNABLE</code> in <code>SocketInputStream.read</code> for minutes → a downstream call with <strong>no read timeout</strong>. The thread waits forever for a reply.
+   - A section saying "Found one Java-level deadlock" → a <strong>deadlock</strong> (4.13).</li>
+<li>Match what you see with APM traces and metrics: pool usage, GC pauses, downstream latency.</li>
+</ol>
+<p>Think of a railway reservation hall where the queue has stopped moving. You don't guess — you walk up and see what each counter clerk is doing. A thread dump is that walk.</p>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code>"http-nio-8080-exec-41" #87 daemon prio=5 tid=0x... nid=0x3039 waiting on condition
+   java.lang.Thread.State: TIMED_WAITING (parking)
+      at jdk.internal.misc.Unsafe.park(Native Method)
+      at com.zaxxer.hikari.util.ConcurrentBag.borrow(ConcurrentBag.java:...)
+      at com.zaxxer.hikari.pool.HikariPool.getConnection(HikariPool.java:...)
+      at ...LedgerRepository.balance(...)
+ → 150 of 200 Tomcat threads look like this: the DB pool (size 20) is exhausted.
+   Next step: which queries hold connections? (slow query log / pg_stat_activity) — often a missing index or a
+   transaction that calls an external API while holding the connection.
+</code></pre></div>
+
+<h4>When would I use it?</h4>
+<ul>
+<li>On-call incidents.</li>
+<li>Performance tuning.</li>
+<li>Telling an interview story with a concrete diagnosis. Your ~30 s → ~10 s API improvement can be told this way: measure, find the bottleneck, fix it, verify the result.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Trusting a single dump.</strong> One snapshot can mislead. Take several.</li>
+<li><strong>Heavy instrumenting profilers in production.</strong> They add code to every method and change how the app behaves. Prefer sampling profilers such as JFR or async-profiler.</li>
+<li><strong>Fixing symptoms instead of causes.</strong> Bigger pools or more pods without finding the real cause just move the problem.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. CPU is at 100% on a Java service. What do you do?</strong> Find the hot threads with <code>top -H</code>. Convert their TIDs to hex and match them to the <code>nid</code> in thread dumps taken a few seconds apart. Read their stacks. Check whether the busy threads are GC threads, which would point to a memory problem. Profile with JFR or async-profiler. Then fix the hot code path.</p>
+<p><strong>Q2. Requests are hanging. How do you investigate?</strong> Take thread dumps to see what the threads are waiting on — locks, connection pools, sockets without timeouts, or deadlocks. Then correlate that with traces and pool metrics.</p>
+<h2 id="s5-9">5.9 Diagnosing memory problems: GC logs, heap dumps, JFR</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> Memory problems are the most common JVM incidents. You must switch on evidence collection in advance, because when the process dies, the evidence dies with it — and then you need a clear method to read that evidence.</p>
+<p>Leaks, GC thrashing and OOMs are the most common JVM incidents. To handle them you need two things:</p>
+<ol>
+<li>The right artefacts (logs, dumps, recordings), captured <em>before</em> the process dies.</li>
+<li>A method for reading them.</li>
+</ol>
+<h4>What is happening internally?</h4>
+<p>The four sources of evidence:</p>
+<ul>
+<li><strong>GC logs</strong> record every collection: its type, its cause, heap size before and after, and the pause time.</li>
+<li><strong>Class histogram</strong>: for each class, how many live objects exist and how many bytes they use. It is cheap and needs no full dump.</li>
+<li><strong>Heap dump</strong> (<code>.hprof</code> file): a copy of every object and every reference in the heap. Analysis tools compute two key things from it:</li>
+<li>The <strong>dominator tree</strong>: for each object, how much memory would be freed if that object disappeared. This is its <em>retained size</em>.</li>
+<li>The <strong>path to GC roots</strong>: the chain of references that keeps an object alive.</li>
+<li><strong>JFR</strong> (Java Flight Recorder): a recording that runs all the time with low overhead (~1%). It captures allocations, GC, locks, I/O and CPU samples.</li>
+</ul>
+<h4>How does it work?</h4>
+<div class="hl"><pre><span></span><code><span class="c1"># Always-on in production</span>
+-Xlog:gc*:file<span class="o">=</span>/logs/gc.log:time,uptime,level,tags:filecount<span class="o">=</span><span class="m">5</span>,filesize<span class="o">=</span>20m
+-XX:+HeapDumpOnOutOfMemoryError<span class="w"> </span>-XX:HeapDumpPath<span class="o">=</span>/dumps
+
+<span class="c1"># During an incident</span>
+jcmd<span class="w"> </span>&lt;pid&gt;<span class="w"> </span>GC.class_histogram<span class="w"> </span><span class="p">|</span><span class="w"> </span>head<span class="w"> </span>-20<span class="w">          </span><span class="c1"># take twice, 10 minutes apart: which classes grow?</span>
+jcmd<span class="w"> </span>&lt;pid&gt;<span class="w"> </span>GC.heap_dump<span class="w"> </span>/dumps/heap.hprof<span class="w">         </span><span class="c1"># pauses the app; heap-sized file — mind disk and PII</span>
+jcmd<span class="w"> </span>&lt;pid&gt;<span class="w"> </span>JFR.start<span class="w"> </span><span class="nv">duration</span><span class="o">=</span>120s<span class="w"> </span><span class="nv">filename</span><span class="o">=</span>/dumps/rec.jfr<span class="w"> </span><span class="nv">settings</span><span class="o">=</span>profile
+</code></pre></div>
+
+<p>Note: a heap dump pauses the app and writes a file as big as the heap. Check disk space first, and remember it contains user data (PII — personally identifiable information).</p>
+<p><strong>Investigation flow:</strong></p>
+<ol>
+<li><strong>Which OOM is it?</strong> Heap, Metaspace, direct buffers or native threads. Each type has a different cause (5.2).</li>
+<li><strong>Read the GC logs.</strong> Is heap-after-GC rising over time? That is a leak. Or is it just high under load? That means the heap is too small, or there was a traffic spike.</li>
+<li><strong>Take two class histograms some time apart.</strong> Which classes keep growing?</li>
+<li><strong>Open the heap dump in Eclipse MAT.</strong> Run the "Leak Suspects" report. Then open the dominator tree. Follow the path to GC roots of the biggest retainers. Find the code that owns that root.</li>
+<li><strong>Fix it, then verify</strong> using the same metrics.</li>
+</ol>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code>MAT Leak Suspects:
+  One instance of "java.util.concurrent.ConcurrentHashMap" loaded by "app" occupies 1,284,331,112 (82.4%) bytes.
+  Path to GC root: RuleResultCache.CACHE (static) → ConcurrentHashMap → Node[] → RuleResult …
+  → The static request-keyed cache from 5.7. Fix: bounded Caffeine cache. Heap after GC drops from 85% to 40%.
+</code></pre></div>
+
+<blockquote class="co saythis">
+<p><strong>Say this:</strong> "p99 latency of the reward API jumped from 300 ms to 4 s every few minutes. GC logs showed full GCs of about 3 s, and old gen never dropped below 85%. I took two class histograms ten minutes apart, and <code>RuleResult</code> objects were growing. The heap dump's dominator tree pointed to a static ConcurrentHashMap keyed by request ID, with no eviction. We replaced it with a Caffeine cache limited by size and TTL. Old gen settled around 40%, p99 went back under 300 ms, and we added an alert for old-gen-after-GC above 70%." Build your own version of this from a real incident you handled.</p>
+</blockquote>
+<h4>When would I use it?</h4>
+<ul>
+<li>For any OOM or memory alert.</li>
+<li>Proactively before launches: run a load test and check the heap.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Heap dumps contain customer data (PII).</strong> Handle and store them securely.</li>
+<li><strong>Dumping a big heap hurts.</strong> A 16 GB heap dump pauses the service for a long time and needs a lot of disk. So first remove that instance from the load balancer, then take the dump.</li>
+<li><strong>No <code>HeapDumpOnOutOfMemoryError</code> flag.</strong> Then the evidence dies with the process.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. How do you investigate an OutOfMemoryError?</strong> First identify the OOM type. Check the GC logs for the heap-after-GC trend. Compare class histograms taken some time apart. Analyse the heap dump's dominator tree and the paths to GC roots. Fix the reference that is holding the memory. Then verify with metrics.</p>
+<p><strong>Q2. What is retained size?</strong> The memory that would be freed if an object were collected. It includes the object itself and everything that is reachable only through it.</p>
+<p><strong>Q3. What is JFR?</strong> Java Flight Recorder. It is a built-in event recorder with low overhead. It captures CPU samples, allocations, GC, locks and I/O, and you analyse the recording in JDK Mission Control. It is safe to run in production.</p>
+<h2 id="s5-10">5.10 JIT compilation in depth</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> Java first runs your code slowly, by interpreting it, while watching what it actually does. Then it compiles only the busy parts into fast machine code, tuned to how your app really behaves.</p>
+<p>There are two simple options, and both have problems:</p>
+<ul>
+<li><strong>Interpreting bytecode</strong> (running it instruction by instruction) is slow — 10–50× slower than native machine code.</li>
+<li><strong>Compiling everything ahead of time</strong> loses runtime information. For example: which branches are actually taken, and which subclass actually shows up at a call.</li>
+</ul>
+<p>The JIT (just-in-time compiler) takes a middle path:</p>
+<ul>
+<li>It compiles <strong>only hot code</strong> (code that runs a lot).</li>
+<li>It uses <strong>live profiling data</strong> collected while the app runs.</li>
+<li>So it can make optimistic optimisations that a normal ahead-of-time compiler cannot safely make.</li>
+</ul>
+<h4>What is happening internally?</h4>
+<p><strong>Tiered compilation.</strong> Code moves up through levels:</p>
+<ul>
+<li>Level 0: the interpreter.</li>
+<li>Level 3: the C1 compiler, with profiling. It compiles quickly and collects statistics.</li>
+<li>Level 4: the C2 compiler, with full optimisation. It compiles slowly but produces very fast code.</li>
+<li>(Levels 1–2 are C1 variants.)</li>
+</ul>
+<p><strong>Key C2 optimisations:</strong></p>
+<ul>
+<li><strong>Inlining</strong>: copying the body of a small, hot method directly into its caller. This removes the cost of the call. More importantly, it enables every other optimisation. It is the most important one.</li>
+<li><strong>Devirtualisation</strong>: An interface or virtual call normally needs a lookup to find the right implementation. If profiling sees only one implementation at a call site (<em>monomorphic</em>), the JIT calls it directly and can inline it. If it sees two types (<em>bimorphic</em>), it adds a quick type check. With more types (<em>megamorphic</em>), it falls back to a normal vtable call (a table lookup).</li>
+<li><strong>Escape analysis</strong>: If an object never leaves the method, it is scalar-replaced — its fields become local variables and no allocation happens. Any locks on it are removed too (<em>lock elision</em>).</li>
+<li><strong>Loop optimisations</strong>: unrolling (doing several iterations per loop pass), range-check elimination (removing repeated array-bounds checks), and vectorisation (SIMD — one CPU instruction working on several values at once).</li>
+<li><strong>Dead-code elimination</strong> (removing code that can never run) and <strong>constant folding</strong> (calculating constant expressions at compile time).</li>
+</ul>
+<p><strong>Deoptimisation.</strong>
+The JIT's optimisations rely on assumptions. Sometimes an assumption becomes false — for example, a new subclass gets loaded, or a branch that was never taken is suddenly hit. Then:</p>
+<ol>
+<li>The JVM throws away that compiled code at a safepoint.</li>
+<li>Execution goes back to the interpreter.</li>
+<li>Later, the JIT may compile it again with the new information.</li>
+</ol>
+<p><strong>On-stack replacement (OSR).</strong>
+Suppose a method is still interpreted but is stuck in a very long loop. The JVM can switch that running loop to compiled code in the middle, without waiting for the method to be called again.</p>
+<h4>How does it work?</h4>
+<div class="hl"><pre><span></span><code>call count / loop iterations cross thresholds → C1 compiles with profiling counters
+→ profile shows hot path, receiver types, branch frequencies → C2 compiles optimised code for those
+→ assumptions guarded by cheap checks; guard fails → deoptimise → interpreter → recompile
+</code></pre></div>
+
+<p>In steps:</p>
+<ol>
+<li>Call counts or loop iterations cross a threshold. C1 compiles the method, with profiling counters.</li>
+<li>The profile shows the hot path, the receiver types and how often each branch is taken. C2 compiles optimised code for exactly those cases.</li>
+<li>The assumptions are protected by cheap checks called <em>guards</em>.</li>
+<li>If a guard fails → deoptimise → back to the interpreter → recompile later.</li>
+</ol>
+<h4>Example</h4>
+<div class="hl"><pre><span></span><code><span class="kd">interface</span> <span class="nc">Fee</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="kt">long</span><span class="w"> </span><span class="nf">of</span><span class="p">(</span><span class="kt">long</span><span class="w"> </span><span class="n">amt</span><span class="p">);</span><span class="w"> </span><span class="p">}</span>
+<span class="kd">final</span><span class="w"> </span><span class="kd">class</span> <span class="nc">Flat</span><span class="w"> </span><span class="kd">implements</span><span class="w"> </span><span class="n">Fee</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="kd">public</span><span class="w"> </span><span class="kt">long</span><span class="w"> </span><span class="nf">of</span><span class="p">(</span><span class="kt">long</span><span class="w"> </span><span class="n">a</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="k">return</span><span class="w"> </span><span class="mi">10</span><span class="p">;</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="p">}</span>
+<span class="kt">long</span><span class="w"> </span><span class="nf">total</span><span class="p">(</span><span class="n">List</span><span class="o">&lt;</span><span class="n">Long</span><span class="o">&gt;</span><span class="w"> </span><span class="n">amounts</span><span class="p">,</span><span class="w"> </span><span class="n">Fee</span><span class="w"> </span><span class="n">fee</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kt">long</span><span class="w"> </span><span class="n">s</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="p">;</span>
+<span class="w">    </span><span class="k">for</span><span class="w"> </span><span class="p">(</span><span class="kt">long</span><span class="w"> </span><span class="n">a</span><span class="w"> </span><span class="p">:</span><span class="w"> </span><span class="n">amounts</span><span class="p">)</span><span class="w"> </span><span class="n">s</span><span class="w"> </span><span class="o">+=</span><span class="w"> </span><span class="n">fee</span><span class="p">.</span><span class="na">of</span><span class="p">(</span><span class="n">a</span><span class="p">);</span><span class="w">   </span><span class="c1">// only Flat seen → devirtualised + inlined → s += 10</span>
+<span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="n">s</span><span class="p">;</span>
+<span class="p">}</span>
+<span class="c1">// If later a PercentFee is passed here, the guard fails → deoptimisation → recompiled as a bimorphic call.</span>
+</code></pre></div>
+
+<h4>When would I use it?</h4>
+<ul>
+<li>Explaining <strong>warm-up</strong>, and how to design benchmarks correctly.</li>
+<li>Explaining why hot paths should be small, monomorphic methods.</li>
+<li>Explaining that <code>final</code> and sealed classes help readability — the JIT does not need them for speed, because profiling already tells it the real types.</li>
+<li>Discussing startup options: CDS archives (pre-loaded class data), CRaC (restoring a saved, warmed-up JVM), and GraalVM native image for fast-starting CLIs and serverless functions.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong>Benchmarks without warm-up.</strong> You end up measuring the interpreter, not the real performance.</li>
+<li><strong>Megamorphic call sites in hot loops.</strong> For example, many different lambda implementations called through one interface. The JIT can't inline them.</li>
+<li><strong>A full code cache.</strong> The JIT stops compiling, and new hot code stays slow.</li>
+<li><strong>Deoptimisation storms.</strong> Repeated deoptimise-and-recompile cycles cause latency jitter.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. What does the JIT do?</strong> It profiles running code and compiles hot methods into optimised native code, first with C1 and then C2. It uses inlining, devirtualisation, escape analysis and loop optimisations. If its assumptions break, it deoptimises.</p>
+<p><strong>Q2. Why do Java services need warm-up?</strong> Code starts in the interpreter. The JIT needs profiling data and time to compile the hot paths. Caches and connection pools also need time to fill up.</p>
+<p><strong>Q3. What is escape analysis?</strong> A JIT analysis that proves an object does not escape its method or thread. This allows the JIT to skip the allocation entirely (scalar replacement) and to remove locks on it (lock elision).</p>
+<h2 id="s5-11">5.11 The JVM in containers and the flags that matter</h2>
+<h4>Why?</h4>
+<p class="simple"><strong>In simple words:</strong> Inside a container, the JVM must size itself from the container's limits, not the whole machine's. A handful of flags control this, and getting them wrong causes OOM kills and slow, throttled services.</p>
+<p>Your services run in Kubernetes on Azure. Imagine a JVM that ignores container limits. It looks at the <em>host machine's</em> RAM and CPUs instead. It then sizes its heap and thread pools for that much bigger machine. The results are OOM kills and CPU throttling (the container being slowed down for using more CPU than allowed).</p>
+<p>Knowing a handful of flags lets you configure services sensibly and explain incidents.</p>
+<h4>What is happening internally?</h4>
+<p>Since Java 10 (also backported to 8u191), the JVM reads <strong>cgroup</strong> limits. Cgroups are the Linux feature that enforces a container's CPU and memory limits. This means:</p>
+<ul>
+<li><code>availableProcessors()</code> returns the container's CPU limit, rounded up.</li>
+<li>The default maximum heap is a percentage of the container's memory. The default is 25%, which is too low for most services.</li>
+<li>The CPU count also decides the number of GC threads, the size of the common ForkJoinPool, and the size of many library thread pools.</li>
+</ul>
+<h4>How does it work?</h4>
+<div class="hl"><pre><span></span><code>-XX:MaxRAMPercentage=70.0            # heap = 70% of the container limit (leave room for non-heap, 5.2)
+-XX:InitialRAMPercentage=70.0        # equal initial/max avoids resize pauses (or -Xms = -Xmx)
+-XX:+UseG1GC  (default)  | -XX:+UseZGC -XX:+ZGenerational (Java 21)
+-XX:MaxGCPauseMillis=200
+-Xss512k                             # smaller thread stacks if you run many platform threads
+-XX:MaxMetaspaceSize=256m            # cap runaway class generation
+-XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/dumps
+-XX:+ExitOnOutOfMemoryError          # die fast and let Kubernetes restart instead of limping
+-Xlog:gc*:file=/logs/gc.log:time,uptime:filecount=5,filesize=20m
+-XX:ActiveProcessorCount=2           # override if the CPU limit is fractional and the JVM misjudges it
+</code></pre></div>
+
+<h4>Example</h4>
+<p>Take a Kubernetes pod with <code>limits.memory: 2Gi</code> and <code>limits.cpu: 2</code>:</p>
+<ul>
+<li><code>MaxRAMPercentage=70</code> → about 1.4 GiB of heap.</li>
+<li>G1 runs with 2 parallel GC threads.</li>
+<li>Tomcat has max 200 threads, which reserve about 200 MB for stacks.</li>
+<li>A readiness probe points at <code>/actuator/health/readiness</code>. So traffic arrives only after the app has warmed up.</li>
+</ul>
+<h4>When would I use it?</h4>
+<ul>
+<li>Writing Dockerfiles and Helm values.</li>
+<li>Sizing pods.</li>
+<li>Investigating OOMKilled restarts (exit code 137) and CPU throttling.</li>
+</ul>
+<h4>What can go wrong?</h4>
+<ul>
+<li><strong><code>-Xmx</code> equal to the container limit.</strong> Non-heap memory pushes the process over the limit → OOMKilled.</li>
+<li><strong>A very low CPU limit</strong> (e.g., 500m, meaning half a CPU). The JVM thinks it has only 1 CPU. So it picks Serial GC and tiny thread pools.</li>
+<li><strong>Requests and limits set far apart.</strong> This causes noisy, unpredictable throttling.</li>
+<li><strong>No volume for heap dumps.</strong> The dump has nowhere to go, so the evidence is lost.</li>
+</ul>
+<h4>Interview questions</h4>
+<p><strong>Q1. How does the JVM behave in containers?</strong> It is container-aware. It reads the cgroup CPU and memory limits and uses them to size the heap, the GC threads and thread pools. You should set <code>MaxRAMPercentage</code> to about 70–75%, to leave room for non-heap memory.</p>
+<p><strong>Q2. A pod keeps restarting with exit code 137 but no Java OOM in the logs. Why?</strong> The kernel OOM-killed it. The total process memory — heap plus metaspace, threads and direct buffers — went over the container limit. Fix it by lowering the heap percentage or raising the limit, and check native memory usage with NMT (Native Memory Tracking).</p>
